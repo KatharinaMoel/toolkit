@@ -1,5 +1,7 @@
 # toolkit
 
+[![CI](https://github.com/KatharinaMoel/toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/KatharinaMoel/toolkit/actions/workflows/ci.yml)
+
 Personal, opinionated dev & productivity tools — built for my own workflow,
 shared in case they're useful.
 
