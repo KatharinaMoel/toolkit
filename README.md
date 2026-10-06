@@ -1,0 +1,26 @@
+# toolkit
+
+Personal, opinionated dev & productivity tools — built for my own workflow,
+shared in case they're useful.
+
+Built and tested on **Fedora Linux**; most tools are plain Bash and should run
+on any Linux. Each tool's README states its actual requirements.
+
+## Principles
+
+- **Explain-then-run**: every command a tool executes is printed first, with a
+  one-line explanation. No black boxes — running a tool teaches you the steps.
+- **Engine/config split**: tools are generic; project- or machine-specific
+  values live in local config files (`~/.config/<tool>/…`) that never enter
+  this repository. Each tool ships an anonymized `example.conf` instead.
+- **Fail fast, stay transparent**: `set -euo pipefail`, no silent fallbacks.
+
+## Tools
+
+| Tool | Area | What it does |
+|------|------|--------------|
+| [dev/wt](dev/wt/) | dev | Disposable git worktrees for parallel MR reviews and branch work — with per-review database copies |
+
+## License
+
+[MIT](LICENSE)

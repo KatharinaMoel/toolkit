@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# wt - Worktrees anlegen/entfernen, transparent: jeder Schritt wird erst
+#      erklaert und gezeigt, dann ausgefuehrt (explain-then-run).
+#
+# Generische Engine; projektspezifische Feinheiten kommen aus einer Konfig:
+#   1. <repo>/.worktree.conf              (im Repo, falls mal team-geteilt)
+#   2. ~/.config/wt/<reponame>.conf       (persoenlich, haelt das Repo sauber)
+# Ohne Konfig laeuft wt mit Defaults (Worktree anlegen, Dateien kopieren).
+#
+set -euo pipefail
+
+# ---------- Ausgabe-Helfer: Transparenz ist das Bauprinzip ----------
+run() { # run "<befehl>" "<ein-zeilen-erklaerung>" -> zeigen, dann ausfuehren
+  printf '\n\033[1m>\033[0m %s\n  $ %s\n' "$2" "$1"
+  eval "$1"
+}
+note() { printf '\n* %s\n' "$1"; }
+die()  { printf 'Fehler: %s\n' "$1" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+wt - Worktrees mit erklaerten Schritten
+
+  wt new --mr <nr> [--db]     Wegwerf-Worktree vom MR-Ref (Review/Handtest);
+                              --db legt eine Template-Kopie der Projekt-DB an
+  wt new --branch <name>      Arbeits-Worktree von einem (Remote-)Branch
+  wt drop <nr|kuerzel> [--db] Worktree entfernen; --db loescht die DB-Kopie
+  wt list                     Worktrees und vorhandene Review-DB-Kopien
+
+Konfig: <repo>/.worktree.conf oder ~/.config/wt/<reponame>.conf
+EOF
+}
+
+# ---------- Repo finden, Defaults setzen, Konfig laden ----------
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "hier ist kein Git-Repo"
+REPO_NAME=$(basename "$REPO_ROOT")
+
+WT_BASE="$(dirname "$REPO_ROOT")/${REPO_NAME}-worktrees"  # Konvention: Schwesterordner
+TARGET_BRANCH="dev"            # Basis fuer requirements-Vergleich
+COPY_FILES=(".env")            # gitignorte Dateien, die ein Worktree braucht
+DB_CONTAINER=""                # leer = alle DB-Schritte entfallen
+DB_TEMPLATE=""                 # Stamm-DB, von der kopiert wird
+DB_USER="postgres"
+DB_COPY_PREFIX="review_"       # DB-Kopien heissen <prefix><nr>
+SETTINGS_SHIM_PATH=""          # relativer Pfad der zu erzeugenden Settings-Datei
+SETTINGS_SHIM_IMPORT=""        # Modul, das die Shim-Datei importiert
+PORT_BASE=8000                 # Serverport = PORT_BASE + (nr mod 1000)
+RUN_HINT=""                    # Startbefehl-Vorschlag; {port} und {db} werden ersetzt
+
+for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
+  if [ -f "$conf" ]; then
+    note "Konfig geladen: $conf"
+    # shellcheck source=/dev/null
+    source "$conf"
+  fi
+done
+
+# ---------- gemeinsame Bausteine ----------
+copy_project_files() { # $1 = worktree-pfad
+  local f
+  for f in "${COPY_FILES[@]}"; do
+    if [ -f "$REPO_ROOT/$f" ]; then
+      run "cp '$REPO_ROOT/$f' '$1/$f'" \
+          "gitignorte Datei '$f' in den Worktree kopieren (Inhalt wird nie angezeigt)"
+    else
+      note "Hinweis: '$f' existiert im Hauptrepo nicht - uebersprungen."
+    fi
+  done
+}
+
+venv_check() { # $1 = ref des neuen Worktrees
+  run "git -C '$REPO_ROOT' fetch -q origin $TARGET_BRANCH" \
+      "Zielbranch aktualisieren, damit der requirements-Vergleich stimmt"
+  local diffstat
+  diffstat=$(git -C "$REPO_ROOT" diff --stat "origin/$TARGET_BRANCH...$1" -- requirements.txt 2>/dev/null || true)
+  if [ -z "$diffstat" ]; then
+    note "requirements.txt unveraendert gegenueber origin/$TARGET_BRANCH -> Haupt-venv mitnutzen ist ok."
+  else
+    note "ACHTUNG: requirements.txt weicht ab -> eigenes venv noetig (venv-Falle: erst 'deactivate'!):"
+    printf '  %s\n' "$diffstat"
+  fi
+}
+
+db_create() { # $1 = kopie-name
+  [ -n "$DB_CONTAINER" ] || die "--db verlangt DB_CONTAINER/DB_TEMPLATE in der Konfig"
+  run "docker exec $DB_CONTAINER createdb -U $DB_USER -T $DB_TEMPLATE '$1'" \
+      "DB-Kopie '$1' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)" \
+    || die "createdb fehlgeschlagen - meist halten offene Verbindungen die Template-DB fest (Server/psql beenden, erneut versuchen)"
+}
+
+settings_shim() { # $1 = worktree-pfad, $2 = kopie-name
+  [ -n "$SETTINGS_SHIM_PATH" ] || return 0
+  local exclude="$REPO_ROOT/.git/info/exclude"
+  if ! grep -qxF "$SETTINGS_SHIM_PATH" "$exclude" 2>/dev/null; then
+    run "echo '$SETTINGS_SHIM_PATH' >> '$exclude'" \
+        "Shim in .git/info/exclude eintragen (lokal ignoriert, gilt fuer alle Worktrees, blockiert 'worktree remove' nicht)"
+  fi
+  local target="$1/$SETTINGS_SHIM_PATH"
+  note "Settings-Shim erzeugen: $SETTINGS_SHIM_PATH (gitignored; fixe 3-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)"
+  printf '  $ cat > %s\n' "$target"
+  cat > "$target" <<EOF
+from ${SETTINGS_SHIM_IMPORT} import *  # noqa: F401,F403
+DATABASES['default']['NAME'] = '$2'
+EOF
+  sed 's/^/    | /' "$target"
+}
+
+# ---------- Subcommands ----------
+cmd_new() {
+  local mr="" branch="" with_db=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mr)     mr="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --db)     with_db=1; shift ;;
+      *) die "unbekannte Option fuer new: $1" ;;
+    esac
+  done
+  [ -n "$mr" ] || [ -n "$branch" ] || { usage; die "new braucht --mr <nr> oder --branch <name>"; }
+  mkdir -p "$WT_BASE"
+
+  local wtpath ref kuerzel port=""
+  if [ -n "$mr" ]; then
+    [[ "$mr" =~ ^[0-9]+$ ]] || die "--mr erwartet eine Nummer"
+    kuerzel="mr-$mr"; wtpath="$WT_BASE/$kuerzel"; ref="refs/mr/$mr"
+    port=$((PORT_BASE + mr % 1000))
+    run "git -C '$REPO_ROOT' fetch origin '+refs/merge-requests/$mr/head:refs/mr/$mr'" \
+        "MR-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)"
+    run "git -C '$REPO_ROOT' worktree add --detach '$wtpath' '$ref'" \
+        "Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision"
+  else
+    kuerzel="${branch//\//-}"; wtpath="$WT_BASE/$kuerzel"
+    if git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$branch"; then
+      ref="$branch"
+      run "git -C '$REPO_ROOT' worktree add '$wtpath' '$branch'" \
+          "Worktree auf existierendem lokalen Branch anlegen (schlaegt fehl, wenn er woanders ausgecheckt ist)"
+    else
+      ref="origin/$branch"
+      run "git -C '$REPO_ROOT' fetch -q origin '$branch'" \
+          "Branch vom Remote holen, lokal gibt es ihn noch nicht"
+      run "git -C '$REPO_ROOT' worktree add --track -b '$branch' '$wtpath' 'origin/$branch'" \
+          "Worktree anlegen und lokalen Tracking-Branch dazu erzeugen"
+    fi
+  fi
+
+  copy_project_files "$wtpath"
+  venv_check "$ref"
+
+  if [ "$with_db" -eq 1 ]; then
+    [ -n "$mr" ] || die "--db gibt es (v1) nur zusammen mit --mr"
+    local dbname="${DB_COPY_PREFIX}${mr}"
+    db_create "$dbname"
+    settings_shim "$wtpath" "$dbname"
+  fi
+
+  note "Fertig. Naechste Schritte von Hand:"
+  printf '  cd %s\n' "$wtpath"
+  if [ -n "$port" ] && [ -n "$RUN_HINT" ]; then
+    local hint="${RUN_HINT//\{port\}/$port}"
+    [ -n "$mr" ] && hint="${hint//\{db\}/${DB_COPY_PREFIX}${mr}}"
+    printf '  %s\n' "$hint"
+  elif [ -n "$port" ]; then
+    printf '  Serverport-Vorschlag: %s\n' "$port"
+  fi
+}
+
+cmd_drop() {
+  local kuerzel="" with_db=0 force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --db)    with_db=1; shift ;;
+      --force) force=1; shift ;;
+      *)       kuerzel="$1"; shift ;;
+    esac
+  done
+  [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
+  local nr=""
+  [[ "$kuerzel" =~ ^[0-9]+$ ]] && { nr="$kuerzel"; kuerzel="mr-$kuerzel"; }
+  local wtpath="$WT_BASE/$kuerzel"
+  [ -d "$wtpath" ] || die "Worktree nicht gefunden: $wtpath"
+
+  if [ -n "$nr" ]; then
+    local port=$((PORT_BASE + nr % 1000))
+    if ss -tln 2>/dev/null | grep -q ":$port "; then
+      die "auf Port $port lauscht noch ein Server - erst beenden, dann erneut 'wt drop $nr'"
+    fi
+  fi
+
+  local rmflag=""
+  [ "$force" -eq 1 ] && rmflag=" --force"
+  run "git -C '$REPO_ROOT' worktree remove$rmflag '$wtpath'" \
+      "Worktree entfernen (verweigert bei uncommitteten Aenderungen; dann bewusst 'wt drop $kuerzel --force')"
+
+  if [ "$with_db" -eq 1 ] && [ -n "$nr" ] && [ -n "$DB_CONTAINER" ]; then
+    run "docker exec $DB_CONTAINER dropdb -U $DB_USER '${DB_COPY_PREFIX}${nr}'" \
+        "DB-Kopie wegwerfen - die Stamm-DB war nie betroffen"
+  fi
+}
+
+cmd_list() {
+  run "git -C '$REPO_ROOT' worktree list" "alle Worktrees dieses Repos zeigen"
+  if [ -n "$DB_CONTAINER" ]; then
+    run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database WHERE datname LIKE '${DB_COPY_PREFIX}%'\"" \
+        "vorhandene Review-DB-Kopien zeigen"
+  fi
+}
+
+# ---------- Dispatch ----------
+case "${1:-}" in
+  new)  shift; cmd_new "$@" ;;
+  drop) shift; cmd_drop "$@" ;;
+  list) shift; cmd_list "$@" ;;
+  -h|--help|"") usage ;;
+  *) usage; die "unbekanntes Subcommand: $1" ;;
+esac
