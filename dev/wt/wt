@@ -10,11 +10,13 @@
 set -euo pipefail
 
 # ---------- Ausgabe-Helfer: Transparenz ist das Bauprinzip ----------
+# Erklaerungen gehen auf stderr: im Terminal sieht man alles, aber
+# $(wt path <nr>) liefert nur den Pfad.
 run() { # run "<befehl>" "<ein-zeilen-erklaerung>" -> zeigen, dann ausfuehren
-  printf '\n\033[1m>\033[0m %s\n  $ %s\n' "$2" "$1"
+  printf '\n\033[1m>\033[0m %s\n  $ %s\n' "$2" "$1" >&2
   eval "$1"
 }
-note() { printf '\n* %s\n' "$1"; }
+note() { printf '\n* %s\n' "$1" >&2; }
 die()  { printf 'Fehler: %s\n' "$1" >&2; exit 1; }
 
 usage() {
@@ -26,7 +28,11 @@ wt - Worktrees mit erklaerten Schritten
   wt new --branch <name>      Arbeits-Worktree von einem (Remote-)Branch
   wt drop <nr|kuerzel> [--db] Worktree entfernen; --db loescht die DB-Kopie
   wt list                     Worktrees und vorhandene Review-DB-Kopien
+  wt path <nr|kuerzel>        nur den Worktree-Pfad ausgeben (fuer Skripte/Agenten)
+  wt cd <nr|kuerzel>          in den Worktree wechseln - braucht die
+                              Shell-Integration (wt.zsh), ein Skript kann das nicht
 
+Erklaerungen gehen auf stderr, Ergebnisse auf stdout.
 Konfig: <repo>/.worktree.conf oder ~/.config/wt/<reponame>.conf
 EOF
 }
@@ -56,6 +62,10 @@ for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
 done
 
 # ---------- gemeinsame Bausteine ----------
+resolve_slug() { # $1 = nr|kuerzel|branch -> Ordnername unter WT_BASE (eine Regel fuer alle)
+  if [[ "$1" =~ ^[0-9]+$ ]]; then printf 'mr-%s\n' "$1"; else printf '%s\n' "${1//\//-}"; fi
+}
+
 copy_project_files() { # $1 = worktree-pfad
   local f
   for f in "${COPY_FILES[@]}"; do
@@ -77,7 +87,7 @@ venv_check() { # $1 = ref des neuen Worktrees
     note "requirements.txt unveraendert gegenueber origin/$TARGET_BRANCH -> Haupt-venv mitnutzen ist ok."
   else
     note "ACHTUNG: requirements.txt weicht ab -> eigenes venv noetig (venv-Falle: erst 'deactivate'!):"
-    printf '  %s\n' "$diffstat"
+    printf '  %s\n' "$diffstat" >&2
   fi
 }
 
@@ -97,12 +107,12 @@ settings_shim() { # $1 = worktree-pfad, $2 = kopie-name
   fi
   local target="$1/$SETTINGS_SHIM_PATH"
   note "Settings-Shim erzeugen: $SETTINGS_SHIM_PATH (gitignored; fixe 3-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)"
-  printf '  $ cat > %s\n' "$target"
+  printf '  $ cat > %s\n' "$target" >&2
   cat > "$target" <<EOF
 from ${SETTINGS_SHIM_IMPORT} import *  # noqa: F401,F403
 DATABASES['default']['NAME'] = '$2'
 EOF
-  sed 's/^/    | /' "$target"
+  sed 's/^/    | /' "$target" >&2
 }
 
 # ---------- Subcommands ----------
@@ -122,14 +132,14 @@ cmd_new() {
   local wtpath ref kuerzel port=""
   if [ -n "$mr" ]; then
     [[ "$mr" =~ ^[0-9]+$ ]] || die "--mr erwartet eine Nummer"
-    kuerzel="mr-$mr"; wtpath="$WT_BASE/$kuerzel"; ref="refs/mr/$mr"
+    kuerzel=$(resolve_slug "$mr"); wtpath="$WT_BASE/$kuerzel"; ref="refs/mr/$mr"
     port=$((PORT_BASE + mr % 1000))
     run "git -C '$REPO_ROOT' fetch origin '+refs/merge-requests/$mr/head:refs/mr/$mr'" \
         "MR-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)"
     run "git -C '$REPO_ROOT' worktree add --detach '$wtpath' '$ref'" \
         "Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision"
   else
-    kuerzel="${branch//\//-}"; wtpath="$WT_BASE/$kuerzel"
+    kuerzel=$(resolve_slug "$branch"); wtpath="$WT_BASE/$kuerzel"
     if git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$branch"; then
       ref="$branch"
       run "git -C '$REPO_ROOT' worktree add '$wtpath' '$branch'" \
@@ -154,14 +164,23 @@ cmd_new() {
   fi
 
   note "Fertig. Naechste Schritte von Hand:"
-  printf '  cd %s\n' "$wtpath"
+  # Mit Shell-Integration (WT_SHELL=1) uebernimmt die Funktion den cd selbst.
+  [ -z "${WT_SHELL:-}" ] && printf '  cd %s\n' "$wtpath" >&2
   if [ -n "$port" ] && [ -n "$RUN_HINT" ]; then
     local hint="${RUN_HINT//\{port\}/$port}"
     [ -n "$mr" ] && hint="${hint//\{db\}/${DB_COPY_PREFIX}${mr}}"
-    printf '  %s\n' "$hint"
+    printf '  %s\n' "$hint" >&2
   elif [ -n "$port" ]; then
-    printf '  Serverport-Vorschlag: %s\n' "$port"
+    printf '  Serverport-Vorschlag: %s\n' "$port" >&2
   fi
+}
+
+cmd_path() {
+  [ -n "${1:-}" ] || die "path braucht <nr> oder <kuerzel>"
+  local wtpath
+  wtpath="$WT_BASE/$(resolve_slug "$1")"
+  [ -d "$wtpath" ] || die "Worktree nicht gefunden: $wtpath"
+  printf '%s\n' "$wtpath"
 }
 
 cmd_drop() {
@@ -175,7 +194,8 @@ cmd_drop() {
   done
   [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
   local nr=""
-  [[ "$kuerzel" =~ ^[0-9]+$ ]] && { nr="$kuerzel"; kuerzel="mr-$kuerzel"; }
+  [[ "$kuerzel" =~ ^[0-9]+$ ]] && nr="$kuerzel"
+  kuerzel=$(resolve_slug "$kuerzel")
   local wtpath="$WT_BASE/$kuerzel"
   [ -d "$wtpath" ] || die "Worktree nicht gefunden: $wtpath"
 
@@ -210,6 +230,8 @@ case "${1:-}" in
   new)  shift; cmd_new "$@" ;;
   drop) shift; cmd_drop "$@" ;;
   list) shift; cmd_list "$@" ;;
+  path) shift; cmd_path "$@" ;;
+  cd)   die "ein Skript kann das Verzeichnis der Shell nicht wechseln - 'wt cd' kommt aus der Shell-Integration: source <toolkit>/dev/wt/wt.zsh in ~/.zshrc (siehe README)" ;;
   -h|--help|"") usage ;;
   *) usage; die "unbekanntes Subcommand: $1" ;;
 esac
