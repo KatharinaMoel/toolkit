@@ -22,6 +22,7 @@ on any Linux. Each tool's README states its actual requirements.
 | Tool | Area | What it does |
 |------|------|--------------|
 | [dev/wt](dev/wt/) | dev | Disposable git worktrees for parallel MR reviews and branch work — with per-review database copies |
+| [media/transcribe](media/transcribe/) | media | Public podcast episodes (or any audio) to Markdown — the publisher's transcript when the feed has one, otherwise local CPU recognition with timestamps; resumable queue for multi-day runs |
 
 ## License
 

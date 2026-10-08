@@ -13,3 +13,6 @@ indent_size = 2
 [dev/wt/wt]
 indent_style = space
 indent_size = 2
+
+[media/transcribe/tests/fixtures/*.{srt,txt}]
+end_of_line = unset

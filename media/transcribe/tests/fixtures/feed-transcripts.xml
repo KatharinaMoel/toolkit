@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Transcript Show</title>
+    <copyright>(c) 2025 Transcript Media</copyright>
+    <item>
+      <title>VTT and plain</title>
+      <guid>t-vtt</guid>
+      <pubDate>Mon, 01 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/1.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://pub.example.org/1.txt" type="text/plain"/>
+      <podcast:transcript url="https://pub.example.org/1.vtt" type="text/vtt" language="en" rel="captions"/>
+    </item>
+    <item>
+      <title>SRT only</title>
+      <guid>t-srt</guid>
+      <pubDate>Tue, 02 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/2.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://pub.example.org/2.srt" type="application/x-subrip"/>
+    </item>
+    <item>
+      <title>HTML and plain</title>
+      <guid>t-html-plain</guid>
+      <pubDate>Wed, 03 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/3.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://pub.example.org/3.html" type="text/html"/>
+      <podcast:transcript url="https://pub.example.org/3.txt" type="text/plain"/>
+    </item>
+    <item>
+      <title>HTML only</title>
+      <guid>t-html</guid>
+      <pubDate>Thu, 04 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/4.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://pub.example.org/4.html" type="text/html"/>
+    </item>
+    <item>
+      <title>JSON only</title>
+      <guid>t-json</guid>
+      <pubDate>Fri, 05 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/5.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://pub.example.org/5.json" type="application/json"/>
+    </item>
+    <item>
+      <title>No transcript</title>
+      <guid>t-none</guid>
+      <pubDate>Sat, 06 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/6.mp3" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Unsafe transcript URL</title>
+      <guid>t-unsafe</guid>
+      <pubDate>Sun, 07 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/7.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="file:///etc/passwd" type="text/plain"/>
+    </item>
+  </channel>
+</rss>

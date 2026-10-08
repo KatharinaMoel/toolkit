@@ -45,25 +45,25 @@ $ wt new --mr 42 --db
 
 * Konfig geladen: ~/.config/wt/myproject.conf
 
-> MR-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)
-  $ git -C ~/repos/myproject fetch origin '+refs/merge-requests/42/head:refs/mr/42'
+* MR-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)
+  > git -C ~/repos/myproject fetch origin '+refs/merge-requests/42/head:refs/mr/42'
 
-> Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision
-  $ git -C ~/repos/myproject worktree add --detach ~/repos/myproject-worktrees/mr-42 refs/mr/42
+* Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision
+  > git -C ~/repos/myproject worktree add --detach ~/repos/myproject-worktrees/mr-42 refs/mr/42
 
-> gitignorte Datei '.env' in den Worktree kopieren (Inhalt wird nie angezeigt)
-  $ cp ~/repos/myproject/.env ~/repos/myproject-worktrees/mr-42/.env
+* gitignorte Datei '.env' in den Worktree kopieren (Inhalt wird nie angezeigt)
+  > cp ~/repos/myproject/.env ~/repos/myproject-worktrees/mr-42/.env
 
 * requirements.txt unveraendert gegenueber origin/dev -> Haupt-venv mitnutzen ist ok.
 
-> DB-Kopie 'review_42' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)
-  $ docker exec my_postgres_container createdb -U postgres -T my_project_db 'review_42'
+* DB-Kopie 'review_42' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)
+  > docker exec my_postgres_container createdb -U postgres -T my_project_db 'review_42'
 
 * Fertig. Naechste Schritte von Hand:
   python app/manage.py runserver 127.0.0.1:8042 --settings=app.settings_review
 
-> In den Worktree wechseln (zurueck: cd -)
-  $ cd ~/repos/myproject-worktrees/mr-42
+* In den Worktree wechseln (zurueck: cd -)
+  > cd ~/repos/myproject-worktrees/mr-42
 ```
 
 (The last step comes from the shell integration below; without it, `wt`

@@ -1,0 +1,6 @@
+# Tested 2026-10-08 on Python 3.14.8, CPU only.
+faster-whisper==1.2.1
+# faster-whisper decodes audio with PyAV. With PyAV 19.0.1 it failed:
+#   TypeError: open() got an unexpected keyword argument 'metadata_errors'
+# PyAV 16.1.0 works. 17 and 18 were not tried; the pin keeps to the tested side.
+av<17

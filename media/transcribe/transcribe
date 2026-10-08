@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# transcribe - Starter: findet venv und Paket relativ zu seinem echten Pfad,
+#              damit ein Symlink in ~/.local/bin genuegt.
+#   venv: $TRANSCRIBE_VENV, sonst <dieser Ordner>/.venv
+set -euo pipefail
+
+HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+VENV=${TRANSCRIBE_VENV:-$HERE/.venv}
+
+if [ ! -x "$VENV/bin/python" ]; then
+  printf 'Fehler: kein venv unter %s - siehe %s/README.md, Abschnitt Install\n' "$VENV" "$HERE" >&2
+  exit 1
+fi
+
+PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}" exec "$VENV/bin/python" -m transcribe "$@"

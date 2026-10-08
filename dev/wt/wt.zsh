@@ -36,6 +36,10 @@ wt() {
   esac
 
   p=$(command wt path "$target") || return
-  printf '\n\033[1m>\033[0m In den Worktree wechseln (zurueck: cd -)\n  $ cd %s\n' "$p" >&2
+  if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+    printf '\n\033[1;36m> In den Worktree wechseln (zurueck: cd -)\033[0m\n\033[2m  $ cd %s\033[0m\n' "$p" >&2
+  else
+    printf '\n> In den Worktree wechseln (zurueck: cd -)\n  $ cd %s\n' "$p" >&2
+  fi
   cd "$p" || return
 }

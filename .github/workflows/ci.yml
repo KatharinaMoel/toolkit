@@ -19,3 +19,25 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           shellcheck dev/wt/wt
+
+  transcribe:
+    name: transcribe tests (Python 3.12, stdlib + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest only (no faster-whisper, no model, no network in tests)
+        run: python -m pip install pytest
+
+      - name: Launcher syntax check and ShellCheck
+        run: |
+          bash -n media/transcribe/transcribe
+          sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          shellcheck media/transcribe/transcribe
+
+      - name: Tests
+        run: python -m pytest -q media/transcribe/tests

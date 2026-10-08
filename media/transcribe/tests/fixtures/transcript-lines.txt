@@ -1,0 +1,4 @@
+First paragraph, one line.
+Second paragraph — with a dash.
+
+Third paragraph.

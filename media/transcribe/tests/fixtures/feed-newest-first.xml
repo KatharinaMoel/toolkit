@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Newest First Show</title>
+    <item>
+      <title>Second</title>
+      <guid>b</guid>
+      <pubDate>Tue, 02 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/b.mp3" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>First</title>
+      <pubDate>Mon, 01 Sep 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.org/a.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>

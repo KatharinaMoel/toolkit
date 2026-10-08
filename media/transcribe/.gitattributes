@@ -1,0 +1,3 @@
+# These fixtures are CRLF on purpose (real publisher transcripts are); never normalise them.
+tests/fixtures/*.srt -text
+tests/fixtures/*.txt -text
