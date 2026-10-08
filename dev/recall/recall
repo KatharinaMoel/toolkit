@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# recall - one searchable list for forgotten commands, procedures and prepared
+#          texts, with an assistant as the fallback for fuzzy questions.
+#
+#   recall          everything
+#   recall texts    prepared texts only (from <repo>/.reviews/)
+#
+# Generic engine; personal paths come from ~/.config/recall/recall.conf.
+# Without a config, recall only lists texts from ~/GitRepos/*/.reviews and
+# ~/PycharmProjects/*/.reviews.
+set -euo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- output helpers (explanations on stderr, like wt) ----------
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_EXPL=$'\033[1;36m'; C_CMD=$'\033[2m'; C_NOTE=$'\033[1;33m'; C_ERR=$'\033[1;31m'; C_OFF=$'\033[0m'
+else
+  C_EXPL=""; C_CMD=""; C_NOTE=""; C_ERR=""; C_OFF=""
+fi
+# Keywords in the list are dimmed; fzf renders the codes because of --ansi.
+DIM=$'\033[2m'; UNDIM=$'\033[0m'
+
+show() { # show "<command>" "<one-line explanation>"
+  printf '\n%s* %s%s\n' "$C_EXPL" "$2" "$C_OFF" >&2
+  printf '%s  > %s%s\n' "$C_CMD" "$1" "$C_OFF" >&2
+}
+note() { printf '\n%s  ! %s%s\n' "$C_NOTE" "$1" "$C_OFF" >&2; }
+
+pause() { # keep a hotkey window open long enough to read a message
+  if [ -t 0 ]; then
+    printf '%s  press any key%s' "$C_CMD" "$C_OFF" >&2
+    read -rsn1 _ || true
+    printf '\n' >&2
+  fi
+}
+
+die() {
+  printf '\n%sError: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2
+  exit 1
+}
+
+# Any failed exit - die, or a command stopped by set -e - waits for a key,
+# so a hotkey window does not close before the message can be read.
+trap 'rc=$?; [ "$rc" -eq 0 ] || pause' EXIT
+
+need() { # need <command> <fedora-package>
+  command -v "$1" >/dev/null 2>&1 || die "'$1' is missing - install it with: sudo dnf install $2"
+}
+
+usage() {
+  cat <<'EOF'
+recall - quick access to commands, procedures and prepared texts
+
+  recall          search everything
+  recall texts    prepared texts only (<repo>/.reviews/)
+
+In the list:
+  enter           use the entry: copy a text or command, read a procedure
+  alt-enter       ask the assistant with the current search text
+                  (enter without any match does the same)
+  esc             quit
+
+Config: ~/.config/recall/recall.conf (see example.conf)
+EOF
+}
+
+# ---------- config ----------
+VAULT=""                     # knowledge base root; empty = no commands/procedures
+TEXT_ROOTS=("$HOME/GitRepos" "$HOME/PycharmProjects")
+COMMANDS_FILE=""             # Markdown file with command tables
+PROCEDURE_GLOBS=()           # glob patterns for procedure notes
+PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
+ASSISTANT="claude"           # assistant backend; v1 knows only "claude"
+ASSIST_MODEL="sonnet"        # model for the assistant; empty = Claude Code's default
+ASSIST_PROMPT="Answer briefly, in German. First look things up in the allowed folders with Read, Grep and Glob. You are read-only. Name the note your answer comes from."
+
+CONF="$HOME/.config/recall/recall.conf"
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && source "$CONF"
+
+# ---------- sources ----------
+# Each prints lines "<kind>\t<target>\t<display>" (commands add "\t<explanation>\t<keywords>").
+# fzf shows and searches only <display>; it returns the whole line.
+src_texts() { # newest first; duplicates via symlinks collapse to one entry
+  local root dir f real repo
+  local -A seen=()
+  for root in "${TEXT_ROOTS[@]}"; do
+    for dir in "$root"/*/.reviews; do
+      [ -d "$dir" ] || continue
+      repo=$(basename "$(dirname "$dir")")
+      for f in "$dir"/*; do
+        [ -f "$f" ] || continue
+        case "${f##*/}" in README*) continue ;; esac
+        real=$(realpath "$f")
+        [ -z "${seen[$real]:-}" ] || continue
+        seen[$real]=1
+        printf '%s\ttext\t%s\t✎ %s · %s\n' "$(stat -c %Y "$real")" "$real" "$repo" "${f##*/}"
+      done
+    done
+  done | sort -t $'\t' -k1,1nr | cut -f2-
+}
+
+src_commands() { # tables "| command | explanation | keywords |" below "## <tool>"
+  [ -n "$COMMANDS_FILE" ] && [ -f "$COMMANDS_FILE" ] || return 0
+  awk -v dim="$DIM" -v undim="$UNDIM" '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^##[ \t]/ { heading = trim(substr($0, 3)) }
+    !/^[ \t]*\|/ { intable = 0; next }
+    {
+      line = trim($0)
+      if (!intable) { intable = 1; next }               # header row
+      if (line ~ /^\|[ \t:|-]+\|$/) next                # separator row
+      gsub(/\\\|/, "\001", line)                        # escaped pipe inside a cell
+      n = split(line, cell, "|")
+      if (n != 5 || cell[1] != "" || cell[5] != "") next  # exactly three cells
+      cmd = trim(cell[2]); expl = trim(cell[3]); kw = trim(cell[4])
+      if (cmd ~ /^`.*`$/) cmd = substr(cmd, 2, length(cmd) - 2)
+      gsub(/\001/, "|", cmd); gsub(/\001/, "|", expl); gsub(/\001/, "|", kw)
+      if (cmd == "") next
+      kw = trim(kw " " heading)
+      printf "cmd\t%s\t⌘ %s — %s  %s%s%s\t%s\t%s\n", cmd, cmd, expl, dim, kw, undim, expl, kw
+    }' "$COMMANDS_FILE"
+}
+
+src_procedures() { # notes from PROCEDURE_GLOBS, title from front matter
+  local pattern f name ex title skip
+  for pattern in "${PROCEDURE_GLOBS[@]}"; do
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      name=${f##*/}; skip=""
+      for ex in "${PROCEDURE_EXCLUDE[@]}"; do
+        # shellcheck disable=SC2053  # $ex is a glob pattern on purpose
+        [[ $name == $ex ]] && skip=1
+      done
+      [ -z "$skip" ] || continue
+      title=$(awk 'NR == 1 && $0 != "---" { exit }
+                   NR > 1 && $0 == "---" { exit }
+                   /^title:[ \t]*/ { sub(/^title:[ \t]*/, ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$f")
+      [ -n "$title" ] || title=${name%.md}
+      printf '%s\tproc\t%s\t☰ %s\n' "$title" "$f" "$title"
+    done < <(compgen -G "$pattern" || true)
+  done | sort -t $'\t' -k1,1 -f | cut -f2-
+}
+
+# ---------- preview (called by fzf with the whole line) ----------
+preview() {
+  local kind target expl kw
+  IFS=$'\t' read -r kind target _ expl kw <<<"$1"
+  case "$kind" in
+    text|proc) bat --color=always --style=plain --paging=never "$target" ;;
+    cmd) printf '%s\n\n%s\n\nkeywords: %s\n' "$target" "$expl" "$kw" ;;
+  esac
+}
+
+# ---------- list ----------
+PICK_QUERY=""; PICK_KEY=""; PICK_LINE=""
+pick() { # pick <mode> <query>; sets PICK_*; returns 1 on esc
+  local mode=$1 query=$2 out rc=0
+  # Without pipefail the status is fzf's own: accepting an entry while a
+  # source still writes must not count as a failure of the whole list.
+  out=$( set +o pipefail; {
+      src_texts
+      if [ "$mode" = all ]; then src_commands; src_procedures; fi
+    } | fzf --ansi --delimiter=$'\t' --with-nth=3 \
+            --layout=reverse --border=rounded --border-label=' recall ' \
+            --prompt='› ' --query="$query" \
+            --header='enter: use · alt-enter: ask assistant · esc: quit' \
+            --preview="'$SELF' --preview {}" --preview-window='right,55%,wrap' \
+            --print-query --expect=alt-enter --bind=enter:accept-or-print-query
+  ) || rc=$?
+  # 0 = accepted, 1 = no match (alt-enter with an empty result), 130 = esc
+  case "$rc" in
+    0|1) ;;
+    130) return 1 ;;
+    *) die "fzf failed with exit code $rc" ;;
+  esac
+  # Output: query, then key and line - both missing when enter had no match.
+  PICK_QUERY=$(sed -n 1p <<<"$out")
+  PICK_KEY=$(sed -n 2p <<<"$out")
+  PICK_LINE=$(sed -n 3p <<<"$out")
+}
+
+notify() {
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a recall recall "$1" || note "$1"
+  else
+    note "$1"
+  fi
+}
+
+# ---------- actions ----------
+copy_text() { wl-copy < "$1"; notify "Copied: ${1##*/}"; }
+copy_cmd()  { printf '%s' "$1" | wl-copy -n; notify "Copied: $1"; }
+read_proc() { bat --paging=always --style=plain "$1"; }
+
+# ask <question>; returns 0 = back to the list, 10 = quit
+ask() {
+  local question=$1 dir id key rc
+  if [ -z "$question" ]; then
+    note "type a question first"; pause; return 0
+  fi
+  if [ "$ASSISTANT" != claude ]; then
+    note "unknown ASSISTANT '$ASSISTANT' - only 'claude' is supported"; pause; return 0
+  fi
+  for key in claude jq; do
+    if ! command -v "$key" >/dev/null 2>&1; then
+      note "'$key' is missing - the assistant needs it (see README)"; pause; return 0
+    fi
+  done
+  local vault=$VAULT
+  if [ -n "$vault" ] && [ ! -d "$vault" ]; then
+    note "VAULT not found: $vault - asking without it"; vault=""
+  fi
+  dir=${vault:-$HOME}
+  id=$(cat /proc/sys/kernel/random/uuid)
+  local -a args=(-p "$question" --session-id "$id" --safe-mode
+                 --tools "Read,Grep,Glob" --permission-mode dontAsk
+                 --append-system-prompt "$ASSIST_PROMPT"
+                 --output-format stream-json --verbose --include-partial-messages)
+  [ -z "$vault" ] || args+=(--add-dir "$vault")
+  [ -z "$ASSIST_MODEL" ] || args+=(--model "$ASSIST_MODEL")
+
+  printf '\n? %s\n' "$question" >&2
+  show "cd $(printf '%q' "$dir") && claude -p ... --safe-mode --tools Read,Grep,Glob --permission-mode dontAsk" \
+       "ask the assistant, read-only, in $dir (API key variables removed)"
+  printf '%sthinking…%s\n\n' "$C_CMD" "$C_OFF" >&2
+  # API key variables would switch claude from the subscription login to API billing.
+  set +e
+  (cd "$dir" && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude "${args[@]}") \
+    | jq --unbuffered -rj '
+        if .type == "stream_event" and .event.delta.type? == "text_delta" then .event.delta.text
+        elif .type == "result" and .is_error == true then "\nError: " + (.result | tostring)
+        else empty end'
+  rc=${PIPESTATUS[0]}
+  set -e
+  [ "$rc" -eq 0 ] || note "the assistant ended with exit code $rc"
+
+  printf '\n\n%sn: follow up in full session · enter: back · esc: quit%s ' "$C_CMD" "$C_OFF" >&2
+  IFS= read -rsn1 key || return 10
+  printf '\n' >&2
+  case "$key" in
+    n) cd "$dir" && exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude --resume "$id" ;;
+    $'\e') return 10 ;;
+    *) return 0 ;;
+  esac
+}
+
+# ---------- main ----------
+main() {
+  local mode=all
+  case "${1:-}" in
+    -h|--help|help) usage; exit 0 ;;
+    --preview) preview "${2:-}"; exit 0 ;;
+    texts) mode=texts ;;
+    "") ;;
+    *) usage >&2; die "unknown argument: $1" ;;
+  esac
+  need fzf fzf; need bat bat; need wl-copy wl-clipboard
+
+  local query="" kind target rest rc
+  while true; do
+    pick "$mode" "$query" || exit 0
+    query=$PICK_QUERY
+    if [ "$PICK_KEY" = alt-enter ] || [ -z "$PICK_LINE" ]; then
+      rc=0; ask "$query" || rc=$?
+      [ "$rc" -ne 10 ] || exit 0
+      continue
+    fi
+    IFS=$'\t' read -r kind target rest <<<"$PICK_LINE"
+    case "$kind" in
+      text) copy_text "$target"; exit 0 ;;
+      cmd)  copy_cmd "$target"; exit 0 ;;
+      proc) read_proc "$target" ;;
+    esac
+  done
+}
+
+main "$@"
