@@ -31,14 +31,14 @@ wrap_cmd() { # langen Befehl an Leerzeichen umbrechen, Folgezeilen einruecken
   printf '%s' "$1" | fold -s -w $((cols - 8)) | sed -e '1!s/^/      /' -e 's/[[:space:]]*$//'
 }
 
-run() { # run "<befehl>" "<ein-zeilen-erklaerung>" -> zeigen, dann ausfuehren
+show() { # show "<befehl>" "<ein-zeilen-erklaerung>" -> nur zeigen
   # Stil: '* <was passiert>' und darunter '  > <befehl>' - das '>' steht wie ein Prompt
   # direkt vor dem Befehl, die Erklaerung ist der Aufzaehlungspunkt davor.
   printf '\n%s* %s%s\n' "$C_EXPL" "$2" "$C_OFF" >&2
   printf '%s  > %s%s\n' "$C_CMD" "$(wrap_cmd "$1")" "$C_OFF" >&2
   printf '%s  ┄┄┄%s\n' "$C_CMD" "$C_OFF" >&2
-  eval "$1"
 }
+run() { show "$1" "$2"; eval "$1"; } # zeigen, dann ausfuehren
 note() { printf '\n%s* %s%s\n' "$C_NOTE" "$1" "$C_OFF" >&2; }
 die()  { printf '\n%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 
@@ -54,9 +54,17 @@ wt - Worktrees mit erklaerten Schritten
                               (ohne Args: runserver); 'wt help run' zeigt Beispiele
   wt link <nr|kuerzel>        LINK_DIRS (z.B. media) nachtraeglich einbinden
   wt list                     Worktrees und vorhandene Review-DB-Kopien
-  wt path <nr|kuerzel>        nur den Worktree-Pfad ausgeben (fuer Skripte/Agenten)
-  wt cd <nr|kuerzel>          in den Worktree wechseln - braucht die
-                              Shell-Integration (wt.zsh), ein Skript kann das nicht
+  wt path <nr|kuerzel|.>      nur den Pfad ausgeben (fuer Skripte/Agenten);
+                              '.' oder der Ordnername ist der Hauptordner
+  wt pick                     Auswahlliste (fzf): Hauptrepo + alle Worktrees,
+                              gibt den gewaehlten Pfad aus
+  wt ide [<nr|kuerzel|.>]  in der IDE oeffnen (IDE_CMD, Default pycharm);
+                              ohne Argument: Auswahlliste
+  wt cd [--ide] [<nr|kuerzel|.>]
+                              wechseln (ohne Argument: Auswahlliste), --ide oeffnet
+                              zusaetzlich die IDE - braucht die Shell-Integration
+                              (wt.zsh), ein Skript kann das Verzeichnis nicht wechseln
+  wt new ... --ide            neuen Worktree danach in der IDE oeffnen
 
 Erklaerungen gehen auf stderr, Ergebnisse auf stdout.
 Konfig: <repo>/.worktree.conf oder ~/.config/wt/<reponame>.conf
@@ -83,6 +91,7 @@ RUN_HINT=""                    # Startbefehl-Vorschlag; {port} und {db} werden e
 LINK_DIRS=()                   # gitignorierte Ordner, die per Symlink aus dem Hauptbaum kommen (z.B. media)
 RUN_MANAGE="manage.py"         # Pfad zu manage.py im Worktree (fuer 'wt run')
 RUN_SETTINGS=""                # Settings-Modul fuer 'wt run'; leer = nichts anhaengen
+IDE_CMD="pycharm"              # Befehl fuer 'wt ide'; bekommt den Ordner als Argument
 
 for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
   if [ -f "$conf" ]; then
@@ -175,16 +184,18 @@ EOF
 
 # ---------- Subcommands ----------
 cmd_new() {
-  local mr="" branch="" with_db=0
+  local mr="" branch="" with_db=0 with_ide=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --mr)     mr="$2"; shift 2 ;;
       --branch) branch="$2"; shift 2 ;;
       --db)     with_db=1; shift ;;
+      --ide)    with_ide=1; shift ;;
       *) die "unbekannte Option fuer new: $1" ;;
     esac
   done
   [ -n "$mr" ] || [ -n "$branch" ] || { usage; die "new braucht --mr <nr> oder --branch <name>"; }
+  if [ "$with_ide" -eq 1 ]; then need_ide; fi   # vorher pruefen, nicht erst nach dem Anlegen
   mkdir -p "$WT_BASE"
 
   local wtpath ref kuerzel port=""
@@ -232,14 +243,90 @@ cmd_new() {
   elif [ -n "$port" ]; then
     printf '  Serverport-Vorschlag: %s\n' "$port" >&2
   fi
+  if [ "$with_ide" -eq 1 ]; then open_ide "$wtpath"; fi
+}
+
+is_main_repo_arg() { [ "$1" = "." ] || [ "$1" = "$REPO_NAME" ]; } # '.' oder Ordnername = Hauptordner
+
+check_main_branch() { # Hinweis, wenn im Hauptordner nicht TARGET_BRANCH ausgecheckt ist
+  git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$TARGET_BRANCH" || return 0  # Repo ohne diesen Branch
+  local cur
+  cur=$(git -C "$REPO_ROOT" branch --show-current)
+  if [ "$cur" != "$TARGET_BRANCH" ]; then
+    note "Hinweis: im Hauptordner ist '${cur:-detached}' ausgecheckt, nicht TARGET_BRANCH '$TARGET_BRANCH'."
+  fi
+}
+
+resolve_path() { # $1 = .|reponame|absoluter pfad|nr|kuerzel|branch -> existierender Ordner
+  local p
+  if is_main_repo_arg "$1"; then
+    p="$REPO_ROOT"
+  else
+    case "$1" in
+      /*) p="$1" ;;
+      *)  p="$WT_BASE/$(resolve_slug "$1")" ;;
+    esac
+  fi
+  [ -d "$p" ] || die "Worktree nicht gefunden: $p"
+  if [ "$p" = "$REPO_ROOT" ]; then check_main_branch; fi
+  printf '%s\n' "$p"
 }
 
 cmd_path() {
-  [ -n "${1:-}" ] || die "path braucht <nr> oder <kuerzel>"
-  local wtpath
-  wtpath="$WT_BASE/$(resolve_slug "$1")"
-  [ -d "$wtpath" ] || die "Worktree nicht gefunden: $wtpath"
-  printf '%s\n' "$wtpath"
+  [ -n "${1:-}" ] || die "path braucht <nr>, <kuerzel> oder . (Hauptordner)"
+  resolve_path "$1"
+}
+
+pick_lines() { # Hauptrepo + alle Worktrees als 'name<TAB>branch<TAB>pfad', Hauptrepo zuerst
+  local here line path="" branch="" names=() branches=() paths=() width=1 i name mark
+  here=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }"; branch="(detached)" ;;
+      "branch "*)   branch="[${line#branch refs/heads/}]" ;;
+      "")
+        if [ -n "$path" ]; then
+          name=$(basename "$path")
+          names+=("$name"); branches+=("$branch"); paths+=("$path")
+          [ "${#name}" -le "$width" ] || width=${#name}
+        fi
+        path="" ;;
+    esac
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain; echo)
+  for i in "${!paths[@]}"; do   # git listet den Hauptbaum immer zuerst
+    mark=""
+    [ "${paths[$i]}" = "$REPO_ROOT" ] && mark="  (Hauptrepo)"
+    [ "${paths[$i]}" = "$here" ] && mark="$mark  ← hier"
+    printf '%-*s\t%s%s\t%s\n' "$width" "${names[$i]}" "${branches[$i]}" "$mark" "${paths[$i]}"
+  done
+}
+
+cmd_pick() { # Auswahl per fzf; Erklaerung auf stderr, nur der Pfad auf stdout
+  command -v fzf >/dev/null || die "fzf nicht gefunden - installieren (Fedora: sudo dnf install fzf) oder Nummer/Kuerzel angeben"
+  show "git -C '$REPO_ROOT' worktree list --porcelain | fzf" \
+       "Hauptrepo und Worktrees zur Auswahl zeigen (Tippen filtert, Enter waehlt, Esc bricht ab)"
+  local sel
+  sel=$(pick_lines | fzf --delimiter=$'\t' --with-nth=1,2 --height=40% --reverse --prompt='wt> ') || exit 1
+  sel=$(printf '%s\n' "$sel" | cut -f3)
+  if [ "$sel" = "$REPO_ROOT" ]; then check_main_branch; fi
+  printf '%s\n' "$sel"
+}
+
+need_ide() {
+  command -v "${IDE_CMD%% *}" >/dev/null \
+    || die "IDE-Befehl '$IDE_CMD' nicht gefunden - IDE_CMD in der Konfig anpassen"
+}
+
+open_ide() { # $1 = pfad
+  run "setsid -f $IDE_CMD '$1' >/dev/null 2>&1" \
+      "$(basename "$1") in der IDE oeffnen, vom Terminal abgekoppelt (neues oder selbes Fenster regelt PyCharm: 'Open project in')"
+}
+
+cmd_ide() {
+  need_ide
+  local p
+  if [ -n "${1:-}" ]; then p=$(resolve_path "$1"); else p=$(cmd_pick); fi
+  open_ide "$p"
 }
 
 cmd_link() { # nachtraeglich die LINK_DIRS in einen bestehenden Worktree einbinden
@@ -317,6 +404,7 @@ cmd_drop() {
     esac
   done
   [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
+  if is_main_repo_arg "$kuerzel"; then die "der Hauptordner wird nie entfernt - nur Worktrees"; fi
   local nr=""
   [[ "$kuerzel" =~ ^[0-9]+$ ]] && nr="$kuerzel"
   kuerzel=$(resolve_slug "$kuerzel")
@@ -336,6 +424,7 @@ cmd_drop() {
   [ "$force" -eq 1 ] && rmflag=" --force"
   run "git -C '$REPO_ROOT' worktree remove$rmflag '$wtpath'" \
       "Worktree entfernen (verweigert bei uncommitteten Aenderungen; dann bewusst 'wt drop $kuerzel --force')"
+  note "Falls $kuerzel in PyCharm offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner."
 
   if [ "$with_db" -eq 1 ] && [ -n "$nr" ] && [ -n "$DB_CONTAINER" ]; then
     run "docker exec $DB_CONTAINER dropdb -U $DB_USER '${DB_COPY_PREFIX}${nr}'" \
@@ -357,6 +446,8 @@ case "${1:-}" in
   drop) shift; cmd_drop "$@" ;;
   list) shift; cmd_list "$@" ;;
   path) shift; cmd_path "$@" ;;
+  pick) shift; cmd_pick "$@" ;;
+  ide)  shift; cmd_ide "$@" ;;
   run)  shift; cmd_run "$@" ;;
   link) shift; cmd_link "$@" ;;
   help) shift; case "${1:-}" in run) usage_run ;; *) usage ;; esac ;;

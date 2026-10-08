@@ -24,13 +24,23 @@ migrations mutates the shared schema for every other branch.
 ## Usage
 
 ```text
-wt new --mr <nr> [--db]     # disposable worktree from the MR ref (+ DB copy)
-wt new --branch <name>      # working worktree from a (remote) branch
-wt drop <nr|slug> [--db]    # remove worktree (and the DB copy)
-wt list                     # show worktrees and existing review DB copies
-wt path <nr|slug>           # print the worktree path, nothing else
-wt cd <nr|slug>             # cd into a worktree (needs the shell integration)
+wt new --mr <nr> [--db] [--ide]  # disposable worktree from the MR ref (+ DB copy, + open in IDE)
+wt new --branch <name> [--ide]   # working worktree from a (remote) branch
+wt drop <nr|slug> [--db]         # remove worktree (and the DB copy)
+wt list                          # show worktrees and existing review DB copies
+wt path <nr|slug|.>              # print the path, nothing else; `.` = main checkout
+wt pick                          # fuzzy picker (fzf): main checkout + all worktrees -> path
+wt ide [<nr|slug|.>]             # open in your IDE (IDE_CMD, default `pycharm`); no arg: picker
+wt cd [--ide] [<nr|slug|.>]      # cd there; no arg: picker (needs the shell integration)
 ```
+
+Everything is addressed by **folder**, not by branch: the picker lists folder
+names with the branch currently checked out there in brackets. The main
+checkout is `.` or its folder name (e.g. `wt cd myproject`) — so a worktree
+for the branch `main` (`wt new --branch main`) is simply `wt cd main`.
+If the main checkout is not on `TARGET_BRANCH` (and that branch exists
+locally), `wt` prints a hint whenever you switch there; it never switches
+branches itself. `wt drop` refuses the main checkout.
 
 Explanations go to **stderr**, results to **stdout** — so `cd "$(wt path 42)"`
 and other substitutions stay clean.
@@ -62,7 +72,7 @@ $ wt new --mr 42 --db
 * Fertig. Naechste Schritte von Hand:
   python app/manage.py runserver 127.0.0.1:8042 --settings=app.settings_review
 
-* In den Worktree wechseln (zurueck: cd -)
+* Wechseln nach mr-42 [detached] (zurueck: cd -)
   > cd ~/repos/myproject-worktrees/mr-42
 ```
 
@@ -73,8 +83,8 @@ prints the `cd` line for you to run yourself.)
 
 A script runs as a child process and can never change its parent shell's
 directory — that is why tools like `nvm` or `z` are shell functions. `wt.zsh`
-wraps the script in a small function: after `wt new …` it asks the script for
-the path (`wt path`) and does the `cd` itself, shown like every other step.
+wraps the script in a small function: it asks the script for the path
+(`wt path` or `wt pick`) and does the `cd` itself, shown like every other step.
 
 ```bash
 echo 'source /path/to/toolkit/dev/wt/wt.zsh' >> ~/.zshrc
@@ -83,9 +93,30 @@ echo 'source /path/to/toolkit/dev/wt/wt.zsh' >> ~/.zshrc
 With it loaded:
 
 - `wt new …` ends inside the new worktree (`cd -` takes you back)
-- `wt cd <nr|slug>` jumps into an existing worktree
+- `wt cd <nr|slug>` jumps into an existing worktree, `wt cd .` back to the
+  main checkout, plain `wt cd` opens the picker (Esc leaves you where you are)
+- `wt cd --ide …` additionally opens the target in your IDE
 - everything else passes through unchanged
 - non-interactive shells (agents, scripts, hooks) never get their cwd moved
+
+## PyCharm (and other IDEs)
+
+`wt ide <x>` runs `IDE_CMD <path>` detached from the terminal. Whether that
+opens a new window or replaces the current one is PyCharm's setting
+*Settings | Appearance & Behavior | System Settings | Open project in*.
+Notes from setting this up with PyCharm 2026.2 (verify against your version):
+
+- **One window per worktree** works best: each window has exactly one Git root,
+  so the commit tool commits to that worktree's branch. All windows share one
+  IDE process and memory; close a worktree's window when you're done
+  (`wt drop` reminds you).
+- There is **no documented command-line flag to *attach*** a directory to an
+  open project — attaching is only a button in the "open project" dialog.
+- PyCharm's own **Git | Worktrees** tab (switch by double-click) only works for
+  projects with a single Git root. Attached worktrees or leftover entries under
+  *Settings | Version Control | Directory Mappings* turn the project into a
+  multi-root project and hide the tab. *Remove from Project View* removes the
+  folder but **not** its VCS mapping — remove that one separately.
 
 ## Configuration
 
@@ -101,6 +132,7 @@ internal names (containers, databases, paths) — keep them local.
 ## Requirements
 
 - Bash, Git ≥ 2.23
+- `wt pick` and argument-less `wt cd` / `wt ide` need [fzf](https://github.com/junegunn/fzf)
 - `--db` steps additionally need Docker **or** Podman (docker CLI emulation)
   with a running Postgres container
 - Tested on Fedora Linux 44 against a self-hosted GitLab; the
@@ -111,4 +143,5 @@ internal names (containers, databases, paths) — keep them local.
 ```bash
 ln -s "$(pwd)/wt" ~/.local/bin/wt                  # from this directory; ~/.local/bin on PATH
 echo "source $(pwd)/wt.zsh" >> ~/.zshrc            # optional: auto-cd + `wt cd`
+sudo dnf install fzf                               # optional: the picker
 ```
