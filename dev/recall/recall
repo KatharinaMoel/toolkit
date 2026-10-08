@@ -42,10 +42,40 @@ die() {
 
 # Any failed exit - die, or a command stopped by set -e - waits for a key,
 # so a hotkey window does not close before the message can be read.
-trap 'rc=$?; [ "$rc" -eq 0 ] || pause' EXIT
+HELP_FLAG_OWNED=""          # set only in the process that runs the list
+trap 'rc=$?; [ -z "$HELP_FLAG_OWNED" ] || rm -f "$HELP_FLAG_OWNED"; [ "$rc" -eq 0 ] || pause' EXIT
 
 need() { # need <command> <fedora-package>
   command -v "$1" >/dev/null 2>&1 || die "'$1' is missing - install it with: sudo dnf install $2"
+}
+
+keys_help() {
+  cat <<'EOF'
+recall - keys
+
+In the list
+  enter       use the entry
+                ✎ text      copy to clipboard, close
+                ⌘ command   copy to clipboard, close
+                ☰ procedure read it (rendered)
+  alt-enter   ask the assistant with the search text
+              (enter without any match does the same)
+  f1          this help / back to the preview
+  esc         quit
+
+Reading a procedure
+  q           back to the list
+  /           search, n next match
+
+After an answer
+  n           follow up in a full Claude Code session
+  enter       back to the list
+  esc         quit
+
+Start
+  recall          everything
+  recall texts    prepared texts only
+EOF
 }
 
 usage() {
@@ -54,15 +84,12 @@ recall - quick access to commands, procedures and prepared texts
 
   recall          search everything
   recall texts    prepared texts only (<repo>/.reviews/)
-
-In the list:
-  enter           use the entry: copy a text or command, read a procedure
-  alt-enter       ask the assistant with the current search text
-                  (enter without any match does the same)
-  esc             quit
+  recall --keys   key help (also f1 in the list)
 
 Config: ~/.config/recall/recall.conf (see example.conf)
+
 EOF
+  keys_help
 }
 
 # ---------- config ----------
@@ -73,6 +100,7 @@ PROCEDURE_GLOBS=()           # glob patterns for procedure notes
 PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
 ASSISTANT="claude"           # assistant backend; v1 knows only "claude"
 ASSIST_MODEL="sonnet"        # model for the assistant; empty = Claude Code's default
+GLOW_STYLE="dark"            # glow style for Markdown: dark, light, notty, ...
 ASSIST_PROMPT="Answer briefly, in German. First look things up in the allowed folders with Read, Grep and Glob. You are read-only. Name the note your answer comes from."
 
 CONF="$HOME/.config/recall/recall.conf"
@@ -143,12 +171,34 @@ src_procedures() { # notes from PROCEDURE_GLOBS, title from front matter
   done | sort -t $'\t' -k1,1 -f | cut -f2-
 }
 
+# ---------- Markdown display: glow renders it, bat is the fallback ----------
+show_file() { # show_file <file> preview|page
+  local width=${FZF_PREVIEW_COLUMNS:-80}
+  if [[ $1 == *.md ]] && command -v glow >/dev/null 2>&1; then
+    if [ "$2" = page ]; then glow -p -s "$GLOW_STYLE" "$1"
+    else glow -s "$GLOW_STYLE" -w "$width" "$1"; fi
+  elif [ "$2" = page ]; then
+    bat --paging=always --style=plain "$1"
+  else
+    bat --color=always --style=plain --paging=never "$1"
+  fi
+}
+
+# f1 in the list flips a flag file; the preview shows the key help while it exists.
+toggle_help() {
+  [ -n "${RECALL_HELP_FLAG:-}" ] || return 0
+  if [ -e "$RECALL_HELP_FLAG" ]; then rm -f "$RECALL_HELP_FLAG"; else : > "$RECALL_HELP_FLAG"; fi
+}
+
 # ---------- preview (called by fzf with the whole line) ----------
 preview() {
   local kind target expl kw
+  if [ -n "${RECALL_HELP_FLAG:-}" ] && [ -e "$RECALL_HELP_FLAG" ]; then
+    keys_help; return 0
+  fi
   IFS=$'\t' read -r kind target _ expl kw <<<"$1"
   case "$kind" in
-    text|proc) bat --color=always --style=plain --paging=never "$target" ;;
+    text|proc) show_file "$target" preview ;;
     cmd) printf '%s\n\n%s\n\nkeywords: %s\n' "$target" "$expl" "$kw" ;;
   esac
 }
@@ -165,8 +215,9 @@ pick() { # pick <mode> <query>; sets PICK_*; returns 1 on esc
     } | fzf --ansi --delimiter=$'\t' --with-nth=3 \
             --layout=reverse --border=rounded --border-label=' recall ' \
             --prompt='› ' --query="$query" \
-            --header='enter: use · alt-enter: ask assistant · esc: quit' \
+            --header='enter: use · alt-enter: ask assistant · f1: help · esc: quit' \
             --preview="'$SELF' --preview {}" --preview-window='right,55%,wrap' \
+            --bind="f1:execute-silent('$SELF' --toggle-help)+refresh-preview" \
             --print-query --expect=alt-enter --bind=enter:accept-or-print-query
   ) || rc=$?
   # 0 = accepted, 1 = no match (alt-enter with an empty result), 130 = esc
@@ -192,7 +243,7 @@ notify() {
 # ---------- actions ----------
 copy_text() { wl-copy < "$1"; notify "Copied: ${1##*/}"; }
 copy_cmd()  { printf '%s' "$1" | wl-copy -n; notify "Copied: $1"; }
-read_proc() { bat --paging=always --style=plain "$1"; }
+read_proc() { show_file "$1" page; }
 
 # ask <question>; returns 0 = back to the list, 10 = quit
 ask() {
@@ -252,11 +303,16 @@ main() {
   case "${1:-}" in
     -h|--help|help) usage; exit 0 ;;
     --preview) preview "${2:-}"; exit 0 ;;
+    --keys) keys_help; exit 0 ;;
+    --toggle-help) toggle_help; exit 0 ;;
     texts) mode=texts ;;
     "") ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
   need fzf fzf; need bat bat; need wl-copy wl-clipboard
+  RECALL_HELP_FLAG=$(mktemp -u "${TMPDIR:-/tmp}/recall-help.XXXXXX")
+  HELP_FLAG_OWNED=$RECALL_HELP_FLAG
+  export RECALL_HELP_FLAG
 
   local query="" kind target rest rc
   while true; do

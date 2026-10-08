@@ -10,7 +10,7 @@ texts in files, and copying them means `cat <file> | wl-copy`.
 |------|-------|------------|
 | ✎ | prepared text from `<repo>/.reviews/` (newest first) | copies the content, shows a desktop notification, quits |
 | ⌘ | command from your Markdown command table | copies the command (no trailing newline), quits |
-| ☰ | procedure or how-to note | opens it with `bat`; `q` returns to the list |
+| ☰ | procedure or how-to note | shows it rendered with `glow` (fallback `bat`); `q` returns to the list |
 
 When nothing fits, the assistant answers: `alt-enter` (or `enter` without a
 match) sends your search text to Claude Code — read-only, inside your notes.
@@ -23,17 +23,21 @@ session.
 recall          # everything
 recall texts    # prepared texts only
 recall --help
+recall --keys   # key help only
 ```
 
-In the list: `enter` use · `alt-enter` ask assistant · `esc` quit.
-The preview on the right shows the file, or a command's explanation and keywords.
+In the list: `enter` use · `alt-enter` ask assistant · `f1` help · `esc` quit.
+The preview on the right shows the file (Markdown rendered by `glow`), or a
+command's explanation and keywords; `f1` swaps it for the key help and back.
 
 ## Requirements
 
 - Bash, `fzf`, `bat`, `wl-copy` (Wayland), optional `notify-send`
+- Optional `glow` to render Markdown notes (headings, tables, bold) instead of
+  showing their source; `GLOW_STYLE` picks its style
 - For the assistant: [Claude Code](https://code.claude.com) (`claude`) and `jq`
 
-Fedora: `sudo dnf install fzf bat wl-clipboard jq libnotify`
+Fedora: `sudo dnf install fzf bat wl-clipboard jq libnotify glow`
 
 ## Setup
 
@@ -85,5 +89,5 @@ claude -p "<question>" --session-id <uuid> --model sonnet --safe-mode \
 bash dev/recall/test_recall.sh
 ```
 
-Runs in a throwaway `HOME` with stubs for `fzf`, `bat`, `wl-copy`,
+Runs in a throwaway `HOME` with stubs for `fzf`, `bat`, `glow`, `wl-copy`,
 `notify-send` and `claude`; needs `jq`.

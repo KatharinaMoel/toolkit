@@ -19,7 +19,7 @@ mkdir -p "$HOME/.config/recall"
 SYS="$TMP/sysbin"
 mkdir -p "$SYS"
 for t in bash env cat sed awk sort cut stat realpath basename dirname mkdir \
-         printf grep head tail tr jq rm touch ln wc mv; do
+         printf grep head tail tr jq rm touch ln wc mv mktemp; do
   p=$(command -v "$t") || { echo "missing tool for tests: $t"; exit 1; }
   ln -s "$p" "$SYS/$t"
 done
@@ -72,6 +72,12 @@ printf '%s\n' "$@" >> "$BAT_LOG"
 for last; do :; done
 cat "$last"
 EOF
+cat > "$STUBS/glow" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$GLOW_LOG"
+for last; do :; done
+printf 'GLOW: '; cat "$last"
+EOF
 # claude stub: logs arguments, working directory and API variables; prints a
 # short stream-json answer, or an error result when $CLAUDE_FAIL is set.
 cat > "$STUBS/claude" <<'EOF'
@@ -92,7 +98,8 @@ chmod +x "$STUBS"/*
 export PATH="$STUBS:$SYS"
 export FZF_SCRIPT="$TMP/fzf.script" FZF_COUNT="$TMP/fzf.count" FZF_IN="$TMP/fzf.in" \
        FZF_ARGS="$TMP/fzf.args" CLIP="$TMP/clip" CLIP_ARGS="$TMP/clip.args" \
-       NOTIFY_LOG="$TMP/notify.log" BAT_LOG="$TMP/bat.log" CLAUDE_LOG="$TMP/claude.log"
+       NOTIFY_LOG="$TMP/notify.log" BAT_LOG="$TMP/bat.log" CLAUDE_LOG="$TMP/claude.log" \
+       GLOW_LOG="$TMP/glow.log"
 
 # ---------- fixtures ----------
 VAULT="$HOME/Mein Vault"          # space on purpose
@@ -172,7 +179,7 @@ expect_not() { # name needle haystack
 }
 reset() { # reset <fzf steps...>
   rm -f "$FZF_COUNT" "$FZF_IN".* "$FZF_ARGS".* "$CLIP" "$CLIP_ARGS" \
-        "$NOTIFY_LOG" "$BAT_LOG" "$CLAUDE_LOG"
+        "$NOTIFY_LOG" "$BAT_LOG" "$CLAUDE_LOG" "$GLOW_LOG"
   printf '%s\n' "$@" > "$FZF_SCRIPT"
 }
 display() { cut -f3 "$1" | sed 's/\x1b\[[0-9;]*m//g'; } # visible column, without colours
@@ -181,6 +188,12 @@ display() { cut -f3 "$1" | sed 's/\x1b\[[0-9;]*m//g'; } # visible column, withou
 out=$("$RECALL" --help 2>&1); rc=$?
 expect_eq  "help: exit 0" 0 "$rc"
 expect_has "help: names alt-enter" "alt-enter" "$out"
+expect_has "help: includes the key help" "f1" "$out"
+keys=$("$RECALL" --keys 2>&1); rc=$?
+expect_eq  "keys: exit 0" 0 "$rc"
+for k in "enter" "alt-enter" "esc" "f1" "q" "n " "recall texts"; do
+  expect_has "keys: names '$k'" "$k" "$keys"
+done
 "$RECALL" bogus </dev/null >/dev/null 2>&1; rc=$?
 expect_eq  "unknown argument: exit 1" 1 "$rc"
 
@@ -207,6 +220,8 @@ expect_eq "order: texts, commands, procedures" "✎✎✎⌘⌘⌘☰☰☰" \
 args=$(cat "$FZF_ARGS.1")
 expect_has "fzf: shows only the display column" "--with-nth=3" "$args"
 expect_has "fzf: enter without match prints the query" "--bind=enter:accept-or-print-query" "$args"
+expect_has "fzf: f1 toggles the help" "f1:execute-silent(" "$args"
+expect_has "fzf: footer names f1" "f1: help" "$args"
 
 reset ESC
 "$RECALL" texts </dev/null >/dev/null 2>&1
@@ -250,8 +265,14 @@ expect_has "command: copied without newline" "-n" "$(cat "$CLIP_ARGS")"
 reset "PICK Git-Branches" ESC
 "$RECALL" </dev/null >/dev/null 2>&1; rc=$?
 expect_eq  "procedure: back to the list afterwards" 2 "$(cat "$FZF_COUNT")"
-expect_has "procedure: read with pager" "--paging=always" "$(cat "$BAT_LOG")"
-expect_has "procedure: the right file" "$VAULT/anleitungen/git-aufraeumen.md" "$(cat "$BAT_LOG")"
+expect_has "procedure: rendered with glow in a pager" $'-p' "$(cat "$GLOW_LOG")"
+expect_has "procedure: the right file" "$VAULT/anleitungen/git-aufraeumen.md" "$(cat "$GLOW_LOG")"
+
+mv "$STUBS/glow" "$TMP/glow.off"
+reset "PICK Git-Branches" ESC
+"$RECALL" </dev/null >/dev/null 2>&1
+expect_has "procedure without glow: bat pager" "--paging=always" "$(cat "$BAT_LOG")"
+mv "$TMP/glow.off" "$STUBS/glow"
 
 # ---------- preview ----------
 line=$(grep -F 'wt pick' "$FZF_IN.1")
@@ -262,7 +283,15 @@ Worktree aus Liste waehlen
 
 keywords: worktree auswahl wt" "$out"
 line=$(grep -F 'alt.txt' "$FZF_IN.1")
-expect_eq "preview: text via bat" "alter Text" "$("$RECALL" --preview "$line" 2>/dev/null)"
+expect_eq "preview: .txt text via bat" "alter Text" "$("$RECALL" --preview "$line" 2>/dev/null)"
+line=$(grep -F 'Git-Branches' "$FZF_IN.1")
+expect_has "preview: procedure rendered with glow" "GLOW: ---" "$("$RECALL" --preview "$line" 2>/dev/null)"
+export RECALL_HELP_FLAG="$TMP/help.flag"
+"$RECALL" --toggle-help
+expect_has "preview: f1 shows the key help" "alt-enter" "$("$RECALL" --preview "$line" 2>/dev/null)"
+"$RECALL" --toggle-help
+expect_has "preview: second f1 shows the entry again" "GLOW: ---" "$("$RECALL" --preview "$line" 2>/dev/null)"
+unset RECALL_HELP_FLAG
 
 # ---------- assistant ----------
 export ANTHROPIC_API_KEY=should-not-reach-claude
