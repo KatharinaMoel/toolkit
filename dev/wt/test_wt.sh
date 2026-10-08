@@ -104,6 +104,40 @@ if [[ "$err" == *"gibt-es-nicht"* ]]; then ok "ide mit fehlendem IDE_CMD -> Hinw
 else fail "ide mit fehlendem IDE_CMD -> Hinweis" "$err"; fi
 printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
 
+# ---------- wt run: Interpreter ----------
+cat > "$STUBS/python" <<'EOF'
+#!/usr/bin/env bash
+echo "PATH-PYTHON $*"
+EOF
+mkdir -p "$REPO/.venv/bin"
+cat > "$REPO/.venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+echo "REPO-VENV $*"
+EOF
+chmod +x "$STUBS/python" "$REPO/.venv/bin/python"
+cd "$BASE/mr-42" || exit 1
+printf 'IDE_CMD="fake-ide"\nRUN_PYTHON=".venv/bin/python"\n' > "$HOME/.config/wt/demo.conf"
+out=$(env -u VIRTUAL_ENV "$WT" run 42 shell 2>/dev/null)
+expect_eq "run ohne venv nutzt RUN_PYTHON"   "REPO-VENV manage.py shell" "$out"
+out=$(VIRTUAL_ENV=/irgendwo "$WT" run 42 shell 2>/dev/null)
+expect_eq "run: aktives venv hat Vorrang"    "PATH-PYTHON manage.py shell" "$out"
+err=$(VIRTUAL_ENV=/irgendwo "$WT" run 42 shell 2>&1 >/dev/null)
+if [[ "$err" == *"Python-Umgebung"*"/irgendwo"*"Interpreter:"* ]]; then ok "run nennt aktives venv und Interpreter vorab"
+else fail "run nennt aktives venv und Interpreter vorab" "$err"; fi
+printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
+out=$(env -u VIRTUAL_ENV "$WT" run 42 shell 2>/dev/null)
+expect_eq "run ohne RUN_PYTHON -> python"    "PATH-PYTHON manage.py shell" "$out"
+printf 'IDE_CMD="fake-ide"\nRUN_PYTHON=".venv/bin/gibtsnicht"\n' > "$HOME/.config/wt/demo.conf"
+printf 'IDE_CMD="fake-ide"\nRUN_PYTHON=".venv/bin/python"\n' > "$HOME/.config/wt/demo.conf"
+err=$(env -u VIRTUAL_ENV "$WT" run 42 shell 2>&1 >/dev/null)
+if [[ "$err" == *"RUN_PYTHON"*"$REPO/.venv/bin/python"*"Version:"* ]]; then ok "run nennt RUN_PYTHON-Pfad und Version vorab"
+else fail "run nennt RUN_PYTHON-Pfad und Version vorab" "$err"; fi
+printf 'IDE_CMD="fake-ide"\nRUN_PYTHON=".venv/bin/gibtsnicht"\n' > "$HOME/.config/wt/demo.conf"
+err=$(env -u VIRTUAL_ENV "$WT" run 42 shell 2>&1 >/dev/null)
+if [[ "$err" == *"gibtsnicht"*"nicht ausfuehrbar"* ]]; then ok "run mit falschem RUN_PYTHON -> Fehler"
+else fail "run mit falschem RUN_PYTHON -> Fehler" "$err"; fi
+printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
+
 # ---------- Hauptordner nicht auf TARGET_BRANCH ----------
 cd "$REPO" || exit 1
 err=$("$WT" path . 2>&1 >/dev/null)

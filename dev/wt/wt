@@ -91,6 +91,7 @@ RUN_HINT=""                    # Startbefehl-Vorschlag; {port} und {db} werden e
 LINK_DIRS=()                   # gitignorierte Ordner, die per Symlink aus dem Hauptbaum kommen (z.B. media)
 RUN_MANAGE="manage.py"         # Pfad zu manage.py im Worktree (fuer 'wt run')
 RUN_SETTINGS=""                # Settings-Modul fuer 'wt run'; leer = nichts anhaengen
+RUN_PYTHON=""                  # Interpreter fuer 'wt run', wenn kein venv aktiv ist (relativ zum Hauptbaum oder absolut)
 IDE_CMD="pycharm"              # Befehl fuer 'wt ide'; bekommt den Ordner als Argument
 
 for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
@@ -343,8 +344,9 @@ wt run <nr|kuerzel> [manage.py-Argumente] [--port N]
 
   Fuehrt manage.py im Worktree aus - mit den Review-Settings aus der Konfig
   (RUN_SETTINGS) und dem Port 8000 + (nr mod 1000). Funktioniert im Hauptbaum
-  und in jedem Worktree des Repos, ohne vorher 'wt cd'. Nutzt das gerade
-  aktive venv ('python').
+  und in jedem Worktree des Repos, ohne vorher 'wt cd'. Interpreter: das
+  gerade aktive venv ('python'); ohne aktives venv RUN_PYTHON aus der Konfig
+  (z.B. das venv des Hauptbaums), sonst 'python' aus dem System.
 
   wt run 721                    runserver auf 127.0.0.1:<port>
   wt run 721 --port 9000        runserver auf anderem Port
@@ -386,11 +388,26 @@ cmd_run() {
   if [ -n "$RUN_SETTINGS" ] && [ "$has_settings" -eq 0 ]; then
     args+=("--settings=$RUN_SETTINGS")
   fi
-  [ -n "${VIRTUAL_ENV:-}" ] || note "Hinweis: kein venv aktiv - 'python' kommt aus dem System."
+  local py="python" src
+  if [ -n "${VIRTUAL_ENV:-}" ]; then
+    src="aktives venv $VIRTUAL_ENV"
+  elif [ -n "$RUN_PYTHON" ]; then
+    py="$RUN_PYTHON"
+    [[ "$py" = /* ]] || py="$REPO_ROOT/$py"
+    [ -x "$py" ] || die "RUN_PYTHON '$py' ist nicht ausfuehrbar - Pfad in der Konfig pruefen"
+    src="kein venv aktiv, RUN_PYTHON aus der Konfig"
+  else
+    src="kein venv aktiv, 'python' kommt aus dem System (RUN_PYTHON in der Konfig setzen oder venv aktivieren)"
+  fi
+  local pyfile pyver
+  pyfile=$(command -v "$py" 2>/dev/null || echo "$py")
+  pyver=$("$py" --version 2>&1 || echo "Version unbekannt")
+  note "Python-Umgebung: $src"
+  printf '    Interpreter: %s\n    Version:     %s\n' "$pyfile" "$pyver" >&2
 
   local quoted
   quoted=$(printf ' %q' "${args[@]}")
-  run "cd '$wtpath' && python $RUN_MANAGE$quoted" \
+  run "cd '$wtpath' && '$py' $RUN_MANAGE$quoted" \
       "manage.py im Worktree $(basename "$wtpath") ausfuehren (Ctrl+C beendet den Server)"
 }
 

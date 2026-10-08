@@ -30,6 +30,7 @@ wt drop <nr|slug> [--db]         # remove worktree (and the DB copy)
 wt list                          # show worktrees and existing review DB copies
 wt path <nr|slug|.>              # print the path, nothing else; `.` = main checkout
 wt pick                          # fuzzy picker (fzf): main checkout + all worktrees -> path
+wt run <nr|slug> [args]          # manage.py in that worktree (default: runserver on 8000 + nr mod 1000)
 wt ide [<nr|slug|.>]             # open in your IDE (IDE_CMD, default `pycharm`); no arg: picker
 wt cd [--ide] [<nr|slug|.>]      # cd there; no arg: picker (needs the shell integration)
 ```
@@ -41,6 +42,9 @@ for the branch `main` (`wt new --branch main`) is simply `wt cd main`.
 If the main checkout is not on `TARGET_BRANCH` (and that branch exists
 locally), `wt` prints a hint whenever you switch there; it never switches
 branches itself. `wt drop` refuses the main checkout.
+
+`wt run` uses the active venv (`python`); without one it falls back to `RUN_PYTHON`
+from the config (relative to the main checkout, e.g. its venv), then to `python` from PATH.
 
 Explanations go to **stderr**, results to **stdout** — so `cd "$(wt path 42)"`
 and other substitutions stay clean.
