@@ -227,6 +227,20 @@ reset ESC
 "$RECALL" texts </dev/null >/dev/null 2>&1
 expect_eq "recall texts: only texts" "✎✎✎" "$(display "$FZF_IN.1" | awk '{ printf "%s", $1 }')"
 
+# Colours: muted accents when NO_COLOR is unset; the visible text stays the same.
+expect_has "fzf: NO_COLOR -> --no-color" "--no-color" "$(cat "$FZF_ARGS.1")"
+reset ESC
+env -u NO_COLOR "$RECALL" </dev/null >/dev/null 2>&1
+coloured=$(cut -f3 "$FZF_IN.1")
+expect_has "colours: fzf theme passed" "--color=" "$(cat "$FZF_ARGS.1")"
+expect_eq  "colours: stripped list equals the plain list" "$list" "$(display "$FZF_IN.1")"
+expect_not "colours: plain list carries no escape codes at NO_COLOR" $'\033' "$(reset ESC; "$RECALL" </dev/null >/dev/null 2>&1; cut -f3 "$FZF_IN.1")"
+expect_has "colours: text icon muted green"  $'\033[38;5;108m✎' "$coloured"
+expect_has "colours: command icon muted blue" $'\033[38;5;110m⌘' "$coloured"
+expect_has "colours: procedure icon muted sand" $'\033[38;5;180m☰' "$coloured"
+expect_not "colours: no bright 16-colour codes in the list" $'\033[9' "$coloured"
+expect_not "colours: no bold in the list" $'\033[1m' "$coloured"
+
 # Missing sources are not an error.
 mv "$HOME/.config/recall/recall.conf" "$TMP/conf.bak"
 cat > "$HOME/.config/recall/recall.conf" <<EOF

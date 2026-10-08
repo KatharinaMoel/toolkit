@@ -35,6 +35,8 @@ command's explanation and keywords; `f1` swaps it for the key help and back.
 - Bash, `fzf`, `bat`, `wl-copy` (Wayland), optional `notify-send`
 - Optional `glow` to render Markdown notes (headings, tables, bold) instead of
   showing their source; `GLOW_STYLE` picks its style
+- The list uses calm 256-colour accents per kind (`COLOR_*`, `FZF_COLORS` in the config);
+  `NO_COLOR=1` turns them off
 - For the assistant: [Claude Code](https://code.claude.com) (`claude`) and `jq`
 
 Fedora: `sudo dnf install fzf bat wl-clipboard jq libnotify glow`

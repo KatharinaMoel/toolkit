@@ -18,9 +18,6 @@ if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
 else
   C_EXPL=""; C_CMD=""; C_NOTE=""; C_ERR=""; C_OFF=""
 fi
-# Keywords in the list are dimmed; fzf renders the codes because of --ansi.
-DIM=$'\033[2m'; UNDIM=$'\033[0m'
-
 show() { # show "<command>" "<one-line explanation>"
   printf '\n%s* %s%s\n' "$C_EXPL" "$2" "$C_OFF" >&2
   printf '%s  > %s%s\n' "$C_CMD" "$1" "$C_OFF" >&2
@@ -101,11 +98,29 @@ PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
 ASSISTANT="claude"           # assistant backend; v1 knows only "claude"
 ASSIST_MODEL="sonnet"        # model for the assistant; empty = Claude Code's default
 GLOW_STYLE="dark"            # glow style for Markdown: dark, light, notty, ...
+COLOR_TEXT=108               # 256-colour numbers of the list icons: muted green,
+COLOR_CMD=110                #   muted blue,
+COLOR_PROC=180               #   muted sand
+COLOR_FADE=245               # repo name and explanation (grey)
+COLOR_KEYWORDS=240           # keywords after a command (darker grey)
+FZF_COLORS="fg+:-1,bg+:236,hl:179,hl+:179,pointer:110,prompt:110,info:242,header:242,border:240,label:245,separator:238,gutter:-1"
 ASSIST_PROMPT="Answer briefly, in German. First look things up in the allowed folders with Read, Grep and Glob. You are read-only. Name the note your answer comes from."
 
 CONF="$HOME/.config/recall/recall.conf"
 # shellcheck source=/dev/null
 [ -f "$CONF" ] && source "$CONF"
+
+# List colours: calm 256-colour accents, no bright or saturated tones. fzf renders
+# the codes because of --ansi. NO_COLOR switches all of it off.
+if [ -z "${NO_COLOR:-}" ]; then
+  esc() { printf '\033[38;5;%sm' "$1"; }
+  I_TEXT=$(esc "$COLOR_TEXT"); I_CMD=$(esc "$COLOR_CMD"); I_PROC=$(esc "$COLOR_PROC")
+  FADE=$(esc "$COLOR_FADE"); DIM=$(esc "$COLOR_KEYWORDS"); RST=$'\033[0m'
+  FZF_COLOR_ARGS=(--color="$FZF_COLORS")
+else
+  I_TEXT=""; I_CMD=""; I_PROC=""; FADE=""; DIM=""; RST=""
+  FZF_COLOR_ARGS=(--no-color)
+fi
 
 # ---------- sources ----------
 # Each prints lines "<kind>\t<target>\t<display>" (commands add "\t<explanation>\t<keywords>").
@@ -123,7 +138,8 @@ src_texts() { # newest first; duplicates via symlinks collapse to one entry
         real=$(realpath "$f")
         [ -z "${seen[$real]:-}" ] || continue
         seen[$real]=1
-        printf '%s\ttext\t%s\t✎ %s · %s\n' "$(stat -c %Y "$real")" "$real" "$repo" "${f##*/}"
+        printf '%s\ttext\t%s\t%s✎%s %s%s ·%s %s\n' "$(stat -c %Y "$real")" "$real" \
+          "$I_TEXT" "$RST" "$FADE" "$repo" "$RST" "${f##*/}"
       done
     done
   done | sort -t $'\t' -k1,1nr | cut -f2-
@@ -131,7 +147,7 @@ src_texts() { # newest first; duplicates via symlinks collapse to one entry
 
 src_commands() { # tables "| command | explanation | keywords |" below "## <tool>"
   [ -n "$COMMANDS_FILE" ] && [ -f "$COMMANDS_FILE" ] || return 0
-  awk -v dim="$DIM" -v undim="$UNDIM" '
+  awk -v icon="$I_CMD" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
     function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
     /^##[ \t]/ { heading = trim(substr($0, 3)) }
     !/^[ \t]*\|/ { intable = 0; next }
@@ -147,7 +163,7 @@ src_commands() { # tables "| command | explanation | keywords |" below "## <tool
       gsub(/\001/, "|", cmd); gsub(/\001/, "|", expl); gsub(/\001/, "|", kw)
       if (cmd == "") next
       kw = trim(kw " " heading)
-      printf "cmd\t%s\t⌘ %s — %s  %s%s%s\t%s\t%s\n", cmd, cmd, expl, dim, kw, undim, expl, kw
+      printf "cmd\t%s\t%s⌘%s %s %s— %s%s  %s%s%s\t%s\t%s\n", cmd, icon, rst, cmd, fade, expl, rst, dim, kw, rst, expl, kw
     }' "$COMMANDS_FILE"
 }
 
@@ -166,7 +182,7 @@ src_procedures() { # notes from PROCEDURE_GLOBS, title from front matter
                    NR > 1 && $0 == "---" { exit }
                    /^title:[ \t]*/ { sub(/^title:[ \t]*/, ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$f")
       [ -n "$title" ] || title=${name%.md}
-      printf '%s\tproc\t%s\t☰ %s\n' "$title" "$f" "$title"
+      printf '%s\tproc\t%s\t%s☰%s %s\n' "$title" "$f" "$I_PROC" "$RST" "$title"
     done < <(compgen -G "$pattern" || true)
   done | sort -t $'\t' -k1,1 -f | cut -f2-
 }
@@ -214,6 +230,7 @@ pick() { # pick <mode> <query>; sets PICK_*; returns 1 on esc
       if [ "$mode" = all ]; then src_commands; src_procedures; fi
     } | fzf --ansi --delimiter=$'\t' --with-nth=3 \
             --layout=reverse --border=rounded --border-label=' recall ' \
+            "${FZF_COLOR_ARGS[@]}" \
             --prompt='› ' --query="$query" \
             --header='enter: use · alt-enter: ask assistant · f1: help · esc: quit' \
             --preview="'$SELF' --preview {}" --preview-window='right,55%,wrap' \
