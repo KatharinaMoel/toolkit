@@ -3,7 +3,13 @@
 Collected from the first hand test (week of 2026-10-09). Not scheduled; evaluate
 at the end of the trial week (see the recall project note in the vault).
 
-## 1. Prepared texts without typing a search term
+Status 2026-10-09: ideas 1 and 3 are done (see DESIGN.md); idea 2 has a likely
+fix that still needs a hand test.
+
+## 1. Prepared texts without typing a search term — done
+
+Solved differently: the list starts grouped, with the texts of the start repo
+(or the newest) open at the top; see DESIGN.md.
 
 Finding a commit message means typing `commit-message` first, which defeats
 the point of a quick pick.
@@ -18,10 +24,14 @@ the point of a quick pick.
   supports mouse events (to be checked, not verified).
 - The same switch applies to the other marked kinds (`⌘`, `☰`), not only `✎`.
 
-## 2. Default window size 130 x 30 — parked, unsolved
+## 2. Default window size 130 x 30 — `--maximize`, to be hand-tested
+
+`ptyxis --help-all` (50.1) lists `--maximize` and `--fullscreen`; the size
+attempts below never tried them. Next: add `--maximize` to the hotkey command
+and measure with `tput cols; tput lines`.
 
 The window is too small by default. The hotkeys (GNOME custom shortcuts custom3 / custom4)
-start `ptyxis -s --new-window -T recall -- /home/katha/.local/bin/recall [texts]`.
+start `ptyxis -s --new-window -T recall -- ~/.local/bin/recall [texts]`.
 `ptyxis --help-all` shows no geometry option (Ptyxis 50.1). Decision on 2026-10-08:
 leave it for now and resize the window by hand; revisit later.
 
@@ -70,7 +80,7 @@ Every attempt gave **80 x 24**.
 Settings state left behind: `restore-window-size` false, `window-size` back to (130, 30)
 (may have been overwritten again by Ptyxis since).
 
-## 3. Calmer visual hierarchy
+## 3. Calmer visual hierarchy — done
 
 Make entries scannable at a glance without loud colours.
 

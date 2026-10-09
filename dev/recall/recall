@@ -2,12 +2,13 @@
 # recall - one searchable list for forgotten commands, procedures and prepared
 #          texts, with an assistant as the fallback for fuzzy questions.
 #
-#   recall          everything
+#   recall          everything, grouped; typing searches all entries
 #   recall texts    prepared texts only (from <repo>/.reviews/)
 #
 # Generic engine; personal paths come from ~/.config/recall/recall.conf.
 # Without a config, recall only lists texts from ~/GitRepos/*/.reviews and
-# ~/PycharmProjects/*/.reviews.
+# ~/PycharmProjects/*/.reviews. DESIGN.md next to this script explains the
+# grouped list and the text lifecycle.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -39,26 +40,81 @@ die() {
 
 # Any failed exit - die, or a command stopped by set -e - waits for a key,
 # so a hotkey window does not close before the message can be read.
-HELP_FLAG_OWNED=""          # set only in the process that runs the list
-trap 'rc=$?; [ -z "$HELP_FLAG_OWNED" ] || rm -f "$HELP_FLAG_OWNED"; [ "$rc" -eq 0 ] || pause' EXIT
+RUN_OWNED=""                # set only in the process that runs the list
+trap 'rc=$?; [ -z "$RUN_OWNED" ] || rm -rf "$RUN_OWNED"; [ "$rc" -eq 0 ] || pause' EXIT
 
 need() { # need <command> <fedora-package>
   command -v "$1" >/dev/null 2>&1 || die "'$1' is missing - install it with: sudo dnf install $2"
 }
 
+# ---------- config ----------
+VAULT=""                     # knowledge base root; empty = no commands/procedures
+TEXT_ROOTS=("$HOME/GitRepos" "$HOME/PycharmProjects")
+COMMANDS_FILE=""             # Markdown file with command tables
+PROCEDURE_GLOBS=()           # glob patterns for procedure notes
+PROCEDURE_GROUPS=()          # group names, one per glob; empty = the folder name
+PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
+TEXT_HIDE_AFTER_COPY_DAYS=4  # a copied text is parked this many days after the copy
+TEXT_HIDE_UNUSED_DAYS=7      # a text never copied is parked this many days after its last change
+TEXT_TRASH_DAYS=7            # a parked text goes to the desktop trash after this many days
+STALE_DAYS=90                # procedures not updated for this long are marked as older
+OPEN_CMD="xdg-open"          # ctrl-o opens the file of an entry with this command
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/recall"
+ASSISTANT="claude"           # assistant backend; v1 knows only "claude"
+ASSIST_MODEL="sonnet"        # model for the assistant; empty = Claude Code's default
+GLOW_STYLE="dark"            # glow style for Markdown: dark, light, notty, ...
+COLOR_TEXT=108               # 256-colour numbers of the list icons: muted green,
+COLOR_CMD=110                #   muted blue,
+COLOR_PROC=180               #   muted sand
+COLOR_FADE=245               # repo name and explanation (grey)
+COLOR_KEYWORDS=240           # keywords after a command (darker grey)
+FZF_COLORS="fg+:-1,bg+:236,hl:179,hl+:179,pointer:110,prompt:110,info:242,header:242,border:240,label:245,separator:238,gutter:-1"
+ASSIST_PROMPT="Answer briefly, in German. First look things up in the allowed folders with Read, Grep and Glob. You are read-only. Name the note your answer comes from."
+
+CONF="$HOME/.config/recall/recall.conf"
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && source "$CONF"
+
+TEXTS_STATE="$STATE_DIR/texts.tsv"   # <real path> <copied at> <kept at> <first seen>, epoch seconds
+TRASH_LOG="$STATE_DIR/trash.log"     # one line per text moved to the trash
+DAY=86400
+
+# List colours: calm 256-colour accents, no bright or saturated tones. fzf renders
+# the codes because of --ansi. NO_COLOR switches all of it off.
+if [ -z "${NO_COLOR:-}" ]; then
+  esc() { printf '\033[38;5;%sm' "$1"; }
+  I_TEXT=$(esc "$COLOR_TEXT"); I_CMD=$(esc "$COLOR_CMD"); I_PROC=$(esc "$COLOR_PROC")
+  FADE=$(esc "$COLOR_FADE"); DIM=$(esc "$COLOR_KEYWORDS"); RST=$'\033[0m'
+  FZF_COLOR_ARGS=(--color="$FZF_COLORS")
+else
+  I_TEXT=""; I_CMD=""; I_PROC=""; FADE=""; DIM=""; RST=""
+  FZF_COLOR_ARGS=(--no-color)
+fi
+
 keys_help() {
-  cat <<'EOF'
+  cat <<EOF
 recall - keys
 
 In the list
-  enter       use the entry
+  type        search everything; an empty search shows the groups
+  tab         open or close the group of the entry
+  enter       use the entry (on a group: open or close it)
                 ✎ text      copy to clipboard, close
                 ⌘ command   copy to clipboard, close
                 ☰ procedure read it (rendered)
+  ctrl-o      open the file in its application ($OPEN_CMD)
+  ctrl-k      keep a text: restart its clock, bring it back from "parked"
   alt-enter   ask the assistant with the search text
               (enter without any match does the same)
   f1          this help / back to the preview
   esc         quit
+
+Texts
+  copied      parked ${TEXT_HIDE_AFTER_COPY_DAYS} days after the copy
+  not copied  parked ${TEXT_HIDE_UNUSED_DAYS} days after the last change
+  parked      moved to the desktop trash after ${TEXT_TRASH_DAYS} more days,
+              when recall starts; bring one back with
+              gio trash --list  and  gio trash --restore <trash:///...>
 
 Reading a procedure
   q           back to the list
@@ -89,72 +145,166 @@ EOF
   keys_help
 }
 
-# ---------- config ----------
-VAULT=""                     # knowledge base root; empty = no commands/procedures
-TEXT_ROOTS=("$HOME/GitRepos" "$HOME/PycharmProjects")
-COMMANDS_FILE=""             # Markdown file with command tables
-PROCEDURE_GLOBS=()           # glob patterns for procedure notes
-PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
-ASSISTANT="claude"           # assistant backend; v1 knows only "claude"
-ASSIST_MODEL="sonnet"        # model for the assistant; empty = Claude Code's default
-GLOW_STYLE="dark"            # glow style for Markdown: dark, light, notty, ...
-COLOR_TEXT=108               # 256-colour numbers of the list icons: muted green,
-COLOR_CMD=110                #   muted blue,
-COLOR_PROC=180               #   muted sand
-COLOR_FADE=245               # repo name and explanation (grey)
-COLOR_KEYWORDS=240           # keywords after a command (darker grey)
-FZF_COLORS="fg+:-1,bg+:236,hl:179,hl+:179,pointer:110,prompt:110,info:242,header:242,border:240,label:245,separator:238,gutter:-1"
-ASSIST_PROMPT="Answer briefly, in German. First look things up in the allowed folders with Read, Grep and Glob. You are read-only. Name the note your answer comes from."
+now_epoch() { printf '%s' "${RECALL_NOW:-$(date +%s)}"; }
+day_of() { date -d "@$1" +%Y-%m-%d; }
 
-CONF="$HOME/.config/recall/recall.conf"
-# shellcheck source=/dev/null
-[ -f "$CONF" ] && source "$CONF"
+# ---------- text lifecycle ----------
+# text_state <mtime> <copied at> <kept at> <first seen> <now>; sets TS_STATE (active,
+# parked, due), TS_HIDDEN and TS_TRASH. Pure: the state is computed, never stored.
+# "First seen" gives a text that is new to recall - first start, restored from the
+# trash, its folder back after an absence - a fresh clock instead of its old mtime.
+text_state() {
+  local mtime=$1 copied=$2 kept=$3 seen=$4 now=$5 start
+  start=$(( mtime > kept ? mtime : kept ))
+  start=$(( start > seen ? start : seen ))
+  if (( copied > start )); then
+    TS_HIDDEN=$(( copied + TEXT_HIDE_AFTER_COPY_DAYS * DAY ))
+  else
+    TS_HIDDEN=$(( start + TEXT_HIDE_UNUSED_DAYS * DAY ))
+  fi
+  TS_TRASH=$(( TS_HIDDEN + TEXT_TRASH_DAYS * DAY ))
+  if (( now < TS_HIDDEN )); then TS_STATE=active
+  elif (( now < TS_TRASH )); then TS_STATE=parked
+  else TS_STATE=due; fi
+}
 
-# List colours: calm 256-colour accents, no bright or saturated tones. fzf renders
-# the codes because of --ansi. NO_COLOR switches all of it off.
-if [ -z "${NO_COLOR:-}" ]; then
-  esc() { printf '\033[38;5;%sm' "$1"; }
-  I_TEXT=$(esc "$COLOR_TEXT"); I_CMD=$(esc "$COLOR_CMD"); I_PROC=$(esc "$COLOR_PROC")
-  FADE=$(esc "$COLOR_FADE"); DIM=$(esc "$COLOR_KEYWORDS"); RST=$'\033[0m'
-  FZF_COLOR_ARGS=(--color="$FZF_COLORS")
-else
-  I_TEXT=""; I_CMD=""; I_PROC=""; FADE=""; DIM=""; RST=""
-  FZF_COLOR_ARGS=(--no-color)
-fi
+load_text_state() { # fills COPIED, KEPT and SEEN from the state file
+  declare -gA COPIED=() KEPT=() SEEN=()
+  local path c k f
+  [ -f "$TEXTS_STATE" ] || return 0
+  while IFS=$'\t' read -r path c k f _; do
+    [ -n "$path" ] || continue
+    COPIED[$path]=${c:-0}; KEPT[$path]=${k:-0}; SEEN[$path]=${f:-0}
+  done < "$TEXTS_STATE"
+}
+
+set_text_state() { # set_text_state <real path> copied|kept <epoch>
+  mkdir -p "$STATE_DIR"
+  [ -f "$TEXTS_STATE" ] || : > "$TEXTS_STATE"
+  local tmp
+  tmp=$(mktemp "$STATE_DIR/texts.XXXXXX")
+  # Values go through ENVIRON: awk -v would turn a backslash in a path into an escape.
+  P=$1 F=$2 V=$3 awk -F'\t' -v OFS='\t' '
+    BEGIN { p = ENVIRON["P"]; f = ENVIRON["F"]; v = ENVIRON["V"] }
+    $1 == p { found = 1; if ($4 == "") $4 = 0; if (f == "copied") $2 = v; else $3 = v }
+    { print }
+    END { if (!found) print p, (f == "copied" ? v : 0), (f == "kept" ? v : 0), v }' \
+    "$TEXTS_STATE" > "$tmp"
+  mv "$tmp" "$TEXTS_STATE"
+}
+
+note_new_texts() { # note_new_texts <real path>...: remember when recall first saw them
+  [ "$#" -gt 0 ] || return 0
+  mkdir -p "$STATE_DIR"
+  local now path
+  now=$(now_epoch)
+  for path; do printf '%s\t0\t0\t%s\n' "$path" "$now"; done >> "$TEXTS_STATE"
+}
+
+prune_text_state() { # forget files that no longer exist
+  [ -f "$TEXTS_STATE" ] || return 0
+  local tmp path rest
+  tmp=$(mktemp "$STATE_DIR/texts.XXXXXX")
+  while IFS=$'\t' read -r path rest; do
+    [ -e "$path" ] && printf '%s\t%s\n' "$path" "$rest"
+  done < "$TEXTS_STATE" > "$tmp" || true
+  mv "$tmp" "$TEXTS_STATE"
+}
 
 # ---------- sources ----------
-# Each prints lines "<kind>\t<target>\t<display>" (commands add "\t<explanation>\t<keywords>").
-# fzf shows and searches only <display>; it returns the whole line.
-src_texts() { # newest first; duplicates via symlinks collapse to one entry
-  local root dir f real repo
+# collect_texts prints "<mtime>\t<real path>\t<repo>\t<file name>\t<state>\t<parked at>\t<trash at>\t<known>",
+# newest first; duplicates via symlinks collapse to one entry. <known> is 1 when
+# the state file has a row for the text.
+collect_texts() {
+  local root dir f real repo now mtime
   local -A seen=()
+  load_text_state
+  now=$(now_epoch)
   for root in "${TEXT_ROOTS[@]}"; do
     for dir in "$root"/*/.reviews; do
       [ -d "$dir" ] || continue
       repo=$(basename "$(dirname "$dir")")
       for f in "$dir"/*; do
         [ -f "$f" ] || continue
-        case "${f##*/}" in README*) continue ;; esac
-        real=$(realpath "$f")
+        case "${f##*/}" in *$'\t'*|*$'\n'*) continue ;; esac   # would break the list lines
+        case "${f##*/}" in [Rr][Ee][Aa][Dd][Mm][Ee]*) continue ;; esac
+        real=$(realpath "$f" 2>/dev/null) || continue           # vanished meanwhile
         [ -z "${seen[$real]:-}" ] || continue
         seen[$real]=1
-        printf '%s\ttext\t%s\t%s✎%s %s%s ·%s %s\n' "$(stat -c %Y "$real")" "$real" \
-          "$I_TEXT" "$RST" "$FADE" "$repo" "$RST" "${f##*/}"
+        mtime=$(stat -c %Y "$real" 2>/dev/null) || continue
+        text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$now"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$real" "$repo" "${f##*/}" \
+          "$TS_STATE" "$TS_HIDDEN" "$TS_TRASH" "$([ -n "${SEEN[$real]+x}" ] && echo 1 || echo 0)"
       done
     done
-  done | sort -t $'\t' -k1,1nr | cut -f2-
+  done | sort -t $'\t' -k1,1nr
 }
 
-src_commands() { # tables "| command | explanation | keywords |" below "## <tool>"
+# Every list line is "<kind>\t<target>\t<group>\t<cursor id>\t<display>[\t<explanation>\t<keywords>]".
+# fzf shows <display> and keeps the cursor on the same <cursor id> across a reload.
+# A group line's cursor id is the group, every entry has its own ("f:<target>"),
+# so the cursor stays on the very entry after ctrl-k, in both views.
+open_groups() { cat "${RECALL_RUN:-/nonexistent}/open" 2>/dev/null || true; }
+# Group ids reach awk through ENVIRON (OPEN, HERE): awk -v would turn backslashes into escapes.
+
+src_texts() { # src_texts tree|flat; a due text the cleanup could not trash shows as parked
+  collect_texts | OPEN=$(open_groups) HERE=${RECALL_HERE:-} awk -F'\t' -v view="$1" \
+      -v ic="$I_TEXT" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
+    BEGIN { here = ENVIRON["HERE"]; n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1 }
+    function arrow(g) { return fade ((g in isopen) ? "▾" : "▸") rst }
+    $5 == "parked" || $5 == "due" { np++; p_real[np] = $2; p_repo[np] = $3; p_name[np] = $4; next }
+    {
+      if (!($3 in cnt)) order[++nr] = $3
+      k = $3 SUBSEP (++cnt[$3]); r_real[k] = $2; r_name[k] = $4
+      na++; a_real[na] = $2; a_repo[na] = $3; a_name[na] = $4
+    }
+    END {
+      if (view == "flat") {
+        for (i = 1; i <= na; i++)
+          printf "text\t%s\tt:%s\tf:%s\t%s✎%s %s%s ·%s %s\n", a_real[i], a_repo[i], a_real[i], ic, rst, fade, a_repo[i], rst, a_name[i]
+        for (i = 1; i <= np; i++)
+          printf "text\t%s\tparked\tf:%s\t%s✎%s %s%s ·%s %s  %sparked%s\n", p_real[i], p_real[i], ic, rst, fade, p_repo[i], rst, p_name[i], dim, rst
+        exit
+      }
+      if (here in cnt) ord[++m] = here
+      for (i = 1; i <= nr; i++) if (order[i] != here) ord[++m] = order[i]
+      for (i = 1; i <= m; i++) {
+        repo = ord[i]; g = "t:" repo
+        printf "grp\t%s\t%s\t%s\t%s✎%s %s %s(%d)%s %s\n", g, g, g, ic, rst, repo, fade, cnt[repo], rst, arrow(g)
+        if (g in isopen)
+          for (j = 1; j <= cnt[repo]; j++)
+            printf "text\t%s\t%s\tf:%s\t    %s\n", r_real[repo SUBSEP j], g, r_real[repo SUBSEP j], r_name[repo SUBSEP j]
+      }
+      if (np) {
+        g = "parked"
+        printf "grp\t%s\t%s\t%s\t%s✎%s parked %s(%d)%s %s\n", g, g, g, ic, rst, fade, np, rst, arrow(g)
+        if (g in isopen)
+          for (i = 1; i <= np; i++)
+            printf "text\t%s\t%s\tf:%s\t    %s%s ·%s %s\n", p_real[i], g, p_real[i], fade, p_repo[i], rst, p_name[i]
+      }
+    }'
+}
+
+src_commands() { # src_commands tree|flat; tables "| command | explanation | keywords |" below "## <tool> — <subtitle>"
   [ -n "$COMMANDS_FILE" ] && [ -f "$COMMANDS_FILE" ] || return 0
-  awk -v icon="$I_CMD" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
+  OPEN=$(open_groups) awk -v view="$1" \
+      -v icon="$I_CMD" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
     function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-    /^##[ \t]/ { heading = trim(substr($0, 3)) }
+    BEGIN { n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1 }
+    /^##[ \t]/ {
+      tool = trim(substr($0, 3)); subtitle = ""
+      if (match(tool, / (—|-) /)) {
+        subtitle = trim(substr(tool, RSTART + RLENGTH)); tool = trim(substr(tool, 1, RSTART - 1))
+      }
+      if (!(tool in sub_of)) { tools[++nt] = tool; sub_of[tool] = subtitle }
+      if (length(tool) > width) width = length(tool)
+    }
     !/^[ \t]*\|/ { intable = 0; next }
     {
       line = trim($0)
       if (!intable) { intable = 1; next }               # header row
       if (line ~ /^\|[ \t:|-]+\|$/) next                # separator row
+      gsub(/\t/, " ", line)                             # a tab would split the list line
       gsub(/\\\|/, "\001", line)                        # escaped pipe inside a cell
       n = split(line, cell, "|")
       if (n != 5 || cell[1] != "" || cell[5] != "") next  # exactly three cells
@@ -162,14 +312,43 @@ src_commands() { # tables "| command | explanation | keywords |" below "## <tool
       if (cmd ~ /^`.*`$/) cmd = substr(cmd, 2, length(cmd) - 2)
       gsub(/\001/, "|", cmd); gsub(/\001/, "|", expl); gsub(/\001/, "|", kw)
       if (cmd == "") next
-      kw = trim(kw " " heading)
-      printf "cmd\t%s\t%s⌘%s %s %s— %s%s  %s%s%s\t%s\t%s\n", cmd, icon, rst, cmd, fade, expl, rst, dim, kw, rst, expl, kw
+      nc++; c_cmd[nc] = cmd; c_expl[nc] = expl; c_kw[nc] = trim(kw " " tool); c_tool[nc] = tool
+      count[tool]++
+    }
+    END {
+      if (view == "flat") {
+        for (i = 1; i <= nc; i++)
+          printf "cmd\t%s\tc:%s\tf:%s\t%s⌘%s %s %s— %s%s  %s%s%s\t%s\t%s\n", c_cmd[i], c_tool[i], c_cmd[i], icon, rst, c_cmd[i],
+            fade, c_expl[i], rst, dim, c_kw[i], rst, c_expl[i], c_kw[i]
+        exit
+      }
+      for (t = 1; t <= nt; t++) {
+        tool = tools[t]; g = "c:" tool
+        if (!count[tool]) continue
+        label = sprintf("%-" width "s", tool)
+        if (sub_of[tool] != "") label = label "  " sub_of[tool]
+        printf "grp\t%s\t%s\t%s\t%s⌘%s %s %s(%d) %s%s\n", g, g, g, icon, rst, label, fade, count[tool],
+          ((g in isopen) ? "▾" : "▸"), rst
+        if (g in isopen)
+          for (i = 1; i <= nc; i++)
+            if (c_tool[i] == tool)
+              printf "cmd\t%s\t%s\tf:%s\t    %s %s— %s%s\t%s\t%s\n", c_cmd[i], g, c_cmd[i], c_cmd[i], fade, c_expl[i], rst, c_expl[i], c_kw[i]
+      }
     }' "$COMMANDS_FILE"
 }
 
-src_procedures() { # notes from PROCEDURE_GLOBS, title from front matter
-  local pattern f name ex title skip
-  for pattern in "${PROCEDURE_GLOBS[@]}"; do
+front_matter() { # front_matter <file> <key>: the value of "<key>:" in the YAML front matter
+  awk -v key="$2" 'NR == 1 && $0 != "---" { exit }
+       NR > 1 && $0 == "---" { exit }
+       $0 ~ "^" key ":[ \t]*" { sub("^" key ":[ \t]*", ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$1"
+}
+
+collect_procedures() { # prints "<title>\t<group index>\t<group name>\t<file>"
+  local i pattern f name ex title skip group
+  for i in "${!PROCEDURE_GLOBS[@]}"; do
+    pattern=${PROCEDURE_GLOBS[$i]}
+    group=${PROCEDURE_GROUPS[$i]:-}
+    [ -n "$group" ] || group=$(basename "$(dirname "$pattern")")
     while IFS= read -r f; do
       [ -f "$f" ] || continue
       name=${f##*/}; skip=""
@@ -178,13 +357,44 @@ src_procedures() { # notes from PROCEDURE_GLOBS, title from front matter
         [[ $name == $ex ]] && skip=1
       done
       [ -z "$skip" ] || continue
-      title=$(awk 'NR == 1 && $0 != "---" { exit }
-                   NR > 1 && $0 == "---" { exit }
-                   /^title:[ \t]*/ { sub(/^title:[ \t]*/, ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$f")
+      title=$(front_matter "$f" title)
       [ -n "$title" ] || title=${name%.md}
-      printf '%s\tproc\t%s\t%s☰%s %s\n' "$title" "$f" "$I_PROC" "$RST" "$title"
+      printf '%s\t%s\t%s\t%s\n' "$title" "$i" "$group" "$f"
     done < <(compgen -G "$pattern" || true)
-  done | sort -t $'\t' -k1,1 -f | cut -f2-
+  done
+}
+
+src_procedures() { # src_procedures tree|flat
+  if [ "$1" = flat ]; then
+    collect_procedures | sort -t $'\t' -k1,1 -f |
+      awk -F'\t' -v ic="$I_PROC" -v rst="$RST" '{ printf "proc\t%s\tp:%s\tf:%s\t%s☰%s %s\n", $4, $2, $4, ic, rst, $1 }'
+    return 0
+  fi
+  collect_procedures | sort -t $'\t' -k2,2n -k1,1f |
+    OPEN=$(open_groups) awk -F'\t' -v ic="$I_PROC" -v fade="$FADE" -v rst="$RST" '
+      BEGIN { n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1 }
+      { g = "p:" $2; if (!(g in cnt)) { order[++ng] = g; name[g] = $3 }
+        k = g SUBSEP (++cnt[g]); file[k] = $4; title[k] = $1 }
+      END {
+        for (i = 1; i <= ng; i++) {
+          g = order[i]
+          printf "grp\t%s\t%s\t%s\t%s☰%s %s %s(%d) %s%s\n", g, g, g, ic, rst, name[g], fade, cnt[g],
+            ((g in isopen) ? "▾" : "▸"), rst
+          if (g in isopen)
+            for (j = 1; j <= cnt[g]; j++) printf "proc\t%s\t%s\tf:%s\t    %s\n", file[g SUBSEP j], g, file[g SUBSEP j], title[g SUBSEP j]
+        }
+      }'
+}
+
+list_view() { # list_view tree|flat; RECALL_SCOPE=texts limits the list to texts
+  src_texts "$1"
+  [ "${RECALL_SCOPE:-all}" != texts ] || return 0
+  src_commands "$1"
+  src_procedures "$1"
+}
+
+first_text_group() { # the text group that is open at start
+  RECALL_RUN="" src_texts tree | awk -F'\t' '$1 == "grp" && $3 ~ /^t:/ { print $3; exit }'
 }
 
 # ---------- Markdown display: glow renders it, bat is the fallback ----------
@@ -202,40 +412,231 @@ show_file() { # show_file <file> preview|page
 
 # f1 in the list flips a flag file; the preview shows the key help while it exists.
 toggle_help() {
-  [ -n "${RECALL_HELP_FLAG:-}" ] || return 0
-  if [ -e "$RECALL_HELP_FLAG" ]; then rm -f "$RECALL_HELP_FLAG"; else : > "$RECALL_HELP_FLAG"; fi
+  [ -n "${RECALL_RUN:-}" ] || return 0
+  if [ -e "$RECALL_RUN/help" ]; then rm -f "$RECALL_RUN/help"; else : > "$RECALL_RUN/help"; fi
+}
+
+toggle_group() { # toggle_group <group id>
+  local f="$RECALL_RUN/open" tmp
+  [ -f "$f" ] || : > "$f"
+  if grep -qxF -- "$1" "$f"; then
+    tmp=$(mktemp "$RECALL_RUN/open.XXXXXX")
+    grep -vxF -- "$1" "$f" > "$tmp" || true
+    mv "$tmp" "$f"
+  else
+    printf '%s\n' "$1" >> "$f"
+  fi
 }
 
 # ---------- preview (called by fzf with the whole line) ----------
-preview() {
-  local kind target expl kw
-  if [ -n "${RECALL_HELP_FLAG:-}" ] && [ -e "$RECALL_HELP_FLAG" ]; then
-    keys_help; return 0
-  fi
-  IFS=$'\t' read -r kind target _ expl kw <<<"$1"
-  case "$kind" in
-    text|proc) show_file "$target" preview ;;
-    cmd) printf '%s\n\n%s\n\nkeywords: %s\n' "$target" "$expl" "$kw" ;;
+text_status() { # one line on the state of a text
+  local real=$1 copied="" mtime
+  mtime=$(stat -c %Y "$real" 2>/dev/null) || { printf 'file is gone\n'; return 0; }
+  load_text_state
+  text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$(now_epoch)"
+  [ "${COPIED[$real]:-0}" -eq 0 ] || copied=" · copied $(day_of "${COPIED[$real]}")"
+  case "$TS_STATE" in
+    active) printf 'active%s · parked from %s\n' "$copied" "$(day_of "$TS_HIDDEN")" ;;
+    *)      printf 'parked since %s%s · trash from %s · ctrl-k keeps it\n' \
+              "$(day_of "$TS_HIDDEN")" "$copied" "$(day_of "$TS_TRASH")" ;;
   esac
 }
 
+procedure_status() { # "updated <day>", plus a hint when that is long ago
+  local updated epoch=""
+  updated=$(front_matter "$1" updated)
+  [ -z "$updated" ] || epoch=$(date -d "$updated" +%s 2>/dev/null) || epoch=""
+  if [ -z "$epoch" ]; then
+    epoch=$(stat -c %Y "$1"); updated="$(day_of "$epoch") (file date)"
+  fi
+  if (( $(now_epoch) - epoch > STALE_DAYS * DAY )); then
+    printf 'updated %s · older than %s days\n' "$updated" "$STALE_DAYS"
+  else
+    printf 'updated %s\n' "$updated"
+  fi
+}
+
+group_preview() { # the entries of one group, compact
+  local gid=$1 kind target id display expl
+  # Plain lines: bash scoping hands these empty colours to the sources below.
+  local I_TEXT="" I_CMD="" I_PROC="" FADE="" DIM="" RST=""
+  while IFS=$'\t' read -r kind target id _ display expl _; do
+    [ "$id" = "$gid" ] || continue
+    case "$kind" in
+      cmd) printf '%s\n    %s\n' "$target" "$expl" ;;
+      *)   printf '%s\n' "${display#* }" ;;
+    esac
+  done < <(list_view flat)
+}
+
+preview() {
+  local kind target gid expl kw
+  if [ -n "${RECALL_RUN:-}" ] && [ -e "$RECALL_RUN/help" ]; then
+    keys_help
+    if [ -s "$TRASH_LOG" ]; then
+      printf '\nMoved to the trash lately\n'
+      tail -n 5 "$TRASH_LOG" | awk -F'\t' '{ printf "  %s  %s\n", $1, $2 }'
+    fi
+    return 0
+  fi
+  IFS=$'\t' read -r kind target gid _ _ expl kw <<<"$1"
+  case "$kind" in
+    grp)  group_preview "$gid" ;;
+    text) text_status "$target"; printf '\n'; show_file "$target" preview ;;
+    proc) procedure_status "$target"; printf '\n'; show_file "$target" preview ;;
+    cmd)  printf '%s\n\n%s\n\nkeywords: %s\n' "$target" "$expl" "$kw" ;;
+  esac
+}
+
+# ---------- cached lists ----------
+# Building a list reads every source (about 0.2 s), and fzf drops enter while a
+# reload runs. So both views live as files in RECALL_RUN and a reload only cats
+# one; tab and ctrl-k rebuild the files they change.
+build_list() { # build_list tree|flat [bg]: write that view to its cache file
+  local tmp
+  tmp=$(mktemp "$RECALL_RUN/$1.XXXXXX")
+  list_view "$1" > "$tmp"
+  if [ "${2:-}" = bg ]; then
+    # Started before fzf; a synchronous build since then is newer and wins.
+    ln "$tmp" "$RECALL_RUN/$1.list" 2>/dev/null || true
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$RECALL_RUN/$1.list"
+  fi
+}
+
+# ---------- keys inside fzf: change the state, print the fzf action ----------
+reload_action() { # from the cache; the flat one may still be built in the background
+  local i
+  for i in $(seq 1 50); do                  # up to 0.5 s; fzf stays responsive meanwhile
+    [ -f "$RECALL_RUN/$1.list" ] && break
+    sleep 0.01
+  done
+  if [ -f "$RECALL_RUN/$1.list" ]; then
+    # $RECALL_RUN reaches fzf's shell from the environment: no path in the action string.
+    # shellcheck disable=SC2016  # expanded by fzf's shell, on purpose
+    printf 'reload-sync(cat "$RECALL_RUN/%s.list")\n' "$1"
+  else
+    printf "reload-sync('%s' --list %s)\n" "$SELF" "$1"
+  fi
+}
+
+group_line() { # group_line <group id>: its line number in the cached tree
+  G=$1 awk -F'\t' '$1 == "grp" && $2 == ENVIRON["G"] { print NR; exit }' "$RECALL_RUN/tree.list"
+}
+
+on_change() { # reload only when the search switches between empty and non-empty
+  local view
+  view=$(cat "$RECALL_RUN/view" 2>/dev/null || echo tree)
+  if [ -z "${FZF_QUERY:-}" ] && [ "$view" = flat ]; then
+    printf 'tree' > "$RECALL_RUN/view"; reload_action tree
+  elif [ -n "${FZF_QUERY:-}" ] && [ "$view" = tree ]; then
+    printf 'flat' > "$RECALL_RUN/view"; reload_action flat
+  fi
+}
+
+on_key() { # on_key tab|enter|keep <line>
+  local key=$1 kind target gid id view
+  IFS=$'\t' read -r kind target gid id _ <<<"$2"
+  view=$(cat "$RECALL_RUN/view" 2>/dev/null || echo tree)
+  case "$key" in
+    tab)
+      [ "$view" = tree ] && [ -n "$gid" ] || return 0
+      toggle_group "$gid"; build_list tree
+      if [ "$kind" = grp ]; then reload_action tree
+      else printf '%s+wait+pos(%s)\n' "$(reload_action tree)" "$(group_line "$gid")"; fi ;;
+    enter)
+      if [ -n "${FZF_QUERY:-}" ] && [[ $id != f:* ]]; then
+        # Typed faster than the background switch to the flat list: switch now,
+        # wait for the search, then take its best hit (or ask, if there is none).
+        printf 'flat' > "$RECALL_RUN/view"
+        printf '%s+wait+first+accept-or-print-query\n' "$(reload_action flat)"
+      elif [ "$kind" = grp ]; then toggle_group "$gid"; build_list tree; reload_action tree
+      else printf 'accept-or-print-query\n'; fi ;;
+    keep)
+      [ "$kind" = text ] || return 0
+      set_text_state "$target" kept "$(now_epoch)"
+      build_list tree; build_list flat; reload_action "$view" ;;
+  esac
+}
+
+open_entry() { # ctrl-o: hand the file to OPEN_CMD, detached from the window
+  local kind target
+  IFS=$'\t' read -r kind target _ <<<"$1"
+  case "$kind" in text|proc) ;; *) return 0 ;; esac
+  local -a cmd
+  read -ra cmd <<<"$OPEN_CMD"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid -f "${cmd[@]}" "$target" >/dev/null 2>&1 </dev/null
+  else
+    nohup "${cmd[@]}" "$target" >/dev/null 2>&1 </dev/null &
+  fi
+}
+
+# ---------- cleanup at start ----------
+CLEANUP_MSG=""
+cleanup_texts() { # note new texts, move due texts to the desktop trash; never rm
+  local real st known n=0 failed=0
+  local -a due=() new=()
+  while IFS=$'\t' read -r _ real _ _ st _ _ known; do
+    if [ "$known" != 1 ]; then new+=("$real")       # its clock starts now, it is not due
+    elif [ "$st" = due ]; then due+=("$real"); fi
+  done < <(collect_texts)
+  note_new_texts "${new[@]}"
+  if [ "${#due[@]}" -eq 0 ]; then prune_text_state; return 0; fi
+  if ! command -v gio >/dev/null 2>&1; then
+    CLEANUP_MSG="${#due[@]} text(s) due for the trash - 'gio' is missing, nothing was deleted"
+    note "$CLEANUP_MSG"
+    return 0
+  fi
+  mkdir -p "$STATE_DIR"
+  for real in "${due[@]}"; do
+    show "gio trash $(printf '%q' "$real")" "parked text is due: move it to the desktop trash"
+    if gio trash "$real" >/dev/null 2>&1; then
+      n=$((n + 1))
+      printf '%s\t%s\tgio trash %q\n' "$(date -d "@$(now_epoch)" '+%Y-%m-%d %H:%M')" "$real" "$real" >> "$TRASH_LOG"
+    else
+      failed=$((failed + 1)); note "could not move $real to the trash"
+    fi
+  done
+  prune_text_state
+  CLEANUP_MSG="moved $n text(s) to the trash (f1: list)"
+  [ "$failed" -eq 0 ] || CLEANUP_MSG="$CLEANUP_MSG, $failed failed"
+  notify "$CLEANUP_MSG"
+}
+
 # ---------- list ----------
+FIRST_GROUP=""              # text group open at start; the cursor starts on its first text
+FOOTER_KEYS=$'tab fold · enter use · alt-enter ask\nctrl-o open · ctrl-k keep · f1 help'
 PICK_QUERY=""; PICK_KEY=""; PICK_LINE=""
-pick() { # pick <mode> <query>; sets PICK_*; returns 1 on esc
-  local mode=$1 query=$2 out rc=0
-  # Without pipefail the status is fzf's own: accepting an entry while a
-  # source still writes must not count as a failure of the whole list.
-  out=$( set +o pipefail; {
-      src_texts
-      if [ "$mode" = all ]; then src_commands; src_procedures; fi
-    } | fzf --ansi --delimiter=$'\t' --with-nth=3 \
+pick() { # pick <query>; sets PICK_*; returns 1 on esc
+  local query=$1 view=tree out rc=0 footer=$FOOTER_KEYS
+  local -a start=()
+  [ -z "$query" ] || view=flat
+  printf '%s' "$view" > "$RECALL_RUN/view"
+  # Build this view now and the other one behind fzf's back (see "cached lists").
+  local other=flat
+  [ "$view" = tree ] || other=tree
+  rm -f "$RECALL_RUN/$other.list"
+  build_list "$view"
+  build_list "$other" bg </dev/null >/dev/null 2>&1 &
+  # The most frequent use is copying the newest text: start on it, not on its group line.
+  if [ "$view" = tree ] && [ -n "$FIRST_GROUP" ] && grep -qxF -- "$FIRST_GROUP" "$RECALL_RUN/open" 2>/dev/null; then
+    start=(--bind='load:pos(2)+unbind(load)')
+  fi
+  [ -z "$CLEANUP_MSG" ] || footer="$footer"$'\n'"$CLEANUP_MSG"
+  out=$( fzf --ansi --delimiter=$'\t' --with-nth=5 --id-nth=4 --track "${start[@]}" \
             --layout=reverse --border=rounded --border-label=' recall ' \
             "${FZF_COLOR_ARGS[@]}" \
-            --prompt='› ' --query="$query" \
-            --header='enter: use · alt-enter: ask assistant · f1: help · esc: quit' \
+            --prompt='› ' --query="$query" --footer="$footer" \
             --preview="'$SELF' --preview {}" --preview-window='right,55%,wrap' \
             --bind="f1:execute-silent('$SELF' --toggle-help)+refresh-preview" \
-            --print-query --expect=alt-enter --bind=enter:accept-or-print-query
+            --bind="change:bg-transform('$SELF' --on-change)" \
+            --bind="tab:transform('$SELF' --key tab {})" \
+            --bind="enter:transform('$SELF' --key enter {})" \
+            --bind="ctrl-k:transform('$SELF' --key keep {})" \
+            --bind="ctrl-o:execute-silent('$SELF' --open {})" \
+            --print-query --expect=alt-enter < "$RECALL_RUN/$view.list"
   ) || rc=$?
   # 0 = accepted, 1 = no match (alt-enter with an empty result), 130 = esc
   case "$rc" in
@@ -258,7 +659,7 @@ notify() {
 }
 
 # ---------- actions ----------
-copy_text() { wl-copy < "$1"; notify "Copied: ${1##*/}"; }
+copy_text() { wl-copy < "$1"; set_text_state "$1" copied "$(now_epoch)"; notify "Copied: ${1##*/}"; }
 copy_cmd()  { printf '%s' "$1" | wl-copy -n; notify "Copied: $1"; }
 read_proc() { show_file "$1" page; }
 
@@ -308,32 +709,51 @@ ask() {
   IFS= read -rsn1 key || return 10
   printf '\n' >&2
   case "$key" in
-    n) cd "$dir" && exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude --resume "$id" ;;
+    n) [ -z "$RUN_OWNED" ] || rm -rf "$RUN_OWNED"    # exec skips the EXIT trap
+       cd "$dir" && exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude --resume "$id" ;;
     $'\e') return 10 ;;
     *) return 0 ;;
   esac
 }
 
+# The repo of the start directory comes first; a worktree counts as its main repo.
+start_repo() {
+  command -v git >/dev/null 2>&1 || return 0
+  local common
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+  basename "$(dirname "$common")"
+}
+
 # ---------- main ----------
 main() {
-  local mode=all
+  local scope=all
   case "${1:-}" in
     -h|--help|help) usage; exit 0 ;;
     --preview) preview "${2:-}"; exit 0 ;;
     --keys) keys_help; exit 0 ;;
     --toggle-help) toggle_help; exit 0 ;;
-    texts) mode=texts ;;
+    --list) list_view "${2:-tree}"; exit 0 ;;
+    --on-change) on_change; exit 0 ;;
+    --key) on_key "${2:-}" "${3:-}"; exit 0 ;;
+    --open) open_entry "${2:-}"; exit 0 ;;
+    texts) scope=texts ;;
     "") ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
   need fzf fzf; need bat bat; need wl-copy wl-clipboard
-  RECALL_HELP_FLAG=$(mktemp -u "${TMPDIR:-/tmp}/recall-help.XXXXXX")
-  HELP_FLAG_OWNED=$RECALL_HELP_FLAG
-  export RECALL_HELP_FLAG
+  RECALL_RUN=$(mktemp -d "${TMPDIR:-/tmp}/recall.XXXXXX")
+  RUN_OWNED=$RECALL_RUN
+  RECALL_SCOPE=$scope
+  RECALL_HERE=$(start_repo)
+  export RECALL_RUN RECALL_SCOPE RECALL_HERE
+
+  cleanup_texts
+  FIRST_GROUP=$(first_text_group)
+  printf '%s\n' "$FIRST_GROUP" > "$RECALL_RUN/open"
 
   local query="" kind target rest rc
   while true; do
-    pick "$mode" "$query" || exit 0
+    pick "$query" || exit 0
     query=$PICK_QUERY
     if [ "$PICK_KEY" = alt-enter ] || [ -z "$PICK_LINE" ]; then
       rc=0; ask "$query" || rc=$?
@@ -345,6 +765,7 @@ main() {
       text) copy_text "$target"; exit 0 ;;
       cmd)  copy_cmd "$target"; exit 0 ;;
       proc) read_proc "$target" ;;
+      *)    ;;   # a group line: back to the list
     esac
   done
 }
