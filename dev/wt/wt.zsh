@@ -37,7 +37,7 @@ wt() {
       shift
       while (( $# )); do
         case "$1" in
-          --mr|--branch) target="$2"; shift 2 ;;
+          --mr|--pr|--branch) target="$2"; shift 2 ;;
           *)             shift ;;
         esac
       done
