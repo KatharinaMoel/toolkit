@@ -47,7 +47,9 @@ usage() {
 wt - Worktrees mit erklaerten Schritten
 
   wt new --mr <nr> [--db]     Wegwerf-Worktree vom MR-Ref (Review/Handtest);
-                              --db legt eine Template-Kopie der Projekt-DB an
+                              --db legt eine Template-Kopie der Projekt-DB an;
+                              GitLab oder GitHub (--pr <nr> ist dasselbe) - FORGE
+                              kommt aus der Konfig oder der Remote-URL
   wt new --branch <name>      Arbeits-Worktree von einem (Remote-)Branch
   wt drop <nr|kuerzel> [--db] Worktree entfernen; --db loescht die DB-Kopie
   wt run <nr> [args]          manage.py im Worktree mit Review-Settings und Port
@@ -78,7 +80,9 @@ REPO_ROOT=$(dirname "$GIT_COMMON")
 REPO_NAME=$(basename "$REPO_ROOT")
 
 WT_BASE="$(dirname "$REPO_ROOT")/${REPO_NAME}-worktrees"  # Konvention: Schwesterordner
-TARGET_BRANCH="dev"            # Basis fuer requirements-Vergleich
+REMOTE="origin"                # Remote, von dem Branches und MR/PR-Refs geholt werden
+FORGE=""                       # "gitlab" | "github"; leer = aus der Remote-URL ableiten (github.com -> github, sonst gitlab)
+TARGET_BRANCH=""               # Basis fuer requirements-Vergleich; leer = Default-Branch des Remotes (<REMOTE>/HEAD)
 COPY_FILES=(".env")            # gitignorte Dateien, die ein Worktree braucht
 DB_CONTAINER=""                # leer = alle DB-Schritte entfallen
 DB_TEMPLATE=""                 # Stamm-DB, von der kopiert wird
@@ -101,9 +105,50 @@ for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
     source "$conf"
   fi
 done
+case "$FORGE" in ""|gitlab|github) ;; *) die "FORGE muss 'gitlab' oder 'github' sein (oder leer fuer Auto-Erkennung), nicht '$FORGE'" ;; esac
+
+# ---------- Forge, Remote, Zielbranch ----------
+q() { printf '%q' "$1"; }   # Wert sicher in einen run-/eval-String setzen
+
+resolve_target_branch() { # TARGET_BRANCH leer -> Default-Branch des Remotes, ohne Netz; bleibt leer, wenn <REMOTE>/HEAD fehlt
+  [ -z "$TARGET_BRANCH" ] || return 0
+  local head
+  head=$(git -C "$REPO_ROOT" symbolic-ref -q "refs/remotes/$REMOTE/HEAD" 2>/dev/null) || head=""
+  head="${head#"refs/remotes/$REMOTE/"}"
+  if [ -n "$head" ] && ! [[ "$head" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    note "Default-Branch des Remotes hat ungewoehnliche Zeichen - ignoriert; TARGET_BRANCH in der Konfig setzen."
+    head=""
+  fi
+  TARGET_BRANCH="$head"
+}
+resolve_target_branch
+
+detect_forge() { # FORGE leer -> aus der Remote-URL; github, wenn die eingetragene ODER die per insteadOf umgeschriebene URL auf github.com zeigt
+  [ -z "$FORGE" ] || return 0
+  local url host
+  FORGE="gitlab"   # GitLab.com und jede selbst gehostete Instanz
+  for url in "$(git -C "$REPO_ROOT" config --get "remote.$REMOTE.url" 2>/dev/null || true)" \
+             "$(git -C "$REPO_ROOT" remote get-url "$REMOTE" 2>/dev/null || true)"; do
+    host=$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]' | sed -E 's#^[a-z+]+://##; s#^[^@/]+@##; s#[:/].*$##')
+    case "$host" in github.com|*.github.com) FORGE="github" ;; esac
+  done
+  note "Forge: $FORGE (aus der URL von '$REMOTE'; FORGE in der Konfig setzen, falls falsch)"
+}
+
+mr_refspec() { # $1 = nr -> Refspec der Forge; lokal heisst der Ref immer refs/mr/<nr>
+  case "$FORGE" in
+    github) printf '+refs/pull/%s/head:refs/mr/%s\n' "$1" "$1" ;;
+    *)      printf '+refs/merge-requests/%s/head:refs/mr/%s\n' "$1" "$1" ;;
+  esac
+}
+
+mr_word() { case "$FORGE" in github) printf 'PR\n' ;; *) printf 'MR\n' ;; esac; }
 
 # ---------- gemeinsame Bausteine ----------
 resolve_slug() { # $1 = nr|kuerzel|branch -> Ordnername unter WT_BASE (eine Regel fuer alle)
+  # Der Ordnername landet in run-Strings (eval): nur unverdaechtige Zeichen zulassen.
+  [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || die "Name mit ungewoehnlichen Zeichen: '$1' - erlaubt sind Buchstaben, Ziffern und . _ - /"
   if [[ "$1" =~ ^[0-9]+$ ]]; then printf 'mr-%s\n' "$1"; else printf '%s\n' "${1//\//-}"; fi
 }
 
@@ -146,13 +191,26 @@ unlink_project_dirs() { # $1 = worktree-pfad; entfernt nur die Links, nie das Zi
   done
 }
 
-venv_check() { # $1 = ref des neuen Worktrees
-  run "git -C '$REPO_ROOT' fetch -q origin $TARGET_BRANCH" \
-      "Zielbranch aktualisieren, damit der requirements-Vergleich stimmt"
+venv_check() { # $1 = ref des neuen Worktrees; nur fuer Projekte mit requirements.txt, bricht nie ab
+  [ -f "$REPO_ROOT/requirements.txt" ] || return 0   # kein requirements.txt -> kein venv-Vergleich
+  if [ -z "$TARGET_BRANCH" ]; then
+    note "Zielbranch unbekannt ($REMOTE/HEAD fehlt, TARGET_BRANCH leer) -> requirements-Vergleich entfaellt."
+    return 0
+  fi
+  run "git -C '$REPO_ROOT' fetch -q $(q "$REMOTE") $(q "$TARGET_BRANCH")" \
+      "Zielbranch aktualisieren, damit der requirements-Vergleich stimmt" \
+    || { note "Zielbranch '$TARGET_BRANCH' auf '$REMOTE' nicht gefunden -> requirements-Vergleich entfaellt (TARGET_BRANCH in der Konfig pruefen)."; return 0; }
+  if ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/remotes/$REMOTE/$TARGET_BRANCH" >/dev/null; then
+    note "$REMOTE/$TARGET_BRANCH gibt es lokal nicht (z.B. Single-Branch-Clone) -> requirements-Vergleich entfaellt."
+    return 0
+  fi
   local diffstat
-  diffstat=$(git -C "$REPO_ROOT" diff --stat "origin/$TARGET_BRANCH...$1" -- requirements.txt 2>/dev/null || true)
+  if ! diffstat=$(git -C "$REPO_ROOT" diff --stat "$REMOTE/$TARGET_BRANCH...$1" -- requirements.txt 2>/dev/null); then
+    note "requirements-Vergleich mit $REMOTE/$TARGET_BRANCH nicht moeglich -> bitte selbst pruefen."
+    return 0
+  fi
   if [ -z "$diffstat" ]; then
-    note "requirements.txt unveraendert gegenueber origin/$TARGET_BRANCH -> Haupt-venv mitnutzen ist ok."
+    note "requirements.txt unveraendert gegenueber $REMOTE/$TARGET_BRANCH -> Haupt-venv mitnutzen ist ok."
   else
     note "ACHTUNG: requirements.txt weicht ab -> eigenes venv noetig (venv-Falle: erst 'deactivate'!):"
     printf '  %s\n' "$diffstat" >&2
@@ -188,37 +246,47 @@ cmd_new() {
   local mr="" branch="" with_db=0 with_ide=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mr)     mr="$2"; shift 2 ;;
-      --branch) branch="$2"; shift 2 ;;
+      --mr|--pr) mr="$2"; shift 2 ;;   # --pr ist nur ein Alias fuer GitHub-Gewohnheiten
+      --branch)  branch="$2"; shift 2 ;;
       --db)     with_db=1; shift ;;
       --ide)    with_ide=1; shift ;;
       *) die "unbekannte Option fuer new: $1" ;;
     esac
   done
   [ -n "$mr" ] || [ -n "$branch" ] || { usage; die "new braucht --mr <nr> oder --branch <name>"; }
+  [ -z "$mr" ] || [[ "$mr" =~ ^[0-9]+$ ]] || die "--mr/--pr erwartet eine Nummer"
   if [ "$with_ide" -eq 1 ]; then need_ide; fi   # vorher pruefen, nicht erst nach dem Anlegen
+  git -C "$REPO_ROOT" config --get "remote.$REMOTE.url" >/dev/null 2>&1 \
+    || die "Remote '$REMOTE' gibt es in diesem Repo nicht - REMOTE in der Konfig pruefen"
   mkdir -p "$WT_BASE"
+
+  if [ -z "$TARGET_BRANCH" ]; then   # <REMOTE>/HEAD fehlt (z.B. Repo per 'git remote add' statt clone) - einmalig vom Remote erfragen
+    run "git -C '$REPO_ROOT' remote set-head $(q "$REMOTE") --auto" \
+        "Default-Branch des Remotes erfragen und als $REMOTE/HEAD merken (TARGET_BRANCH ist nicht gesetzt)" \
+      || note "Default-Branch nicht ermittelbar (vorher 'git fetch $REMOTE' noetig?) - weiter ohne Zielbranch."
+    resolve_target_branch
+  fi
 
   local wtpath ref kuerzel port=""
   if [ -n "$mr" ]; then
-    [[ "$mr" =~ ^[0-9]+$ ]] || die "--mr erwartet eine Nummer"
+    detect_forge
     kuerzel=$(resolve_slug "$mr"); wtpath="$WT_BASE/$kuerzel"; ref="refs/mr/$mr"
     port=$((PORT_BASE + mr % 1000))
-    run "git -C '$REPO_ROOT' fetch origin '+refs/merge-requests/$mr/head:refs/mr/$mr'" \
-        "MR-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)"
+    run "git -C '$REPO_ROOT' fetch $(q "$REMOTE") $(q "$(mr_refspec "$mr")")" \
+        "$(mr_word)-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)"
     run "git -C '$REPO_ROOT' worktree add --detach '$wtpath' '$ref'" \
         "Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision"
   else
     kuerzel=$(resolve_slug "$branch"); wtpath="$WT_BASE/$kuerzel"
     if git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$branch"; then
       ref="$branch"
-      run "git -C '$REPO_ROOT' worktree add '$wtpath' '$branch'" \
+      run "git -C '$REPO_ROOT' worktree add '$wtpath' $(q "$branch")" \
           "Worktree auf existierendem lokalen Branch anlegen (schlaegt fehl, wenn er woanders ausgecheckt ist)"
     else
-      ref="origin/$branch"
-      run "git -C '$REPO_ROOT' fetch -q origin '$branch'" \
+      ref="$REMOTE/$branch"
+      run "git -C '$REPO_ROOT' fetch -q $(q "$REMOTE") $(q "$branch")" \
           "Branch vom Remote holen, lokal gibt es ihn noch nicht"
-      run "git -C '$REPO_ROOT' worktree add --track -b '$branch' '$wtpath' 'origin/$branch'" \
+      run "git -C '$REPO_ROOT' worktree add --track -b $(q "$branch") '$wtpath' $(q "$REMOTE/$branch")" \
           "Worktree anlegen und lokalen Tracking-Branch dazu erzeugen"
     fi
   fi
@@ -250,6 +318,7 @@ cmd_new() {
 is_main_repo_arg() { [ "$1" = "." ] || [ "$1" = "$REPO_NAME" ]; } # '.' oder Ordnername = Hauptordner
 
 check_main_branch() { # Hinweis, wenn im Hauptordner nicht TARGET_BRANCH ausgecheckt ist
+  [ -n "$TARGET_BRANCH" ] || return 0   # Zielbranch unbekannt -> nichts zu vergleichen
   git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$TARGET_BRANCH" || return 0  # Repo ohne diesen Branch
   local cur
   cur=$(git -C "$REPO_ROOT" branch --show-current)

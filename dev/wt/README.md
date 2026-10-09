@@ -1,6 +1,6 @@
 # wt — disposable git worktrees, explained as they run
 
-Review a GitLab merge request or work on a second branch **without touching
+Review a GitLab merge request or GitHub pull request, or work on a second branch **without touching
 your main checkout** — and run several in parallel.
 
 ## The problem
@@ -12,8 +12,8 @@ migrations mutates the shared schema for every other branch.
 
 ## The idea
 
-- One **disposable worktree per MR**, created detached on GitLab's
-  `refs/merge-requests/<nr>/head` ref — no local branch, no branch collisions,
+- One **disposable worktree per MR**, created detached on the forge's read-only ref (GitLab `refs/merge-requests/<nr>/head`,
+  GitHub `refs/pull/<nr>/head`) — no local branch, no branch collisions,
   the main tree stays untouched.
 - Optionally one **database copy per MR** via Postgres template cloning
   (`createdb -T` — a fast file-level copy). Migrations hit only the copy;
@@ -24,7 +24,7 @@ migrations mutates the shared schema for every other branch.
 ## Usage
 
 ```text
-wt new --mr <nr> [--db] [--ide]  # disposable worktree from the MR ref (+ DB copy, + open in IDE)
+wt new --mr <nr> [--db] [--ide]  # disposable worktree from the MR/PR ref (+ DB copy, + open in IDE); --pr is an alias
 wt new --branch <name> [--ide]   # working worktree from a (remote) branch
 wt drop <nr|slug> [--db]         # remove worktree (and the DB copy)
 wt list                          # show worktrees and existing review DB copies
@@ -39,6 +39,10 @@ Everything is addressed by **folder**, not by branch: the picker lists folder
 names with the branch currently checked out there in brackets. The main
 checkout is `.` or its folder name (e.g. `wt cd myproject`) — so a worktree
 for the branch `main` (`wt new --branch main`) is simply `wt cd main`.
+Branch and folder names may contain letters, digits and `. _ - /` only — they end up
+in the commands `wt` shows and runs, so anything else is refused.
+`TARGET_BRANCH` defaults to the remote's default branch (`refs/remotes/<REMOTE>/HEAD`); `REMOTE` and `FORGE` (gitlab/github, auto-detected from the remote URL) are config variables too. The requirements check only runs when the project has a `requirements.txt`, and never aborts the run.
+
 If the main checkout is not on `TARGET_BRANCH` (and that branch exists
 locally), `wt` prints a hint whenever you switch there; it never switches
 branches itself. `wt drop` refuses the main checkout.
@@ -130,7 +134,7 @@ come from the first file found of:
 1. `<repo>/.worktree.conf` — committed, if a team shares the flow
 2. `~/.config/wt/<reponame>.conf` — personal, keeps the repo clean
 
-See [example.conf](example.conf) for all variables. Real config files contain
+See [example.conf](example.conf) for all variables. Forge, remote and target branch are auto-detected; override them with `FORGE`, `REMOTE`, `TARGET_BRANCH`. Real config files contain
 internal names (containers, databases, paths) — keep them local.
 
 ## Requirements
@@ -139,8 +143,8 @@ internal names (containers, databases, paths) — keep them local.
 - `wt pick` and argument-less `wt cd` / `wt ide` need [fzf](https://github.com/junegunn/fzf)
 - `--db` steps additionally need Docker **or** Podman (docker CLI emulation)
   with a running Postgres container
-- Tested on Fedora Linux 44 against a self-hosted GitLab; the
-  `refs/merge-requests/<nr>/head` refs are standard GitLab server behaviour
+- Tested on Fedora Linux 44 against a self-hosted GitLab; the GitHub path (`--pr`) is covered by offline tests;
+  `refs/merge-requests/<nr>/head` (GitLab) and `refs/pull/<nr>/head` (GitHub) are standard server-side refs
 
 ## Install
 
