@@ -369,10 +369,10 @@ expect_eq "new --pr abc -> Exit 1" "1" "$rc"
 if [[ "$err" == *"--mr/--pr erwartet eine Nummer"* && "$err" != *"set-head"* ]]; then ok "new --pr abc -> Fehler vor dem Netzzugriff"
 else fail "new --pr abc -> Fehler vor dem Netzzugriff" "$err"; fi
 
-# ---------- WT_PREFIX: Kuerzel vor dem Worktree-Ordner ----------
+# ---------- WT_PREFIX: Repo-Kuerzel vor dem Worktree-Ordner ----------
 PX="$TMP/px/pxrepo"; PXB="$TMP/px/pxrepo-worktrees"
 git clone -q "$REMOTE_BARE" "$PX"
-git -C "$PX" worktree add -q --detach "$PXB/mr-5"      # Ordner von vor dem Kuerzel
+git -C "$PX" worktree add -q --detach "$PXB/mr-5"      # Ordner ohne Repo-Kuerzel
 printf 'WT_PREFIX="mia"\n' > "$HOME/.config/wt/pxrepo.conf"
 cd "$PX" || exit 1
 
@@ -423,12 +423,12 @@ git clone -q "$REMOTE_BARE" "$RM"
 cd "$RM" || exit 1
 err=$("$WT" new --branch feat/b 2>&1 >/dev/null); rc=$?
 expect_eq "prefix: ohne Eintrag -> Exit 0" "0" "$rc"
-if [[ "$err" == *"kein Repo-Kuerzel konfiguriert"*'WT_PREFIX=""'* ]] && [ -d "$RMB/feat-b" ]; then ok "prefix: ohne Eintrag -> Erinnerung, Ordner wie bisher"
-else fail "prefix: ohne Eintrag -> Erinnerung, Ordner wie bisher" "$err"; fi
+if [[ "$err" == *"kein Repo-Kuerzel konfiguriert"*'WT_PREFIX=""'* ]] && [ -d "$RMB/feat-b" ]; then ok "prefix: ohne Eintrag -> Erinnerung, Ordner = Slug"
+else fail "prefix: ohne Eintrag -> Erinnerung, Ordner = Slug" "$err"; fi
 printf 'WT_PREFIX=""\n' > "$HOME/.config/wt/rmrepo.conf"
 err=$("$WT" new --branch feat/c 2>&1 >/dev/null); rc=$?
-if [ "$rc" -eq 0 ] && [[ "$err" != *"kein Repo-Kuerzel"* ]] && [ -d "$RMB/feat-c" ]; then ok "prefix: WT_PREFIX=\"\" -> still, Ordner wie bisher"
-else fail "prefix: WT_PREFIX=\"\" -> still, Ordner wie bisher" "$err"; fi
+if [ "$rc" -eq 0 ] && [[ "$err" != *"kein Repo-Kuerzel"* ]] && [ -d "$RMB/feat-c" ]; then ok "prefix: WT_PREFIX=\"\" -> still, Ordner = Slug"
+else fail "prefix: WT_PREFIX=\"\" -> still, Ordner = Slug" "$err"; fi
 
 # Injection ueber die Konfig: der Wert landet in Ordnernamen und run-Strings
 printf "WT_PREFIX='mia;touch %s/PWNED'\n" "$TMP" > "$HOME/.config/wt/rmrepo.conf"
@@ -438,11 +438,119 @@ if [[ "$err" == *"nur Buchstaben und Ziffern"* ]] && [ ! -e "$TMP/PWNED" ]; then
 else fail "prefix: WT_PREFIX mit ; wird nicht ausgefuehrt" "$err"; fi
 rm -f "$HOME/.config/wt/rmrepo.conf"
 
+# ---------- Namen, die mit dem Repo-Kuerzel oder mit mr- beginnen ----------
+git -C "$REMOTE_BARE" update-ref refs/heads/mia-fix refs/heads/dev
+git -C "$REMOTE_BARE" update-ref refs/heads/123 refs/heads/dev
+git -C "$REMOTE_BARE" update-ref refs/heads/mr/123 refs/heads/dev
+git -C "$REMOTE_BARE" update-ref refs/merge-requests/123/head refs/heads/dev
+
+# Branch mit Repo-Kuerzel am Anfang: sein Ordner (mia-mia-fix) waere von dem des Branchs 'fix' nicht zu unterscheiden
+cd "$PX" || exit 1
+err=$("$WT" new --branch mia-fix 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: new --branch mia-fix -> Exit 1" "1" "$rc"
+if [[ "$err" == *"Repo-Kuerzel"* && ! -e "$PXB/mia-mia-fix" && ! -e "$PXB/mia-fix" ]]; then ok "prefix: Branch mit Repo-Kuerzel am Anfang wird verweigert"
+else fail "prefix: Branch mit Repo-Kuerzel am Anfang wird verweigert" "$err | $(ls "$PXB")"; fi
+
+# Branch 123 / mr/123 ergibt denselben Ordner wie --mr 123 (auch ohne Repo-Kuerzel)
+cd "$RM" || exit 1
+for b in 123 mr/123; do
+  err=$("$WT" new --branch "$b" 2>&1 >/dev/null); rc=$?
+  expect_eq "mr-Slug: new --branch $b -> Exit 1" "1" "$rc"
+  if [ ! -e "$RMB/mr-123" ]; then ok "mr-Slug: --branch $b legt keinen Ordner mr-123 an"
+  else fail "mr-Slug: --branch $b legt keinen Ordner mr-123 an" "$err"; fi
+  rm -rf "${RMB:?}/mr-123"; git -C "$RM" worktree prune
+done
+
+# Ein Repo-Kuerzel aus der Umgebung zaehlt nicht, nur die Konfig
+err=$(WT_PREFIX=mia "$WT" new --branch feat/a 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ -d "$RMB/feat-a" ] && [ ! -e "$RMB/mia-feat-a" ]; then ok "prefix: WT_PREFIX aus der Umgebung wird ignoriert"
+else fail "prefix: WT_PREFIX aus der Umgebung wird ignoriert" "rc=$rc $err"; fi
+
+# ---------- drop --db: die Nummer kommt aus dem Ordnernamen, nicht aus der Eingabe ----------
+mkdir -p "$TMP/docker-stub" "$PX/media"
+cat > "$TMP/docker-stub/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+EOF
+chmod +x "$TMP/docker-stub/docker"
+export DOCKER_LOG="$TMP/docker.log"
+printf 'WT_PREFIX="mia"\nDB_CONTAINER="stubdb"\nLINK_DIRS=(media)\n' > "$HOME/.config/wt/pxrepo.conf"
+cd "$PX" || exit 1
+"$WT" new --mr 123 >/dev/null 2>&1
+git -C "$PX" worktree add -q -b mia-123 "$PXB/mia-mia-123"   # Branch-Worktree, dessen Name wie ein MR mit Repo-Kuerzel aussieht
+: > "$DOCKER_LOG"
+PATH="$TMP/docker-stub:$PATH" "$WT" drop mia-123 --db >/dev/null 2>&1; rc=$?
+expect_eq "drop mia-123 --db (Branch-Worktree) -> Exit 0" "0" "$rc"
+if [ ! -e "$PXB/mia-mia-123" ] && ! grep -q 'review_123' "$DOCKER_LOG"; then ok "drop mia-123 --db loescht nicht die DB-Kopie von MR 123"
+else fail "drop mia-123 --db loescht nicht die DB-Kopie von MR 123" "$(cat "$DOCKER_LOG") | $(ls "$PXB")"; fi
+PATH="$TMP/docker-stub:$PATH" "$WT" drop mia-mr-123 --db >/dev/null 2>&1
+if grep -q 'dropdb.*review_123' "$DOCKER_LOG"; then ok "drop mia-mr-123 --db loescht review_123 (Positivkontrolle)"
+else fail "drop mia-mr-123 --db loescht review_123 (Positivkontrolle)" "$(cat "$DOCKER_LOG")"; fi
+
+# run: der Port kommt aus dem gefundenen Ordner - 'mia-123' (Branch-Worktree) ist kein MR
+mkdir -p "$TMP/python-stub"
+cat > "$TMP/python-stub/python" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$PY_LOG"
+EOF
+chmod +x "$TMP/python-stub/python"; export PY_LOG="$TMP/py.log"
+printf 'x' > "$PX/manage.py"
+git -C "$PX" worktree add -q -b mia-77 "$PXB/mia-mia-77"
+git -C "$PX" worktree add -q --detach "$PXB/mia-mr-77"
+printf 'x' > "$PXB/mia-mia-77/manage.py"; printf 'x' > "$PXB/mia-mr-77/manage.py"
+err=$(PATH="$TMP/python-stub:$PATH" "$WT" run mia-77 runserver 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"kein Port ableitbar"* ]]; then ok "run mia-77 (Branch-Worktree) leitet keinen MR-Port ab"
+else fail "run mia-77 (Branch-Worktree) leitet keinen MR-Port ab" "rc=$rc $err"; fi
+: > "$PY_LOG"
+PATH="$TMP/python-stub:$PATH" "$WT" run 77 runserver >/dev/null 2>&1
+if grep -q '127.0.0.1:8077' "$PY_LOG"; then ok "run 77 nimmt Port 8077 aus dem Ordner mia-mr-77"
+else fail "run 77 nimmt Port 8077 aus dem Ordner mia-mr-77" "$(cat "$PY_LOG")"; fi
+
+# Kuerzel 'mr' und Ordner ohne Repo-Kuerzel (mr-5): die Nummer geht nicht verloren
+MRR="$TMP/px/mrrepo"; MRB="$TMP/px/mrrepo-worktrees"
+git clone -q "$REMOTE_BARE" "$MRR"
+git -C "$MRR" worktree add -q --detach "$MRB/mr-5"
+printf 'WT_PREFIX="mr"\n' > "$HOME/.config/wt/mrrepo.conf"
+cd "$MRR" || exit 1
+printf '#!/usr/bin/env bash\nprintf "LISTEN 0 4096 127.0.0.1:8005 0.0.0.0:*\\n"\n' > "$TMP/ss-stub/ss"
+err=$(PATH="$TMP/ss-stub:$PATH" "$WT" drop 5 2>&1 >/dev/null); rc=$?
+expect_eq "prefix mr: drop 5 (Ordner mr-5) -> Exit 1 bei belegtem Port" "1" "$rc"
+if [[ "$err" == *"Port 8005"* ]]; then ok "prefix mr: drop 5 findet MR 5 im Ordner mr-5"; else fail "prefix mr: drop 5 findet MR 5 im Ordner mr-5" "$err"; fi
+
+# ---------- Zeichenregeln ----------
+cd "$PX" || exit 1
+err=$("$WT" link "a'b" 2>&1 >/dev/null); rc=$?
+expect_eq "link mit ungueltigem Namen -> Exit 1" "1" "$rc"
+if [ ! -e "$PXB/a'b" ] && [ ! -e "$PXB/media" ]; then ok "link mit ungueltigem Namen legt nichts im Sammelordner an"
+else fail "link mit ungueltigem Namen legt nichts im Sammelordner an" "$(ls -A "$PXB")"; fi
+cd "$REPO" || exit 1
+err=$("$WT" path .. 2>&1 >/dev/null); rc=$?
+expect_eq "path .. -> Exit 1" "1" "$rc"
+if locale -a 2>/dev/null | grep -qi '^de_DE\.utf-\?8$'; then
+  cd "$RM" || exit 1
+  err=$(LC_ALL=de_DE.UTF-8 "$WT" new --branch "größe" 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 1 ] && [[ "$err" == *"ungewoehnlichen Zeichen"* ]]; then ok "Umlaut im Branchnamen wird unter de_DE.UTF-8 abgelehnt"
+  else fail "Umlaut im Branchnamen wird unter de_DE.UTF-8 abgelehnt" "rc=$rc $err"; fi
+  err=$(LC_ALL=de_DE.UTF-8 "$WT" new --mr "٣" 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 1 ] && [[ "$err" == *"erwartet eine Nummer"* ]]; then ok "fremdes Ziffernzeichen bei --mr wird unter de_DE.UTF-8 abgelehnt"
+  else fail "fremdes Ziffernzeichen bei --mr wird unter de_DE.UTF-8 abgelehnt" "rc=$rc $err"; fi
+else
+  printf 'skip  Locale-Tests: de_DE.UTF-8 ist nicht installiert\n'
+fi
+
+# Angriff mit Repo-Kuerzel vorne: nichts wird ausgefuehrt
+cd "$PX" || exit 1
+"$WT" new --branch "mia-fix;touch $TMP/PWNED3" >/dev/null 2>&1; rc=$?
+expect_eq "prefix: Branch mit ; und Repo-Kuerzel -> Exit 1" "1" "$rc"
+if [ ! -e "$TMP/PWNED3" ]; then ok "prefix: Branch mit ; und Repo-Kuerzel wird nicht ausgefuehrt"; else fail "prefix: Branch mit ; und Repo-Kuerzel wird nicht ausgefuehrt" "Datei entstanden"; fi
+
 # Abbruch in verschachtelter Subshell: ungueltiger Name darf nicht den Sammelordner liefern
 cd "$REPO" || exit 1
-: > "$IDE_LOG"
+rm -f "$IDE_LOG"
 "$WT" ide "a'b" >/dev/null 2>&1; rc=$?
 expect_eq "ide mit ungueltigem Namen -> Exit 1" "1" "$rc"
+sleep 0.5   # open_ide startet per setsid -f, also asynchron
+if [ ! -e "$IDE_LOG" ]; then ok "ide mit ungueltigem Namen startet die IDE nicht"; else fail "ide mit ungueltigem Namen startet die IDE nicht" "$(cat "$IDE_LOG")"; fi
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'alle Tests gruen' || echo "$fails Test(s) rot")"
 [ "$fails" -eq 0 ]

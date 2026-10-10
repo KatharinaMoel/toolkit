@@ -41,6 +41,7 @@ show() { # show "<befehl>" "<ein-zeilen-erklaerung>" -> nur zeigen
 run() { show "$1" "$2"; eval "$1"; } # zeigen, dann ausfuehren
 note() { printf '\n%s* %s%s\n' "$C_NOTE" "$1" "$C_OFF" >&2; }
 die()  { printf '\n%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+re_ascii() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }   # $1 passt auf Regex $2, Zeichenklassen nur ASCII (unter de_DE treffen [A-Za-z0-9] und [0-9] sonst auch Umlaute und fremde Ziffern)
 
 usage() {
   cat <<'EOF'
@@ -69,7 +70,8 @@ wt - Worktrees mit erklaerten Schritten
   wt new ... --ide            neuen Worktree danach in der IDE oeffnen
 
 Erklaerungen gehen auf stderr, Ergebnisse auf stdout.
-Repo-Kuerzel vor jedem Worktree-Ordner: WT_PREFIX in der Konfig (abc -> abc-mr-721)
+Repo-Kuerzel vor jedem Worktree-Ordner: WT_PREFIX in der Konfig (abc -> abc-mr-721);
+ein neuer Branch, dessen Slug mit dem Repo-Kuerzel beginnt oder mr-<nr> lautet, wird verweigert.
 Konfig: <repo>/.worktree.conf oder ~/.config/wt/<reponame>.conf
 EOF
 }
@@ -109,7 +111,7 @@ for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
   fi
 done
 case "$FORGE" in ""|gitlab|github) ;; *) die "FORGE muss 'gitlab' oder 'github' sein (oder leer fuer Auto-Erkennung), nicht '$FORGE'" ;; esac
-if [ -n "${WT_PREFIX:-}" ] && ! [[ "$WT_PREFIX" =~ ^[A-Za-z0-9]+$ ]]; then
+if [ -n "${WT_PREFIX:-}" ] && ! re_ascii "$WT_PREFIX" '^[A-Za-z0-9]+$'; then
   die "WT_PREFIX darf nur Buchstaben und Ziffern enthalten (landet in Ordnernamen und Befehlen), nicht '$WT_PREFIX'"
 fi
 
@@ -121,7 +123,7 @@ resolve_target_branch() { # TARGET_BRANCH leer -> Default-Branch des Remotes, oh
   local head
   head=$(git -C "$REPO_ROOT" symbolic-ref -q "refs/remotes/$REMOTE/HEAD" 2>/dev/null) || head=""
   head="${head#"refs/remotes/$REMOTE/"}"
-  if [ -n "$head" ] && ! [[ "$head" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  if [ -n "$head" ] && ! re_ascii "$head" '^[A-Za-z0-9._/-]+$'; then
     note "Default-Branch des Remotes hat ungewoehnliche Zeichen - ignoriert; TARGET_BRANCH in der Konfig setzen."
     head=""
   fi
@@ -151,11 +153,12 @@ mr_refspec() { # $1 = nr -> Refspec der Forge; lokal heisst der Ref immer refs/m
 mr_word() { case "$FORGE" in github) printf 'PR\n' ;; *) printf 'MR\n' ;; esac; }
 
 # ---------- gemeinsame Bausteine ----------
-resolve_slug() { # $1 = nr|kuerzel|branch -> Ordnername unter WT_BASE (eine Regel fuer alle)
-  # Der Ordnername landet in run-Strings (eval): nur unverdaechtige Zeichen zulassen.
-  [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] \
+resolve_slug() { # $1 = nr|kuerzel|branch -> Slug (Schluessel fuer Ordner, Port, DB; Ordnername siehe wt_dir)
+  # Der Name landet in run-Strings (eval): nur unverdaechtige Zeichen zulassen.
+  re_ascii "$1" '^[A-Za-z0-9._/-]+$' \
     || die "Name mit ungewoehnlichen Zeichen: '$1' - erlaubt sind Buchstaben, Ziffern und . _ - /"
-  if [[ "$1" =~ ^[0-9]+$ ]]; then printf 'mr-%s\n' "$1"; else printf '%s\n' "${1//\//-}"; fi
+  case "/$1/" in */./*|*/../*) die "Name mit . oder .. als Bestandteil: '$1'" ;; esac
+  if re_ascii "$1" '^[0-9]+$'; then printf 'mr-%s\n' "$1"; else printf '%s\n' "${1//\//-}"; fi
 }
 
 wt_dir() { # $1 = slug -> Ordnername unter WT_BASE: '<WT_PREFIX>-<slug>', ohne Repo-Kuerzel der Slug
@@ -163,8 +166,8 @@ wt_dir() { # $1 = slug -> Ordnername unter WT_BASE: '<WT_PREFIX>-<slug>', ohne R
 }
 
 find_wt() { # $1 = nr|kuerzel|branch|ordnername, $2 = --no-hint -> existierender Worktree-Ordner
-  # Erst '<WT_PREFIX>-<slug>', dann der Name wie eingegeben: so findet 'mia-mr-721' sich selbst
-  # und ein Ordner ohne Repo-Kuerzel bleibt erreichbar. Ein Kuerzel wird nie abgeschnitten.
+  # Erst '<WT_PREFIX>-<slug>', dann der Slug ohne Repo-Kuerzel: so findet 'mia-mr-721' sich selbst
+  # und ein Ordner ohne Repo-Kuerzel bleibt erreichbar. Ein Repo-Kuerzel wird nie abgeschnitten.
   local slug p
   slug=$(resolve_slug "$1") || exit 1   # in $( ) gilt set -e nicht - Abbruch ausdruecklich weiterreichen
   p="$WT_BASE/$(wt_dir "$slug")"
@@ -184,17 +187,18 @@ legacy_hint() { # $1 = ordnername; Umbenennungsbefehl zeigen, nie ausfuehren
   printf '  > git -C %q worktree move %q %q\n' "$REPO_ROOT" "$WT_BASE/$1" "$WT_BASE/$(wt_dir "$1")" >&2
 }
 
-mr_number() { # $1 = eingabe -> MR-Nummer bei 721, mr-721, <WT_PREFIX>-mr-721; sonst leer
-  local s="$1"
-  if [ -n "${WT_PREFIX:-}" ]; then s="${s#"$WT_PREFIX"-}"; fi
-  s="${s#mr-}"
-  if [[ "$s" =~ ^[0-9]+$ ]]; then printf '%s\n' "$s"; fi
+mr_number() { # $1 = ordnername (Ergebnis von find_wt, nie die Eingabe) -> MR-Nummer bei mr-721, <WT_PREFIX>-mr-721; sonst leer
+  local LC_ALL=C   # [0-9] trifft unter de_DE sonst auch fremde Ziffernzeichen
+  if [[ "$1" =~ ^mr-([0-9]+)$ ]]; then printf '%s\n' "${BASH_REMATCH[1]}"
+  elif [ -n "${WT_PREFIX:-}" ] && [[ "$1" =~ ^${WT_PREFIX}-mr-([0-9]+)$ ]]; then printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+  return 0
 }
 
 prefix_reminder() { # $1 = ordnername; nur solange WT_PREFIX in keiner Konfig steht
   [ -z "${WT_PREFIX+x}" ] || return 0
   note "Hinweis: fuer $REPO_NAME ist kein Repo-Kuerzel konfiguriert - der Ordner heisst $1"
-  printf '  ! festlegen: WT_PREFIX="<kuerzel>" in ~/.config/wt/%s.conf (z.B. abc -> abc-%s)\n' "$REPO_NAME" "$1" >&2
+  printf '  ! festlegen: WT_PREFIX="<repo-kuerzel>" in ~/.config/wt/%s.conf (z.B. abc -> abc-%s)\n' "$REPO_NAME" "$1" >&2
   printf '  ! bewusst ohne Repo-Kuerzel: WT_PREFIX="" eintragen, dann entfaellt dieser Hinweis\n' >&2
 }
 
@@ -203,8 +207,10 @@ refuse_legacy_twin() { # $1 = slug; neben einem Ordner ohne Repo-Kuerzel keinen 
   new="$WT_BASE/$(wt_dir "$1")"
   [ "$old" != "$new" ] && [ -d "$old" ] || return 0
   die "fuer '$1' gibt es schon den Ordner ohne Repo-Kuerzel: $old
-  > weiterarbeiten: wt cd $1
-  > oder umbenennen: git -C $(q "$REPO_ROOT") worktree move $(q "$old") $(q "$new")"
+  ! in diesem Ordner weiterarbeiten:
+  > wt cd $1
+  ! oder umbenennen (kein IDE-Fenster darauf offen):
+  > git -C $(q "$REPO_ROOT") worktree move $(q "$old") $(q "$new")"
 }
 
 copy_project_files() { # $1 = worktree-pfad
@@ -309,13 +315,23 @@ cmd_new() {
     esac
   done
   [ -n "$mr" ] || [ -n "$branch" ] || { usage; die "new braucht --mr <nr> oder --branch <name>"; }
-  [ -z "$mr" ] || [[ "$mr" =~ ^[0-9]+$ ]] || die "--mr/--pr erwartet eine Nummer"
+  [ -z "$mr" ] || re_ascii "$mr" '^[0-9]+$' || die "--mr/--pr erwartet eine Nummer"
   if [ "$with_ide" -eq 1 ]; then need_ide; fi   # vorher pruefen, nicht erst nach dem Anlegen
   git -C "$REPO_ROOT" config --get "remote.$REMOTE.url" >/dev/null 2>&1 \
     || die "Remote '$REMOTE' gibt es in diesem Repo nicht - REMOTE in der Konfig pruefen"
   mkdir -p "$WT_BASE"
   local wtpath ref kuerzel port=""
   if [ -n "$mr" ]; then kuerzel=$(resolve_slug "$mr"); else kuerzel=$(resolve_slug "$branch"); fi
+  if [ -z "$mr" ]; then   # ein Branch-Ordner darf nie wie der Ordner eines anderen Branchs oder eines MR aussehen
+    if re_ascii "$kuerzel" '^mr-[0-9]+$'; then die "Branch '$branch' ergibt den Slug '$kuerzel' und damit den Ordner von MR/PR ${kuerzel#mr-}
+  ! fuer den MR/PR:
+  > wt new --mr ${kuerzel#mr-}
+  ! sonst einen anderen Branchnamen waehlen"; fi
+    if [ -n "${WT_PREFIX:-}" ]; then
+      case "$kuerzel" in "$WT_PREFIX"-*) die "Branch '$branch' ergibt den Slug '$kuerzel', der mit dem Repo-Kuerzel '$WT_PREFIX-' beginnt - 'wt path $kuerzel' koennte ihn nicht vom Ordner des Branchs '${kuerzel#"$WT_PREFIX"-}' unterscheiden
+  ! anderen Branchnamen waehlen" ;; esac
+    fi
+  fi
   wtpath="$WT_BASE/$(wt_dir "$kuerzel")"
   refuse_legacy_twin "$kuerzel"
 
@@ -492,7 +508,7 @@ cmd_run() {
   wtpath=$(cmd_path "$nr")
   local port="" args=() a
   local mrnr
-  mrnr=$(mr_number "$nr")
+  mrnr=$(mr_number "$(basename "$wtpath")")
   [ -z "$mrnr" ] || port=$((PORT_BASE + mrnr % 1000))
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -552,9 +568,9 @@ cmd_drop() {
   [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
   if is_main_repo_arg "$kuerzel"; then die "der Hauptordner wird nie entfernt - nur Worktrees"; fi
   local nr wtpath
-  nr=$(mr_number "$kuerzel")
   wtpath=$(find_wt "$kuerzel" --no-hint)
   kuerzel=$(basename "$wtpath")
+  nr=$(mr_number "$kuerzel")   # aus dem gefundenen Ordner, nicht aus der Eingabe: 'mia-123' kann ein Branch-Ordner sein, nicht MR 123
 
   if [ -n "$nr" ]; then
     local port=$((PORT_BASE + nr % 1000))
