@@ -220,22 +220,28 @@ collect_texts() {
   local -A seen=()
   load_text_state
   now=$(now_epoch)
+  local -a real_dirs=() linked_dirs=()
   for root in "${TEXT_ROOTS[@]}"; do
     for dir in "$root"/*/.reviews; do
       [ -d "$dir" ] || continue
-      repo=$(basename "$(dirname "$dir")")
-      for f in "$dir"/*; do
-        [ -f "$f" ] || continue
-        case "${f##*/}" in *$'\t'*|*$'\n'*) continue ;; esac   # would break the list lines
-        case "${f##*/}" in [Rr][Ee][Aa][Dd][Mm][Ee]*) continue ;; esac
-        real=$(realpath "$f" 2>/dev/null) || continue           # vanished meanwhile
-        [ -z "${seen[$real]:-}" ] || continue
-        seen[$real]=1
-        mtime=$(stat -c %Y "$real" 2>/dev/null) || continue
-        text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$now"
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$real" "$repo" "${f##*/}" \
-          "$TS_STATE" "$TS_HIDDEN" "$TS_TRASH" "$([ -n "${SEEN[$real]+x}" ] && echo 1 || echo 0)"
-      done
+      if [ -L "$dir" ]; then linked_dirs+=("$dir"); else real_dirs+=("$dir"); fi
+    done
+  done
+  # real .reviews first: a text shared via a symlinked .reviews keeps the name of the
+  # repo it lives in, whatever order the locale sorts the glob in
+  for dir in ${real_dirs[@]+"${real_dirs[@]}"} ${linked_dirs[@]+"${linked_dirs[@]}"}; do
+    repo=$(basename "$(dirname "$dir")")
+    for f in "$dir"/*; do
+      [ -f "$f" ] || continue
+      case "${f##*/}" in *$'\t'*|*$'\n'*) continue ;; esac   # would break the list lines
+      case "${f##*/}" in [Rr][Ee][Aa][Dd][Mm][Ee]*) continue ;; esac
+      real=$(realpath "$f" 2>/dev/null) || continue           # vanished meanwhile
+      [ -z "${seen[$real]:-}" ] || continue
+      seen[$real]=1
+      mtime=$(stat -c %Y "$real" 2>/dev/null) || continue
+      text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$now"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$real" "$repo" "${f##*/}" \
+        "$TS_STATE" "$TS_HIDDEN" "$TS_TRASH" "$([ -n "${SEEN[$real]+x}" ] && echo 1 || echo 0)"
     done
   done | sort -t $'\t' -k1,1nr
 }

@@ -7,6 +7,7 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # a hanging apt mirror must not keep the job running for hours
     steps:
       - uses: actions/checkout@v5
 
@@ -31,6 +32,7 @@ jobs:
   transcribe:
     name: transcribe tests (Python 3.12, stdlib + pytest)
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # a hanging apt mirror must not keep the job running for hours
     steps:
       - uses: actions/checkout@v5
 
