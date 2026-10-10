@@ -137,6 +137,16 @@ come from the first file found of:
 See [example.conf](example.conf) for all variables. Forge, remote and target branch are auto-detected; override them with `FORGE`, `REMOTE`, `TARGET_BRANCH`. Real config files contain
 internal names (containers, databases, paths) — keep them local.
 
+### Folder prefix
+
+`WT_PREFIX` (repo config only; an exported environment variable is ignored) puts a short tag in front of every worktree folder: `WT_PREFIX="abc"` gives `abc-mr-721` and `abc-feat-x`. That keeps folders recognisable outside the repo (IDE recent projects, window titles, `wt pick`) when several repos have worktrees like `mr-3`. Letters and digits only, taken literally (no case change); anything else aborts. Only the folder name changes: DB copies (`<DB_COPY_PREFIX><nr>`), ports and branch names stay as they are.
+
+Lookup (`wt path/cd/ide/link/run/drop`) finds the same folder for `721`, `mr-721` and `abc-mr-721`: first `<prefix>-<slug>`, then the given name verbatim. A tag is never stripped (branch `abc-fix` becomes folder `abc-abc-fix`). `wt drop` and `wt run` also derive the MR number (port, DB copy) from `mr-721` and `abc-mr-721`.
+
+Folders created before the tag was set are still found; `wt` shows the `git worktree move <old> <new>` command to rename them but never runs it (close the IDE window on the folder first). `wt new` refuses to create a second folder next to such an old one for the same MR/branch.
+
+If `WT_PREFIX` is unset in every config, `wt` uses plain folder names and `wt new` ends with a reminder to pick a tag. `WT_PREFIX=""` means plain names on purpose and silences the reminder.
+
 ## Requirements
 
 - Bash, Git ≥ 2.23

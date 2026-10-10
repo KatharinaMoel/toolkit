@@ -13,6 +13,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 export HOME="$TMP/home" NO_COLOR=1 COLUMNS=10000 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+unset WT_PREFIX
 mkdir -p "$HOME"
 
 # ---------- Stubs ----------
@@ -28,6 +29,7 @@ cat > "$STUBS/fake-ide" <<'EOF'
 printf '%s\n' "$@" > "$IDE_LOG"
 EOF
 chmod +x "$STUBS/fzf" "$STUBS/fake-ide"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUBS/ss"; chmod +x "$STUBS/ss"
 export PATH="$STUBS:$PATH" FZF_LOG="$TMP/fzf.log" IDE_LOG="$TMP/ide.log"
 
 # ---------- Wegwerf-Repo mit zwei Worktrees ----------
@@ -366,6 +368,81 @@ err=$("$WT" new --pr abc 2>&1 >/dev/null); rc=$?
 expect_eq "new --pr abc -> Exit 1" "1" "$rc"
 if [[ "$err" == *"--mr/--pr erwartet eine Nummer"* && "$err" != *"set-head"* ]]; then ok "new --pr abc -> Fehler vor dem Netzzugriff"
 else fail "new --pr abc -> Fehler vor dem Netzzugriff" "$err"; fi
+
+# ---------- WT_PREFIX: Kuerzel vor dem Worktree-Ordner ----------
+PX="$TMP/px/pxrepo"; PXB="$TMP/px/pxrepo-worktrees"
+git clone -q "$REMOTE_BARE" "$PX"
+git -C "$PX" worktree add -q --detach "$PXB/mr-5"      # Ordner von vor dem Kuerzel
+printf 'WT_PREFIX="mia"\n' > "$HOME/.config/wt/pxrepo.conf"
+cd "$PX" || exit 1
+
+err=$("$WT" new --branch feat/a 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: new --branch -> Exit 0" "0" "$rc"
+if [ -d "$PXB/mia-feat-a" ]; then ok "prefix: new legt mia-feat-a an"; else fail "prefix: new legt mia-feat-a an" "$(ls "$PXB")"; fi
+if [[ "$err" != *"kein Repo-Kuerzel"* ]]; then ok "prefix: gesetzt -> keine Erinnerung"; else fail "prefix: gesetzt -> keine Erinnerung" "$err"; fi
+for x in feat/a feat-a mia-feat-a; do
+  expect_eq "prefix: path $x" "$PXB/mia-feat-a" "$("$WT" path "$x" 2>/dev/null)"
+done
+
+err=$("$WT" new --mr 7 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: new --mr 7 -> Exit 0" "0" "$rc"
+for x in 7 mr-7 mia-mr-7; do
+  expect_eq "prefix: path $x" "$PXB/mia-mr-7" "$("$WT" path "$x" 2>/dev/null)"
+done
+
+expect_eq "prefix: path 5 -> Ordner ohne Repo-Kuerzel" "$PXB/mr-5" "$("$WT" path 5 2>/dev/null)"
+err=$("$WT" path 5 2>&1 >/dev/null)
+if [[ "$err" == *"worktree move"*"/mr-5"*"/mia-mr-5"* ]]; then ok "prefix: Ordner ohne Repo-Kuerzel -> Umbenennungsbefehl"
+else fail "prefix: Ordner ohne Repo-Kuerzel -> Umbenennungsbefehl" "$err"; fi
+err=$("$WT" new --mr 5 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: new neben Ordner ohne Repo-Kuerzel -> Exit 1" "1" "$rc"
+if [[ "$err" == *"ohne Repo-Kuerzel"* ]] && [ ! -e "$PXB/mia-mr-5" ]; then ok "prefix: kein zweiter Ordner fuer MR 5"
+else fail "prefix: kein zweiter Ordner fuer MR 5" "$err"; fi
+
+# MR-Nummer aus dem Ordnernamen: ss-Stub meldet Port 8007 belegt -> drop muss abbrechen
+mkdir -p "$TMP/ss-stub"
+cat > "$TMP/ss-stub/ss" <<'EOF'
+#!/usr/bin/env bash
+printf 'LISTEN 0 4096 127.0.0.1:8007 0.0.0.0:*\n'
+EOF
+chmod +x "$TMP/ss-stub/ss"
+err=$(PATH="$TMP/ss-stub:$PATH" "$WT" drop mia-mr-7 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: drop mia-mr-7 erkennt MR 7 -> Exit 1 bei belegtem Port" "1" "$rc"
+if [[ "$err" == *"Port 8007"* ]]; then ok "prefix: drop mia-mr-7 prueft Port 8007"; else fail "prefix: drop mia-mr-7 prueft Port 8007" "$err"; fi
+err=$("$WT" drop mia-mr-7 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: drop mia-mr-7 -> Exit 0" "0" "$rc"
+if [ ! -e "$PXB/mia-mr-7" ]; then ok "prefix: mia-mr-7 entfernt"; else fail "prefix: mia-mr-7 entfernt" "$err"; fi
+err=$("$WT" drop 5 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: drop 5 (ohne Repo-Kuerzel) -> Exit 0" "0" "$rc"
+if [ ! -e "$PXB/mr-5" ] && [[ "$err" != *"worktree move"* ]]; then ok "prefix: drop ohne Umbenennungshinweis"
+else fail "prefix: drop ohne Umbenennungshinweis" "$err"; fi
+
+# Erinnerung: ohne WT_PREFIX-Eintrag ja, mit WT_PREFIX="" nicht
+RM="$TMP/px/rmrepo"; RMB="$TMP/px/rmrepo-worktrees"
+git clone -q "$REMOTE_BARE" "$RM"
+cd "$RM" || exit 1
+err=$("$WT" new --branch feat/b 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: ohne Eintrag -> Exit 0" "0" "$rc"
+if [[ "$err" == *"kein Repo-Kuerzel konfiguriert"*'WT_PREFIX=""'* ]] && [ -d "$RMB/feat-b" ]; then ok "prefix: ohne Eintrag -> Erinnerung, Ordner wie bisher"
+else fail "prefix: ohne Eintrag -> Erinnerung, Ordner wie bisher" "$err"; fi
+printf 'WT_PREFIX=""\n' > "$HOME/.config/wt/rmrepo.conf"
+err=$("$WT" new --branch feat/c 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [[ "$err" != *"kein Repo-Kuerzel"* ]] && [ -d "$RMB/feat-c" ]; then ok "prefix: WT_PREFIX=\"\" -> still, Ordner wie bisher"
+else fail "prefix: WT_PREFIX=\"\" -> still, Ordner wie bisher" "$err"; fi
+
+# Injection ueber die Konfig: der Wert landet in Ordnernamen und run-Strings
+printf "WT_PREFIX='mia;touch %s/PWNED'\n" "$TMP" > "$HOME/.config/wt/rmrepo.conf"
+err=$("$WT" new --branch feat/a 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: WT_PREFIX mit ; -> Exit 1" "1" "$rc"
+if [[ "$err" == *"nur Buchstaben und Ziffern"* ]] && [ ! -e "$TMP/PWNED" ]; then ok "prefix: WT_PREFIX mit ; wird nicht ausgefuehrt"
+else fail "prefix: WT_PREFIX mit ; wird nicht ausgefuehrt" "$err"; fi
+rm -f "$HOME/.config/wt/rmrepo.conf"
+
+# Abbruch in verschachtelter Subshell: ungueltiger Name darf nicht den Sammelordner liefern
+cd "$REPO" || exit 1
+: > "$IDE_LOG"
+"$WT" ide "a'b" >/dev/null 2>&1; rc=$?
+expect_eq "ide mit ungueltigem Namen -> Exit 1" "1" "$rc"
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'alle Tests gruen' || echo "$fails Test(s) rot")"
 [ "$fails" -eq 0 ]

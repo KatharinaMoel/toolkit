@@ -69,6 +69,7 @@ wt - Worktrees mit erklaerten Schritten
   wt new ... --ide            neuen Worktree danach in der IDE oeffnen
 
 Erklaerungen gehen auf stderr, Ergebnisse auf stdout.
+Repo-Kuerzel vor jedem Worktree-Ordner: WT_PREFIX in der Konfig (abc -> abc-mr-721)
 Konfig: <repo>/.worktree.conf oder ~/.config/wt/<reponame>.conf
 EOF
 }
@@ -97,6 +98,8 @@ RUN_MANAGE="manage.py"         # Pfad zu manage.py im Worktree (fuer 'wt run')
 RUN_SETTINGS=""                # Settings-Modul fuer 'wt run'; leer = nichts anhaengen
 RUN_PYTHON=""                  # Interpreter fuer 'wt run', wenn kein venv aktiv ist (relativ zum Hauptbaum oder absolut)
 IDE_CMD="pycharm"              # Befehl fuer 'wt ide'; bekommt den Ordner als Argument
+unset WT_PREFIX   # Repo-Kuerzel vor jedem Worktree-Ordner (mia -> mia-mr-721); nur die Konfig zaehlt:
+                  # ungesetzt erinnert 'wt new' daran, WT_PREFIX="" schaltet die Erinnerung ab
 
 for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
   if [ -f "$conf" ]; then
@@ -106,6 +109,9 @@ for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
   fi
 done
 case "$FORGE" in ""|gitlab|github) ;; *) die "FORGE muss 'gitlab' oder 'github' sein (oder leer fuer Auto-Erkennung), nicht '$FORGE'" ;; esac
+if [ -n "${WT_PREFIX:-}" ] && ! [[ "$WT_PREFIX" =~ ^[A-Za-z0-9]+$ ]]; then
+  die "WT_PREFIX darf nur Buchstaben und Ziffern enthalten (landet in Ordnernamen und Befehlen), nicht '$WT_PREFIX'"
+fi
 
 # ---------- Forge, Remote, Zielbranch ----------
 q() { printf '%q' "$1"; }   # Wert sicher in einen run-/eval-String setzen
@@ -150,6 +156,55 @@ resolve_slug() { # $1 = nr|kuerzel|branch -> Ordnername unter WT_BASE (eine Rege
   [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] \
     || die "Name mit ungewoehnlichen Zeichen: '$1' - erlaubt sind Buchstaben, Ziffern und . _ - /"
   if [[ "$1" =~ ^[0-9]+$ ]]; then printf 'mr-%s\n' "$1"; else printf '%s\n' "${1//\//-}"; fi
+}
+
+wt_dir() { # $1 = slug -> Ordnername unter WT_BASE: '<WT_PREFIX>-<slug>', ohne Repo-Kuerzel der Slug
+  if [ -n "${WT_PREFIX:-}" ]; then printf '%s-%s\n' "$WT_PREFIX" "$1"; else printf '%s\n' "$1"; fi
+}
+
+find_wt() { # $1 = nr|kuerzel|branch|ordnername, $2 = --no-hint -> existierender Worktree-Ordner
+  # Erst '<WT_PREFIX>-<slug>', dann der Name wie eingegeben: so findet 'mia-mr-721' sich selbst
+  # und ein Ordner ohne Repo-Kuerzel bleibt erreichbar. Ein Kuerzel wird nie abgeschnitten.
+  local slug p
+  slug=$(resolve_slug "$1") || exit 1   # in $( ) gilt set -e nicht - Abbruch ausdruecklich weiterreichen
+  p="$WT_BASE/$(wt_dir "$slug")"
+  if [ -d "$p" ]; then printf '%s\n' "$p"; return 0; fi
+  if [ ! -d "$WT_BASE/$slug" ]; then
+    if [ "$p" = "$WT_BASE/$slug" ]; then die "Worktree nicht gefunden: $p"; fi
+    die "Worktree nicht gefunden: $p (auch nicht $WT_BASE/$slug)"
+  fi
+  [ "${2:-}" = "--no-hint" ] || legacy_hint "$slug"
+  printf '%s\n' "$WT_BASE/$slug"
+}
+
+legacy_hint() { # $1 = ordnername; Umbenennungsbefehl zeigen, nie ausfuehren
+  [ -n "${WT_PREFIX:-}" ] || return 0
+  case "$1" in "$WT_PREFIX"-*) return 0 ;; esac
+  note "Hinweis: '$1' traegt das Repo-Kuerzel '$WT_PREFIX' noch nicht - umbenennen, wenn kein IDE-Fenster darauf offen ist:"
+  printf '  > git -C %q worktree move %q %q\n' "$REPO_ROOT" "$WT_BASE/$1" "$WT_BASE/$(wt_dir "$1")" >&2
+}
+
+mr_number() { # $1 = eingabe -> MR-Nummer bei 721, mr-721, <WT_PREFIX>-mr-721; sonst leer
+  local s="$1"
+  if [ -n "${WT_PREFIX:-}" ]; then s="${s#"$WT_PREFIX"-}"; fi
+  s="${s#mr-}"
+  if [[ "$s" =~ ^[0-9]+$ ]]; then printf '%s\n' "$s"; fi
+}
+
+prefix_reminder() { # $1 = ordnername; nur solange WT_PREFIX in keiner Konfig steht
+  [ -z "${WT_PREFIX+x}" ] || return 0
+  note "Hinweis: fuer $REPO_NAME ist kein Repo-Kuerzel konfiguriert - der Ordner heisst $1"
+  printf '  ! festlegen: WT_PREFIX="<kuerzel>" in ~/.config/wt/%s.conf (z.B. abc -> abc-%s)\n' "$REPO_NAME" "$1" >&2
+  printf '  ! bewusst ohne Repo-Kuerzel: WT_PREFIX="" eintragen, dann entfaellt dieser Hinweis\n' >&2
+}
+
+refuse_legacy_twin() { # $1 = slug; neben einem Ordner ohne Repo-Kuerzel keinen zweiten anlegen
+  local old="$WT_BASE/$1" new
+  new="$WT_BASE/$(wt_dir "$1")"
+  [ "$old" != "$new" ] && [ -d "$old" ] || return 0
+  die "fuer '$1' gibt es schon den Ordner ohne Repo-Kuerzel: $old
+  > weiterarbeiten: wt cd $1
+  > oder umbenennen: git -C $(q "$REPO_ROOT") worktree move $(q "$old") $(q "$new")"
 }
 
 copy_project_files() { # $1 = worktree-pfad
@@ -259,6 +314,10 @@ cmd_new() {
   git -C "$REPO_ROOT" config --get "remote.$REMOTE.url" >/dev/null 2>&1 \
     || die "Remote '$REMOTE' gibt es in diesem Repo nicht - REMOTE in der Konfig pruefen"
   mkdir -p "$WT_BASE"
+  local wtpath ref kuerzel port=""
+  if [ -n "$mr" ]; then kuerzel=$(resolve_slug "$mr"); else kuerzel=$(resolve_slug "$branch"); fi
+  wtpath="$WT_BASE/$(wt_dir "$kuerzel")"
+  refuse_legacy_twin "$kuerzel"
 
   if [ -z "$TARGET_BRANCH" ]; then   # <REMOTE>/HEAD fehlt (z.B. Repo per 'git remote add' statt clone) - einmalig vom Remote erfragen
     run "git -C '$REPO_ROOT' remote set-head $(q "$REMOTE") --auto" \
@@ -267,17 +326,15 @@ cmd_new() {
     resolve_target_branch
   fi
 
-  local wtpath ref kuerzel port=""
   if [ -n "$mr" ]; then
     detect_forge
-    kuerzel=$(resolve_slug "$mr"); wtpath="$WT_BASE/$kuerzel"; ref="refs/mr/$mr"
+    ref="refs/mr/$mr"
     port=$((PORT_BASE + mr % 1000))
     run "git -C '$REPO_ROOT' fetch $(q "$REMOTE") $(q "$(mr_refspec "$mr")")" \
         "$(mr_word)-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)"
     run "git -C '$REPO_ROOT' worktree add --detach '$wtpath' '$ref'" \
         "Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision"
   else
-    kuerzel=$(resolve_slug "$branch"); wtpath="$WT_BASE/$kuerzel"
     if git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$branch"; then
       ref="$branch"
       run "git -C '$REPO_ROOT' worktree add '$wtpath' $(q "$branch")" \
@@ -302,6 +359,7 @@ cmd_new() {
     settings_shim "$wtpath" "$dbname"
   fi
 
+  prefix_reminder "$(basename "$wtpath")"
   note "Fertig. Naechste Schritte von Hand:"
   # Mit Shell-Integration (WT_SHELL=1) uebernimmt die Funktion den cd selbst.
   [ -z "${WT_SHELL:-}" ] && printf '  cd %s\n' "$wtpath" >&2
@@ -334,7 +392,7 @@ resolve_path() { # $1 = .|reponame|absoluter pfad|nr|kuerzel|branch -> existiere
   else
     case "$1" in
       /*) p="$1" ;;
-      *)  p="$WT_BASE/$(resolve_slug "$1")" ;;
+      *)  p=$(find_wt "$1") || exit 1 ;;
     esac
   fi
   [ -d "$p" ] || die "Worktree nicht gefunden: $p"
@@ -433,7 +491,9 @@ cmd_run() {
   local nr="$1" wtpath; shift
   wtpath=$(cmd_path "$nr")
   local port="" args=() a
-  [[ "$nr" =~ ^[0-9]+$ ]] && port=$((PORT_BASE + nr % 1000))
+  local mrnr
+  mrnr=$(mr_number "$nr")
+  [ -z "$mrnr" ] || port=$((PORT_BASE + mrnr % 1000))
   while [ $# -gt 0 ]; do
     case "$1" in
       --port) [ -n "${2:-}" ] || die "--port braucht eine Zahl"; port="$2"; shift 2 ;;
@@ -491,11 +551,10 @@ cmd_drop() {
   done
   [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
   if is_main_repo_arg "$kuerzel"; then die "der Hauptordner wird nie entfernt - nur Worktrees"; fi
-  local nr=""
-  [[ "$kuerzel" =~ ^[0-9]+$ ]] && nr="$kuerzel"
-  kuerzel=$(resolve_slug "$kuerzel")
-  local wtpath="$WT_BASE/$kuerzel"
-  [ -d "$wtpath" ] || die "Worktree nicht gefunden: $wtpath"
+  local nr wtpath
+  nr=$(mr_number "$kuerzel")
+  wtpath=$(find_wt "$kuerzel" --no-hint)
+  kuerzel=$(basename "$wtpath")
 
   if [ -n "$nr" ]; then
     local port=$((PORT_BASE + nr % 1000))
