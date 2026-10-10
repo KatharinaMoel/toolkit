@@ -25,6 +25,27 @@ on any Linux. Each tool's README states its actual requirements.
 | [dev/recall](dev/recall/) | dev | One hotkey, one fuzzy list: copy prepared commit/MR texts and forgotten commands, read procedures — with Claude Code as a read-only fallback for fuzzy questions |
 | [media/transcribe](media/transcribe/) | media | Public podcast episodes (or any audio) to Markdown — the publisher's transcript when the feed has one, otherwise local CPU recognition with timestamps; resumable queue for multi-day runs |
 
+## Development
+
+CI (`.github/workflows/ci.yml`) is the binding check: `bash -n`, ShellCheck and the
+tests. An optional local `pre-commit` hook in [`.githooks/`](.githooks/) gives the
+same early warning before a commit, plus a secret scan of the staged content:
+
+```bash
+git config core.hooksPath .githooks   # once per clone; worktrees share it
+```
+
+- **Opt-in:** git does not clone hook settings, so a fresh `git clone` has no hook
+  until you run the command above. Branches created before `.githooks/` existed
+  are not covered either.
+- **Secret scan:** uses the author's own scanner `kios` (not published). If it is
+  not found (set `KIOS_BIN` to point to it), the hook stops the commit instead of
+  skipping the scan silently. Without `kios`, leave the hook off or replace the scan
+  step in `.githooks/pre-commit` with your own scanner.
+- **Shell checks:** `bash -n` and `shellcheck` on the staged versions of the scripts
+  that CI checks; keep the list in the hook in sync with `ci.yml`.
+- **Bypass once:** `git commit --no-verify`.
+
 ## License
 
 [MIT](LICENSE)
