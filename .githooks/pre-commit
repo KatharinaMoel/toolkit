@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# pre-commit - blocks secrets and broken shell scripts before they enter the history.
+#
+# Opt-in, once per clone:   git config core.hooksPath .githooks
+# Bypass for one commit:    git commit --no-verify
+#
+# Checks the STAGED content (not the working copy):
+#   1. every added/copied/modified/renamed file goes through `kios scan --stdin`
+#      (secret scanner of the author's vault tooling; set KIOS_BIN if it is not in PATH)
+#   2. the shell scripts that CI also checks go through `bash -n` and `shellcheck`
+#
+# Fail fast: a missing scanner or a crashing scan stops the commit instead of
+# letting it through silently. CI stays the binding check; this is an early warning.
+set -uo pipefail
+
+# Shell scripts checked by CI (keep in sync with .github/workflows/ci.yml)
+is_ci_shell() {
+  case "$1" in
+    dev/wt/wt|dev/wt/test_wt.sh|dev/recall/recall|dev/recall/test_recall.sh|media/transcribe/transcribe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+KIOS="${KIOS_BIN:-kios}"
+if ! command -v "$KIOS" >/dev/null 2>&1; then
+  for cand in "$HOME/.local/bin/kios" /usr/local/bin/kios; do
+    [ -x "$cand" ] && { KIOS="$cand"; break; }
+  done
+fi
+if ! command -v "$KIOS" >/dev/null 2>&1; then
+  echo "pre-commit: kios not found (PATH=$PATH). Commit stopped - set KIOS_BIN or use --no-verify." >&2
+  exit 1
+fi
+
+fail=0
+while IFS= read -r -d '' file; do
+  # Regular files only; symlinks (mode 120000) store just the target path.
+  mode=$(git ls-files --stage -- ":(literal)$file" | cut -c1-6)
+  case "$mode" in 100644|100755) ;; *) continue ;; esac
+
+  git show ":$file" | "$KIOS" scan --stdin >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "pre-commit: $file probably contains a secret:" >&2
+    git show ":$file" | "$KIOS" scan --stdin >&2
+    fail=1
+  elif [ "$rc" -ne 0 ]; then
+    echo "pre-commit: kios scan failed (exit $rc) on $file - commit stopped to be safe." >&2
+    fail=1
+  fi
+
+  if is_ci_shell "$file"; then
+    if ! git show ":$file" | bash -n; then
+      echo "pre-commit: bash -n failed on $file" >&2
+      fail=1
+    fi
+    if command -v shellcheck >/dev/null 2>&1; then
+      if ! git show ":$file" | shellcheck - >&2; then
+        echo "pre-commit: shellcheck failed on $file" >&2
+        fail=1
+      fi
+    else
+      echo "pre-commit: shellcheck not in PATH - skipped for $file (CI still checks it)" >&2
+    fi
+  fi
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: commit stopped. To bypass once: git commit --no-verify" >&2
+  exit 1
+fi
+exit 0
