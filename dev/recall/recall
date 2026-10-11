@@ -342,6 +342,9 @@ src_commands() { # src_commands tree|flat; tables "| command | explanation | key
       if (cmd ~ /^`.*`$/) cmd = substr(cmd, 2, length(cmd) - 2)
       gsub(/\001/, "|", cmd); gsub(/\001/, "|", expl); gsub(/\001/, "|", kw)
       if (cmd == "") next
+      # Bash reads the list with a tab as IFS, where two tabs count as one: an empty
+      # cell would shift the keywords into it. A space keeps the field; the preview trims it.
+      if (expl == "") expl = " "
       nc++; c_cmd[nc] = cmd; c_expl[nc] = expl; c_kw[nc] = trim(kw " " tool); c_tool[nc] = tool
       count[tool]++
     }

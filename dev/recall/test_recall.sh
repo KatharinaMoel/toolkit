@@ -670,6 +670,24 @@ expect_eq "preview: command group in colour, one blank line between entries only
   "$(env -u NO_COLOR "$RECALL" --preview "$grp" 2>/dev/null)"
 expect_not "preview: NO_COLOR command group carries no escape codes" $'\033' "$("$RECALL" --preview "$grp" 2>/dev/null)"
 expect_not "preview: NO_COLOR single command carries no escape codes" $'\033' "$("$RECALL" --preview "$(line_of "$TMP/flat" "wt pick")" 2>/dev/null)"
+# An empty explanation cell must not shift the keywords into its place.
+# Own commands file, so the shared fixture and its group counts stay as they are.
+cp "$HOME/.config/recall/recall.conf" "$TMP/conf.preview.bak"
+printf 'COMMANDS_FILE="%s"\n' "$TMP/leer.md" >> "$HOME/.config/recall/recall.conf"
+cat > "$TMP/leer.md" <<'EOF'
+## leer
+
+| Befehl | Erklaerung | Stichworte |
+|---|---|---|
+| `x` |  | kw |
+EOF
+out=$("$RECALL" --preview "$("$RECALL" --list flat | grep -F '⌘ x')" 2>&1)
+expect_eq "preview: empty explanation keeps the keywords in their place" "x
+
+keywords: kw leer" "$out"
+grp=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '⌘ leer')
+expect_eq "preview: empty explanation, group shows the command alone" "x" "$("$RECALL" --preview "$grp" 2>/dev/null)"
+mv "$TMP/conf.preview.bak" "$HOME/.config/recall/recall.conf"
 grp=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '✎ projekt-a')
 expect_eq "preview: text group lists its files" "projekt-a · commit msg neu.txt
 projekt-a · alt.txt" "$("$RECALL" --preview "$grp" 2>/dev/null)"
