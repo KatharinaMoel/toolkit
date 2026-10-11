@@ -57,6 +57,7 @@ PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
 TEXT_HIDE_AFTER_COPY_DAYS=4  # a copied text is parked this many days after the copy
 TEXT_HIDE_UNUSED_DAYS=7      # a text never copied is parked this many days after its last change
 TEXT_TRASH_DAYS=7            # a parked text goes to the desktop trash after this many days
+TEXT_SHOW_MAX=4              # an open repo group shows this many texts, then "… n more" (0 = all)
 STALE_DAYS=90                # procedures not updated for this long are marked as older
 OPEN_CMD="xdg-open"          # ctrl-o opens the file of an entry with this command
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/recall"
@@ -74,6 +75,9 @@ ASSIST_PROMPT="Answer briefly, in German. First look things up in the allowed fo
 CONF="$HOME/.config/recall/recall.conf"
 # shellcheck source=/dev/null
 [ -f "$CONF" ] && source "$CONF"
+# A malformed cap would break the arithmetic in on_key; 08 is decimal, not octal.
+[[ $TEXT_SHOW_MAX =~ ^[0123456789]+$ ]] || TEXT_SHOW_MAX=4   # ASCII digits only, whatever the locale
+TEXT_SHOW_MAX=$((10#$TEXT_SHOW_MAX))
 
 TEXTS_STATE="$STATE_DIR/texts.tsv"   # <real path> <copied at> <kept at> <first seen>, epoch seconds
 TRASH_LOG="$STATE_DIR/trash.log"     # one line per text moved to the trash
@@ -102,6 +106,7 @@ In the list
                 ✎ text      copy to clipboard, close
                 ⌘ command   copy to clipboard, close
                 ☰ procedure read it (rendered)
+                … n more    show the whole group
   ctrl-y      copy a text or command and stay open (also: right-click on it)
   ctrl-o      open the file in its application ($OPEN_CMD)
   ctrl-k      keep a text: restart its clock, bring it back from "parked"
@@ -117,6 +122,7 @@ Window
   alt-space   GNOME window menu, "Always on Top" keeps recall above other windows
 
 Texts
+  at start    the repos with a text from the last 24 hours are open
   copied      parked ${TEXT_HIDE_AFTER_COPY_DAYS} days after the copy
   not copied  parked ${TEXT_HIDE_UNUSED_DAYS} days after the last change
   parked      moved to the desktop trash after ${TEXT_TRASH_DAYS} more days,
@@ -258,12 +264,14 @@ collect_texts() {
 # A group line's cursor id is the group, every entry has its own ("f:<target>"),
 # so the cursor stays on the very entry after ctrl-k, in both views.
 open_groups() { cat "${RECALL_RUN:-/nonexistent}/open" 2>/dev/null || true; }
+full_groups() { cat "${RECALL_RUN:-/nonexistent}/full" 2>/dev/null || true; }
 # Group ids reach awk through ENVIRON (OPEN, HERE): awk -v would turn backslashes into escapes.
 
 src_texts() { # src_texts tree|flat; a due text the cleanup could not trash shows as parked
-  collect_texts | OPEN=$(open_groups) HERE=${RECALL_HERE:-} awk -F'\t' -v view="$1" \
+  collect_texts | OPEN=$(open_groups) FULL=$(full_groups) HERE=${RECALL_HERE:-} awk -F'\t' -v view="$1" -v max="$TEXT_SHOW_MAX" \
       -v ic="$I_TEXT" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
-    BEGIN { here = ENVIRON["HERE"]; n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1 }
+    BEGIN { here = ENVIRON["HERE"]; n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1
+      m2 = split(ENVIRON["FULL"], f2, "\n"); for (i = 1; i <= m2; i++) isfull[f2[i]] = 1 }
     function arrow(g) { return fade ((g in isopen) ? "▾" : "▸") rst }
     $5 == "parked" || $5 == "due" { np++; p_real[np] = $2; p_repo[np] = $3; p_name[np] = $4; next }
     {
@@ -284,9 +292,13 @@ src_texts() { # src_texts tree|flat; a due text the cleanup could not trash show
       for (i = 1; i <= m; i++) {
         repo = ord[i]; g = "t:" repo
         printf "grp\t%s\t%s\t%s\t%s✎%s %s %s(%d)%s %s\n", g, g, g, ic, rst, repo, fade, cnt[repo], rst, arrow(g)
-        if (g in isopen)
-          for (j = 1; j <= cnt[repo]; j++)
+        if (g in isopen) {
+          lim = (max > 0 && !(g in isfull) && cnt[repo] > max) ? max : cnt[repo]
+          for (j = 1; j <= lim; j++)
             printf "text\t%s\t%s\tf:%s\t    %s\n", r_real[repo SUBSEP j], g, r_real[repo SUBSEP j], r_name[repo SUBSEP j]
+          if (lim < cnt[repo])
+            printf "more\t%s\t%s\tm:%s\t    %s… %d more%s\n", g, g, g, fade, cnt[repo] - lim, rst
+        }
       }
       if (np) {
         g = "parked"
@@ -420,6 +432,11 @@ first_text_group() { # the text group that is open at start
   RECALL_RUN="" src_texts tree | awk -F'\t' '$1 == "grp" && $3 ~ /^t:/ { print $3; exit }'
 }
 
+recent_text_groups() { # repos with an active text changed in the last 24 hours, newest first
+  collect_texts | awk -F'\t' -v since="$(( $(now_epoch) - DAY ))" \
+    '$5 == "active" && $1 > since && !seen[$3]++ { print "t:" $3 }'
+}
+
 # ---------- Markdown display: glow renders it, bat is the fallback ----------
 show_file() { # show_file <file> preview|page
   local width=${FZF_PREVIEW_COLUMNS:-80}
@@ -439,16 +456,32 @@ toggle_help() {
   if [ -e "$RECALL_RUN/help" ]; then rm -f "$RECALL_RUN/help"; else : > "$RECALL_RUN/help"; fi
 }
 
-toggle_group() { # toggle_group <group id>
-  local f="$RECALL_RUN/open" tmp
+toggle_group() { # toggle_group <group id> [state file name, default open]
+  local f="$RECALL_RUN/${2:-open}"
   [ -f "$f" ] || : > "$f"
   if grep -qxF -- "$1" "$f"; then
-    tmp=$(mktemp "$RECALL_RUN/open.XXXXXX")
-    grep -vxF -- "$1" "$f" > "$tmp" || true
-    mv "$tmp" "$f"
+    forget_line "$1" "${2:-open}"
+    [ "${2:-open}" != open ] || forget_line "$1" full   # a closed group opens capped again
   else
     printf '%s\n' "$1" >> "$f"
   fi
+}
+
+show_kept_text() { # a kept text sorts back by its date; show its open group in full if the cap hides it
+  local g
+  T="f:$1" awk -F'\t' '$4 == ENVIRON["T"] { found = 1 } END { exit !found }' "$RECALL_RUN/tree.list" && return 0
+  g=$(T="f:$1" awk -F'\t' '$4 == ENVIRON["T"] { print $3; exit }' "$RECALL_RUN/flat.list")
+  [ -n "$g" ] && grep -qxF -- "$g" "$RECALL_RUN/open" 2>/dev/null || return 0
+  printf '%s\n' "$g" >> "$RECALL_RUN/full"
+  build_list tree
+}
+
+forget_line() { # forget_line <group id> <state file name>
+  local f="$RECALL_RUN/$2" tmp
+  [ -f "$f" ] || return 0
+  tmp=$(mktemp "$RECALL_RUN/$2.XXXXXX")
+  grep -vxF -- "$1" "$f" > "$tmp" || true
+  mv "$tmp" "$f"
 }
 
 # ---------- preview (called by fzf with the whole line) ----------
@@ -504,7 +537,7 @@ preview() {
   fi
   IFS=$'\t' read -r kind target gid _ _ expl kw <<<"$1"
   case "$kind" in
-    grp)  group_preview "$gid" ;;
+    grp|more) group_preview "$gid" ;;
     text) text_status "$target"; printf '\n'; show_file "$target" preview ;;
     proc) procedure_status "$target"; printf '\n'; show_file "$target" preview ;;
     cmd)  printf '%s\n\n%s\n\nkeywords: %s\n' "$target" "$expl" "$kw" ;;
@@ -574,12 +607,16 @@ on_key() { # on_key tab|enter|keep|footer <line>
         # wait for the search, then take its best hit (or ask, if there is none).
         printf 'flat' > "$RECALL_RUN/view"
         printf '%s+wait+first+accept-or-print-query\n' "$(reload_action flat)"
+      elif [ "$kind" = more ]; then
+        grep -qxF -- "$gid" "$RECALL_RUN/full" 2>/dev/null || printf '%s\n' "$gid" >> "$RECALL_RUN/full"
+        build_list tree
+        printf '%s+wait+pos(%s)\n' "$(reload_action tree)" "$(( $(group_line "$gid") + TEXT_SHOW_MAX + 1 ))"
       elif [ "$kind" = grp ]; then toggle_group "$gid"; build_list tree; reload_action tree
       else printf 'accept-or-print-query\n'; fi ;;
     keep)
       [ "$kind" = text ] || return 0
       set_text_state "$target" kept "$(now_epoch)"
-      build_list tree; build_list flat; reload_action "$view" ;;
+      build_list tree; build_list flat; show_kept_text "$target"; reload_action "$view" ;;
     footer)   # a click on a key name in the footer runs that key; only the two key lines count
       case "${FZF_CLICK_FOOTER_LINE:-}" in 1|2) ;; *) return 0 ;; esac
       case "${FZF_CLICK_FOOTER_WORD:-}" in
@@ -793,7 +830,7 @@ main() {
 
   cleanup_texts
   FIRST_GROUP=$(first_text_group)
-  printf '%s\n' "$FIRST_GROUP" > "$RECALL_RUN/open"
+  { printf '%s\n' "$FIRST_GROUP"; recent_text_groups; } | awk 'NF && !seen[$0]++' > "$RECALL_RUN/open"
 
   local query="" kind target rest rc
   while true; do

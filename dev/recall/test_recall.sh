@@ -233,10 +233,11 @@ expect_has "help: names alt-enter" "alt-enter" "$out"
 expect_has "help: includes the key help" "f1" "$out"
 keys=$("$RECALL" --keys 2>&1); rc=$?
 expect_eq  "keys: exit 0" 0 "$rc"
-for k in "enter" "alt-enter" "esc" "f1" "q" "n " "recall texts" "tab" "ctrl-o" "ctrl-k" "gio trash --restore" "ctrl-y" "f2" "right-click" "ctrl-shift-c" "alt-space"; do
+for k in "enter" "alt-enter" "esc" "f1" "q" "n " "recall texts" "tab" "ctrl-o" "ctrl-k" "gio trash --restore" "ctrl-y" "f2" "right-click" "ctrl-shift-c" "alt-space" "… n more"; do
   expect_has "keys: names '$k'" "$k" "$keys"
 done
 expect_has "keys: names the configured days" "parked 4 days after the copy" "$keys"
+expect_has "keys: names the 24-hour rule" "last 24 hours" "$keys"
 "$RECALL" bogus </dev/null >/dev/null 2>&1; rc=$?
 expect_eq  "unknown argument: exit 1" 1 "$rc"
 
@@ -755,6 +756,96 @@ expect_eq "footer click on another word: nothing" "" "$(fclick 1 fold)"
 expect_eq "footer click on the cleanup line: nothing" "" "$(fclick 3 list)"
 expect_eq "footer click between words: nothing" "" "$(fclick 2 '')"
 expect_eq "footer click without a line number: nothing" "" "$(fclick '' list)"
+
+# ---------- recent repos open at start, long groups capped ----------
+R4="$HOME/GitRepos/projekt-d"; R5="$HOME/GitRepos/projekt-e"
+mkdir -p "$R4/.reviews" "$R5/.reviews"
+for i in 1 2 3 4 5 6; do
+  printf 'd%s\n' "$i" > "$R4/.reviews/d$i.txt"
+  touch -d "$(ago $((i * 3600)))" "$R4/.reviews/d$i.txt"
+done
+printf 'e1\n' > "$R5/.reviews/e1.txt"; touch -d "$(ago $((20 * 3600)))" "$R5/.reviews/e1.txt"
+reset ESC
+"$RECALL" </dev/null >/dev/null 2>&1
+shown=$(display "$FZF_IN.1")
+expect_has "start: the newest repo is open" "✎ projekt-d (6) ▾" "$shown"
+expect_has "start: a repo with a text from the last 24 hours is open too" "✎ projekt-e (1) ▾" "$shown"
+expect_has "start: a repo whose newest text is 2 days old stays closed" "✎ projekt-c (1) ▸" "$shown"
+expect_has "start: a repo whose newest text is exactly 24 hours old stays closed" "✎ projekt-a (2) ▸" "$shown"
+expect_has "start: cursor still on the first text of the first group" "--bind=load:pos(2)+unbind(load)" "$(cat "$FZF_ARGS.1")"
+
+tree_d=$(sed -n '/✎ projekt-d/,/✎ projekt-e/p' <<<"$shown")
+expect_eq "cap: four newest texts, then '… n more'" "✎ projekt-d (6) ▾
+    d1.txt
+    d2.txt
+    d3.txt
+    d4.txt
+    … 2 more
+✎ projekt-e (1) ▾" "$tree_d"
+expect_eq "cap: the more line has its own kind, group and cursor id" $'more\tt:projekt-d\tm:t:projekt-d' \
+  "$(grep -F '… 2 more' "$FZF_IN.1" | cut -f1,3,4)"
+expect_eq "cap: search still lists every text" 6 \
+  "$(RECALL_RUN="$RUN" "$RECALL" --list flat | cut -f5 | grep -c 'projekt-d ·')"
+
+printf 't:projekt-d\n' > "$RUN/open"; : > "$RUN/full"; printf 'tree' > "$RUN/view"
+rm -f "$RUN/help"
+more=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '… 2 more')
+expect_eq "preview of '… more': the whole group" "$(printf 'projekt-d · d%s.txt\n' 1 2 3 4 5 6)" \
+  "$(RECALL_RUN="$RUN" "$RECALL" --preview "$more" 2>/dev/null)"
+out=$(RECALL_RUN="$RUN" "$RECALL" --key enter "$more")
+expect_has "enter on '… more': reload of the tree" "reload-sync(cat \"\$RECALL_RUN/tree.list\")" "$out"
+expect_has "enter on '… more': cursor on the first newly shown text" "+wait+pos(6)" "$out"
+expect_eq  "enter on '… more': the group is noted as shown in full" "t:projekt-d" "$(cat "$RUN/full")"
+expect_eq  "enter on '… more': that line is d5" "    d5.txt" "$(sed -n 6p "$RUN/tree.list" | cut -f5)"
+expect_has "enter on '… more': all six shown" "    d6.txt" "$(cut -f5 "$RUN/tree.list")"
+expect_not "enter on '… more': no more line" "… " "$(cut -f5 "$RUN/tree.list")"
+child=$(grep -F 'd2.txt' "$RUN/tree.list")
+RECALL_RUN="$RUN" "$RECALL" --key tab "$child" >/dev/null
+expect_eq "tab closes the group and forgets 'full'" "" "$(grep -xF t:projekt-d "$RUN/full" 2>/dev/null)"
+printf 't:projekt-d\n' >> "$RUN/open"
+more=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '… 2 more')
+expect_has "reopened group is capped again" "… 2 more" "$more"
+out=$(RECALL_RUN="$RUN" "$RECALL" --key tab "$more")
+expect_has "tab on '… more': closes, cursor to the group line" "+wait+pos(1)" "$out"
+expect_has "enter on '… more' while typing: switch to flat, take the best hit (guard)" \
+  "+wait+first+accept-or-print-query" "$(FZF_QUERY=d RECALL_RUN="$RUN" "$RECALL" --key enter "$more")"
+printf 'tree' > "$RUN/view"   # that guard switched the view file to flat
+expect_eq  "ctrl-y on '… more': nothing copied (guard)" "" \
+  "$(rm -f "$CLIP"; RECALL_RUN="$RUN" "$RECALL" --copy "$more"; cat "$CLIP" 2>/dev/null)"
+printf 'TEXT_SHOW_MAX=0\n' >> "$HOME/.config/recall/recall.conf"
+printf 't:projekt-d\n' > "$RUN/open"
+expect_not "TEXT_SHOW_MAX=0: no cap" "… " "$(RECALL_RUN="$RUN" "$RECALL" --list tree | cut -f5)"
+sed -i '$d' "$HOME/.config/recall/recall.conf"
+reset "PICK … 2 more" ESC
+"$RECALL" </dev/null >/dev/null 2>&1; rc=$?
+expect_eq  "double-click on '… more' (plain accept): back to the list, nothing copied" "0 2 " "$rc $(cat "$FZF_COUNT") $(cat "$CLIP" 2>/dev/null)"
+
+# Closing with enter forgets "full" like tab does.
+printf 't:projekt-d\n' > "$RUN/open"; : > "$RUN/full"; printf 'tree' > "$RUN/view"
+more=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '… 2 more')
+RECALL_RUN="$RUN" "$RECALL" --key enter "$more" >/dev/null
+grpd=$(grep -F '✎ projekt-d' "$RUN/tree.list")
+RECALL_RUN="$RUN" "$RECALL" --key enter "$grpd" >/dev/null
+RECALL_RUN="$RUN" "$RECALL" --key enter "$grpd" >/dev/null
+expect_has "enter closes, enter reopens: capped again" "… 2 more" "$(cut -f5 "$RUN/tree.list")"
+
+# A kept text sorts back by its date; if the cap would hide it, its group is shown in full.
+printf 'd0\n' > "$R4/.reviews/d0.txt"; touch -d "$(ago $((10 * D)))" "$R4/.reviews/d0.txt"
+printf 't:projekt-d\nparked\n' > "$RUN/open"; : > "$RUN/full"
+pl=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F 'd0.txt')
+expect_has "ctrl-k setup: d0 is parked" "parked" "$(cut -f3 <<<"$pl")"
+RECALL_RUN="$RUN" "$RECALL" --key keep "$pl" >/dev/null
+expect_has "ctrl-k on a parked text: still visible in its capped group" "    d0.txt" "$(cut -f5 "$RUN/tree.list")"
+expect_eq  "ctrl-k on a parked text: its group is shown in full" "t:projekt-d" "$(cat "$RUN/full")"
+
+# A malformed TEXT_SHOW_MAX falls back to the default instead of breaking enter.
+printf 'TEXT_SHOW_MAX=4x\n' >> "$HOME/.config/recall/recall.conf"
+printf 't:projekt-d\n' > "$RUN/open"; : > "$RUN/full"
+more=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '… 3 more')
+expect_has "TEXT_SHOW_MAX=4x: enter on '… more' still works" "+wait+pos(6)" \
+  "$(RECALL_RUN="$RUN" "$RECALL" --key enter "$more" 2>&1)"
+sed -i '$d' "$HOME/.config/recall/recall.conf"
+expect_has "double-click on '… more': the list comes back still capped" "… 2 more" "$(display "$FZF_IN.2")"
 
 # ---------- result ----------
 if [ "$fails" -eq 0 ]; then printf '\nall tests passed\n'; else printf '\n%s test(s) failed\n' "$fails"; fi

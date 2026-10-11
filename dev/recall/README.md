@@ -15,8 +15,12 @@ fuzzy-searchable as soon as you type.
 
 ```
 › _
-  ✎ my-repo (3) ▾              texts of the repo you started in (or the newest)
+  ✎ my-repo (6) ▾              open: the start repo and every repo with a text from the last 24 hours
       commit-msg-feature-x.txt
+      merge-request-feature-x.txt
+      commit-msg-fix-y.txt
+      commit-msg-docs-z.txt
+      … 2 more                 a long group shows 4 texts, enter shows all
   ✎ parked (2) ▸               texts on their way to the trash
   ⌘ git  Branches (6) ▸        one group per "## tool — subtitle" in the command file
   ☰ runbooks (10) ▸            one group per PROCEDURE_GLOBS entry
@@ -24,7 +28,10 @@ fuzzy-searchable as soon as you type.
 
 The cursor starts on the newest text of the open group, so the hotkey plus
 `enter` copies it.
-`tab` (or `enter` on a group) opens and closes a group. The preview of a ⌘ group
+`tab` (or `enter` on a group) opens and closes a group.
+At start every repo with a text from the last 24 hours is open; an open group
+shows `TEXT_SHOW_MAX` texts (default 4) and a line `… n more` — `enter` shows all,
+its preview lists all. The preview of a ⌘ group
 shows all its commands at once — a cheat sheet to learn from. Typing switches
 to a flat search over everything; an empty search brings the groups back.
 

@@ -32,8 +32,9 @@ And prepared texts never went away.
 ```
 
 - `tab` toggles the group of the current line; `enter` on a group line does the same.
-- Only one text group is open at start: the repo of the start directory
-  (`git rev-parse --show-toplevel`), else the repo with the newest text.
+- At start the repo of the start directory (`git rev-parse --show-toplevel`), else the
+  repo with the newest text, is open, plus every repo with an active text changed in
+  the last 24 hours (strictly newer than 24 h).
 - The preview of a ⌘ group shows all its commands as a compact table: a cheat
   sheet without opening anything.
 
@@ -140,7 +141,14 @@ recall cannot size its own window. Terminal launchers that know
   switch to the flat list has not arrived yet: it prints
   `reload-sync(<flat>)+wait+first+accept-or-print-query`, so the best hit is taken.
   `enter` without a match still prints only the query, which asks the assistant.
-- Per-run state (open groups, view mode, help flag) lives in a temporary
+- An open repo group shows at most `TEXT_SHOW_MAX` texts, then a `more` line
+  (`more\t<group>\t<group>\tm:<group>\t… n more`). Its cursor id is `m:<group>`, never
+  the group id or an `f:` id, or `--track` would jump to another line. `enter` on it
+  adds the group to the state file `full` and rebuilds the tree uncapped; closing the
+  group forgets `full`. A double-click on it is a plain `accept`, which `main` treats
+  like a group line. There is no per-group scrolling: fzf has one list, and a
+  `transform` per arrow key loses keys typed meanwhile.
+- Per-run state (open groups, shown-in-full groups, view mode, help flag) lives in a temporary
   directory, `RECALL_RUN`, removed on exit and before handing over to a full
   assistant session (`exec` skips the exit trap).
 - Values for awk go through `ENVIRON`, not `-v`, which would read a backslash in a
