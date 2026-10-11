@@ -233,7 +233,7 @@ expect_has "help: names alt-enter" "alt-enter" "$out"
 expect_has "help: includes the key help" "f1" "$out"
 keys=$("$RECALL" --keys 2>&1); rc=$?
 expect_eq  "keys: exit 0" 0 "$rc"
-for k in "enter" "alt-enter" "esc" "f1" "q" "n " "recall texts" "tab" "ctrl-o" "ctrl-k" "gio trash --restore"; do
+for k in "enter" "alt-enter" "esc" "f1" "q" "n " "recall texts" "tab" "ctrl-o" "ctrl-k" "gio trash --restore" "ctrl-y" "f2" "right-click" "ctrl-shift-c" "alt-space"; do
   expect_has "keys: names '$k'" "$k" "$keys"
 done
 expect_has "keys: names the configured days" "parked 4 days after the copy" "$keys"
@@ -298,7 +298,9 @@ expect_has "fzf: typing switches the view in the background" "--bind=change:bg-t
 expect_has "fzf: ctrl-k keeps" "--bind=ctrl-k:transform(" "$args"
 expect_has "fzf: ctrl-o opens" "--bind=ctrl-o:execute-silent(" "$args"
 expect_has "fzf: f1 toggles the help" "f1:execute-silent(" "$args"
-expect_has "fzf: footer names the keys" "--footer=tab fold · enter use" "$args"
+# grep -F treats each line of a multi-line needle as its own pattern, so check line by line
+expect_has "fzf: footer line 1 names the keys" "--footer=tab fold · enter use · ctrl-y copy · alt-enter ask" "$args"
+expect_has "fzf: footer line 2 names the keys" "ctrl-o open · ctrl-k keep · f1 help · f2 list" "$args"
 
 # The repo of the start directory comes first and opens, also from a worktree.
 git -C "$R2" init -q 2>/dev/null
@@ -706,6 +708,53 @@ out=$("$RECALL" </dev/null 2>&1); rc=$?
 expect_has "missing claude: hint, list keeps working" "'claude' is missing" "$out"
 expect_eq  "missing claude: back to the list" "0 2" "$rc $(cat "$FZF_COUNT")"
 mv "$TMP/claude.off" "$STUBS/claude"
+
+# ---------- copy and stay open (ctrl-y, right-click) ----------
+flat >/dev/null
+reset ESC
+out=$(RECALL_RUN="$RUN" "$RECALL" --copy "$(line_of "$TMP/flat" "git log | head")" 2>&1); rc=$?
+expect_eq  "ctrl-y on a command: exit 0, nothing for fzf to run" "0|" "$rc|$out"
+expect_eq  "ctrl-y on a command: clipboard holds the command" "git log | head" "$(cat "$CLIP")"
+expect_eq  "ctrl-y on a command: no trailing newline" "-n" "$(cat "$CLIP_ARGS")"
+expect_has "ctrl-y on a command: notification" "Copied: git log | head" "$(cat "$NOTIFY_LOG")"
+reset ESC
+RECALL_RUN="$RUN" "$RECALL" --copy "$(line_of "$TMP/flat" "commit msg neu.txt")" >/dev/null 2>&1
+expect_eq  "ctrl-y on a text with a space in its name: file content" \
+  "$(cat "$R1/.reviews/commit msg neu.txt")" "$(cat "$CLIP")"
+reset ESC
+RECALL_RUN="$RUN" "$RECALL" --copy "$(line_of "$TMP/flat" "Altes Runbook")" >/dev/null 2>&1
+expect_eq  "ctrl-y on a procedure: nothing copied" "" "$(cat "$CLIP" 2>/dev/null)"
+RECALL_RUN="$RUN" "$RECALL" --copy "$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '⌘ glab')" >/dev/null 2>&1
+expect_eq  "ctrl-y on a group: nothing copied" "" "$(cat "$CLIP" 2>/dev/null)"
+out=$(RECALL_RUN="$RUN" "$RECALL" --copy "" 2>&1); rc=$?
+expect_eq  "ctrl-y on an empty list: exit 0, nothing copied" "0||" "$rc|$out|$(cat "$CLIP" 2>/dev/null)"
+reset ESC
+gone=$(line_of "$TMP/flat" "commit msg neu.txt" | sed 's|commit msg neu.txt|weg.txt|g')
+out=$(RECALL_RUN="$RUN" "$RECALL" --copy "$gone" 2>&1); rc=$?
+expect_eq  "ctrl-y on a text whose file is gone: exit 0, nothing copied" "0|" "$rc|$(cat "$CLIP" 2>/dev/null)"
+expect_has "ctrl-y on a text whose file is gone: notification says so" "Gone: weg.txt" "$(cat "$NOTIFY_LOG" 2>/dev/null)"
+reset ESC
+"$RECALL" </dev/null >/dev/null 2>&1
+args=$(cat "$FZF_ARGS.1")
+expect_has "fzf: ctrl-y copies and stays open" "--bind=ctrl-y:execute-silent(" "$args"
+expect_has "fzf: right-click copies and stays open" "--bind=right-click:execute-silent(" "$args"
+expect_has "fzf: both call --copy" "--copy {})" "$args"
+
+# ---------- collapse the list (f2) and footer buttons ----------
+expect_has "fzf: f2 toggles between collapsed and split preview" \
+  "--bind=f2:change-preview-window(right,99%,wrap|right,55%,wrap)" "$args"
+expect_has "fzf: footer clicks go to on_key" "--bind=click-footer:transform(" "$args"
+expect_has "fzf: recall starts expanded" "--preview-window=right,55%,wrap" "$args"
+fclick() { FZF_CLICK_FOOTER_LINE=$1 FZF_CLICK_FOOTER_WORD=$2 RECALL_RUN="$RUN" "$RECALL" --key footer ""; }
+expect_eq "footer click on 'list': collapse"   "trigger(f2)"     "$(fclick 2 list)"
+expect_eq "footer click on 'f2': collapse"     "trigger(f2)"     "$(fclick 2 f2)"
+expect_eq "footer click on 'copy': copy"       "trigger(ctrl-y)" "$(fclick 1 copy)"
+expect_eq "footer click on 'ctrl-y': copy"     "trigger(ctrl-y)" "$(fclick 1 ctrl-y)"
+expect_eq "footer click on 'help': help"       "trigger(f1)"     "$(fclick 2 help)"
+expect_eq "footer click on another word: nothing" "" "$(fclick 1 fold)"
+expect_eq "footer click on the cleanup line: nothing" "" "$(fclick 3 list)"
+expect_eq "footer click between words: nothing" "" "$(fclick 2 '')"
+expect_eq "footer click without a line number: nothing" "" "$(fclick '' list)"
 
 # ---------- result ----------
 if [ "$fails" -eq 0 ]; then printf '\nall tests passed\n'; else printf '\n%s test(s) failed\n' "$fails"; fi

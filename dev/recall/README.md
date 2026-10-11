@@ -9,8 +9,8 @@ fuzzy-searchable as soon as you type.
 
 | Mark | Entry | Enter does |
 |------|-------|------------|
-| ✎ | prepared text from `<repo>/.reviews/` (newest first) | copies the content, shows a desktop notification, quits |
-| ⌘ | command from your Markdown command table | copies the command (no trailing newline), quits |
+| ✎ | prepared text from `<repo>/.reviews/` (newest first) | copies the content, shows a desktop notification, quits (`ctrl-y`: copy, stay open) |
+| ⌘ | command from your Markdown command table | copies the command (no trailing newline), quits (`ctrl-y`: copy, stay open) |
 | ☰ | procedure or how-to note, titled by `title:`; a `command:` in its front matter follows dimmed (`/mr-review`) | shows it rendered with `glow` (fallback `bat`); `q` returns to the list |
 
 ```
@@ -42,9 +42,11 @@ recall --help
 recall --keys   # key help only
 ```
 
-In the list: `tab` fold · `enter` use · `ctrl-o` open the file in its
+In the list: `tab` fold · `enter` use · `ctrl-y` copy and stay open (or
+right-click an entry) · `ctrl-o` open the file in its
 application (`OPEN_CMD`, default `xdg-open`) · `ctrl-k` keep a text ·
-`alt-enter` ask assistant · `f1` help · `esc` quit.
+`alt-enter` ask assistant · `f1` help · `f2` collapse the list to read only the
+preview (again: expand) · `esc` quit. In the footer, `f1 help`, `f2 list` and `ctrl-y copy` can be clicked.
 The preview on the right shows the file (Markdown rendered by `glow`), or a
 command's explanation and keywords; texts start with their lifecycle state,
 procedures with their `updated:` date (marked when older than `STALE_DAYS`).
@@ -76,7 +78,7 @@ them to the desktop trash — never deleting them outright:
 
 ## Requirements
 
-- Bash, `fzf` 0.74 or newer (the `wait` action; also `--footer`, `--id-nth`, `bg-transform`), `bat`, `wl-copy` (Wayland), optional `notify-send`
+- Bash, `fzf` 0.74 or newer (the `wait` action; also `--footer`, `--id-nth`, `bg-transform`, `click-footer`, `trigger` and `change-preview-window`), `bat`, `wl-copy` (Wayland), optional `notify-send`
 - `gio` (GLib, on any GNOME desktop) to move old texts to the trash
 - Optional `glow` to render Markdown notes (headings, tables, bold) instead of
   showing their source; `GLOW_STYLE` picks its style

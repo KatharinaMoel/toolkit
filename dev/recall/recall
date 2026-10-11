@@ -102,12 +102,19 @@ In the list
                 ✎ text      copy to clipboard, close
                 ⌘ command   copy to clipboard, close
                 ☰ procedure read it (rendered)
+  ctrl-y      copy a text or command and stay open (also: right-click on it)
   ctrl-o      open the file in its application ($OPEN_CMD)
   ctrl-k      keep a text: restart its clock, bring it back from "parked"
   alt-enter   ask the assistant with the search text
               (enter without any match does the same)
   f1          this help / back to the preview
+  f2          collapse the list to read only the preview; f2 again expands it
+              (f1 help, f2 list and ctrl-y copy in the footer can be clicked - while expanded)
   esc         quit
+
+Window
+  mark text in the preview, then ctrl-shift-c: the terminal copies it
+  alt-space   GNOME window menu, "Always on Top" keeps recall above other windows
 
 Texts
   copied      parked ${TEXT_HIDE_AFTER_COPY_DAYS} days after the copy
@@ -551,7 +558,7 @@ on_change() { # reload only when the search switches between empty and non-empty
   fi
 }
 
-on_key() { # on_key tab|enter|keep <line>
+on_key() { # on_key tab|enter|keep|footer <line>
   local key=$1 kind target gid id view
   IFS=$'\t' read -r kind target gid id _ <<<"$2"
   view=$(cat "$RECALL_RUN/view" 2>/dev/null || echo tree)
@@ -573,6 +580,13 @@ on_key() { # on_key tab|enter|keep <line>
       [ "$kind" = text ] || return 0
       set_text_state "$target" kept "$(now_epoch)"
       build_list tree; build_list flat; reload_action "$view" ;;
+    footer)   # a click on a key name in the footer runs that key; only the two key lines count
+      case "${FZF_CLICK_FOOTER_LINE:-}" in 1|2) ;; *) return 0 ;; esac
+      case "${FZF_CLICK_FOOTER_WORD:-}" in
+        f2|list)     printf 'trigger(f2)\n' ;;
+        ctrl-y|copy) printf 'trigger(ctrl-y)\n' ;;
+        f1|help)     printf 'trigger(f1)\n' ;;
+      esac ;;
   esac
 }
 
@@ -623,7 +637,7 @@ cleanup_texts() { # note new texts, move due texts to the desktop trash; never r
 
 # ---------- list ----------
 FIRST_GROUP=""              # text group open at start; the cursor starts on its first text
-FOOTER_KEYS=$'tab fold · enter use · alt-enter ask\nctrl-o open · ctrl-k keep · f1 help'
+FOOTER_KEYS=$'tab fold · enter use · ctrl-y copy · alt-enter ask\nctrl-o open · ctrl-k keep · f1 help · f2 list'
 PICK_QUERY=""; PICK_KEY=""; PICK_LINE=""
 pick() { # pick <query>; sets PICK_*; returns 1 on esc
   local query=$1 view=tree out rc=0 footer=$FOOTER_KEYS
@@ -647,11 +661,15 @@ pick() { # pick <query>; sets PICK_*; returns 1 on esc
             --prompt='› ' --query="$query" --footer="$footer" \
             --preview="'$SELF' --preview {}" --preview-window='right,55%,wrap' \
             --bind="f1:execute-silent('$SELF' --toggle-help)+refresh-preview" \
+            --bind="f2:change-preview-window(right,99%,wrap|right,55%,wrap)" \
+            --bind="click-footer:transform('$SELF' --key footer {})" \
             --bind="change:bg-transform('$SELF' --on-change)" \
             --bind="tab:transform('$SELF' --key tab {})" \
             --bind="enter:transform('$SELF' --key enter {})" \
             --bind="ctrl-k:transform('$SELF' --key keep {})" \
             --bind="ctrl-o:execute-silent('$SELF' --open {})" \
+            --bind="ctrl-y:execute-silent('$SELF' --copy {})+refresh-preview" \
+            --bind="right-click:execute-silent('$SELF' --copy {})+refresh-preview" \
             --print-query --expect=alt-enter < "$RECALL_RUN/$view.list"
   ) || rc=$?
   # 0 = accepted, 1 = no match (alt-enter with an empty result), 130 = esc
@@ -678,6 +696,15 @@ notify() {
 copy_text() { wl-copy < "$1"; set_text_state "$1" copied "$(now_epoch)"; notify "Copied: ${1##*/}"; }
 copy_cmd()  { printf '%s' "$1" | wl-copy -n; notify "Copied: $1"; }
 read_proc() { show_file "$1" page; }
+copy_entry() { # ctrl-y / right-click: copy a text or command, recall stays open
+  local kind target
+  IFS=$'\t' read -r kind target _ <<<"$1"
+  case "$kind" in
+    text) if [ -f "$target" ]; then copy_text "$target"; else notify "Gone: ${target##*/}"; fi ;;
+    cmd)  copy_cmd "$target" ;;
+  esac
+  return 0
+}
 
 # ask <question>; returns 0 = back to the list, 10 = quit
 ask() {
@@ -752,6 +779,7 @@ main() {
     --on-change) on_change; exit 0 ;;
     --key) on_key "${2:-}" "${3:-}"; exit 0 ;;
     --open) open_entry "${2:-}"; exit 0 ;;
+    --copy) copy_entry "${2:-}"; exit 0 ;;
     texts) scope=texts ;;
     "") ;;
     *) usage >&2; die "unknown argument: $1" ;;
