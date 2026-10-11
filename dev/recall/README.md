@@ -5,7 +5,7 @@ procedures down, then can't find them. Agents leave commit and merge request
 texts in files, and copying them means `cat <file> | wl-copy`.
 
 `recall` puts all of that into one list: grouped while the search is empty,
-fuzzy-searchable as soon as you type.
+searchable as soon as you type (exact by default).
 
 | Mark | Entry | Enter does |
 |------|-------|------------|
@@ -32,8 +32,12 @@ The cursor starts on the newest text of the open group, so the hotkey plus
 At start every repo with a text from the last 24 hours is open; an open group
 shows `TEXT_SHOW_MAX` texts (default 4) and a line `… n more` — `enter` shows all,
 its preview lists all. The preview of a ⌘ group
-shows all its commands at once — a cheat sheet to learn from. Typing switches
+shows all its commands at once — a cheat sheet to learn from: the command in bold
+blue, its explanation below, a `Wann:` part on its own grey line. Typing switches
 to a flat search over everything; an empty search brings the groups back.
+The search is exact: a word must occur as written, in the command, the
+explanation or the keywords. A leading `'` makes one word fuzzy again (`'gt`).
+Results keep the order of the list, so the groups stay together.
 
 When nothing fits, the assistant answers: `alt-enter` (or `enter` without a
 match) sends your search text to Claude Code — read-only, inside your notes.
@@ -53,7 +57,8 @@ In the list: `tab` fold · `enter` use · `ctrl-y` copy and stay open (or
 right-click an entry) · `ctrl-o` open the file in its
 application (`OPEN_CMD`, default `xdg-open`) · `ctrl-k` keep a text ·
 `alt-enter` ask assistant · `f1` help · `f2` collapse the list to read only the
-preview (again: expand) · `esc` quit. In the footer, `f1 help`, `f2 list` and `ctrl-y copy` can be clicked.
+preview (again: expand) · `esc` quit.
+In the footer, `f1 help`, `f2 list` and `ctrl-y copy` can be clicked.
 The preview on the right shows the file (Markdown rendered by `glow`), or a
 command's explanation and keywords; texts start with their lifecycle state,
 procedures with their `updated:` date (marked when older than `STALE_DAYS`).

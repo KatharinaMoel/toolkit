@@ -38,8 +38,8 @@ And prepared texts never went away.
 - The preview of a ⌘ group shows all its commands as a compact table: a cheat
   sheet without opening anything.
 
-**Typing → flat search** over everything, as in the first version. Clearing the
-search returns to the grouped view.
+**Typing → flat search** over everything, exact and in list order (see "Why exact
+and unsorted"). Clearing the search returns to the grouped view.
 
 `recall texts` shows only the ✎ groups.
 
@@ -125,7 +125,7 @@ recall cannot size its own window. Terminal launchers that know
   text of the start repo, else the newest of all — not on its group line
   (`load:pos(2)+unbind(load)`), so start + `enter` copies it, as in the flat list
   before. Not when that group was closed meanwhile, nor in a flat start after a
-  question to the assistant (the best match is first there).
+  question to the assistant (the first match is on top there).
 - `change:bg-transform(recall --on-change)` reloads only when the search switches
   between empty and non-empty (`FZF_QUERY` is visible to the command). It must be
   the background variant: a plain `transform` blocks fzf while it runs, and keys
@@ -139,7 +139,7 @@ recall cannot size its own window. Terminal launchers that know
   changes its own state and prints the fzf action (`reload-sync(...)` or
   `accept-or-print-query`). `enter` with a search text on a tree line means the
   switch to the flat list has not arrived yet: it prints
-  `reload-sync(<flat>)+wait+first+accept-or-print-query`, so the best hit is taken.
+  `reload-sync(<flat>)+wait+first+accept-or-print-query`, so the first hit is taken.
   `enter` without a match still prints only the query, which asks the assistant.
 - An open repo group shows at most `TEXT_SHOW_MAX` texts, then a `more` line
   (`more\t<group>\t<group>\tm:<group>\t… n more`). Its cursor id is `m:<group>`, never
@@ -154,6 +154,31 @@ recall cannot size its own window. Terminal launchers that know
 - Values for awk go through `ENVIRON`, not `-v`, which would read a backslash in a
   path as an escape. Text file names with a tab or newline are skipped: they cannot
   be one list line.
+
+## Why exact and unsorted
+
+fzf matches fuzzily by default: `git` also finds a line where g, i and t occur far
+apart, so a short word returned many chance hits (for example `glab mr list --per-page 5`
+for `git`). With `--exact` a word must occur as written; a leading `'` makes a single
+word fuzzy again. All search fields stay (command, explanation, keywords), because
+searching by purpose (`aufraeumen`) only works through explanation and keywords.
+Example from real data on one day: `git` gave about 140 of about 210 lines fuzzy and about 70
+exact. These numbers are an illustration, not a property of the code.
+
+`--no-sort` keeps the order of the list, so the groups from befehle.md stay together
+while searching. Consequence: the entry on top (and with it `enter` without moving) is
+the first hit in list order, not the best one. There is no key to sort by relevance:
+for a single word nearly every exact hit scores the same, so a ranking by relevance
+looks shuffled rather than better, and `--track` keeps the cursor on the same entry,
+so the change is hard to see.
+
+## Preview of commands
+
+One block per command: the command in bold blue, the explanation on the next line,
+and from the first `Wann:` on a grey line of its own. Entries in a group preview are
+separated by a blank line; the single preview adds the keywords in grey below. The
+styles have their own variables because `group_preview` empties the list colours to
+read plain text from the list sources.
 
 ## Not included
 

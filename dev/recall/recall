@@ -89,9 +89,13 @@ if [ -z "${NO_COLOR:-}" ]; then
   esc() { printf '\033[38;5;%sm' "$1"; }
   I_TEXT=$(esc "$COLOR_TEXT"); I_CMD=$(esc "$COLOR_CMD"); I_PROC=$(esc "$COLOR_PROC")
   FADE=$(esc "$COLOR_FADE"); DIM=$(esc "$COLOR_KEYWORDS"); RST=$'\033[0m'
+  # Preview styles have their own names: group_preview empties the list ones above
+  # to get plain text from the list sources.
+  P_CMD=$(printf '\033[1;38;5;%sm' "$COLOR_CMD"); P_WHEN=$FADE; P_RST=$RST
   FZF_COLOR_ARGS=(--color="$FZF_COLORS")
 else
   I_TEXT=""; I_CMD=""; I_PROC=""; FADE=""; DIM=""; RST=""
+  P_CMD=""; P_WHEN=""; P_RST=""
   FZF_COLOR_ARGS=(--no-color)
 fi
 
@@ -100,7 +104,8 @@ keys_help() {
 recall - keys
 
 In the list
-  type        search everything; an empty search shows the groups
+  type        search everything, exact; 'word makes one word fuzzy;
+              an empty search shows the groups
   tab         open or close the group of the entry
   enter       use the entry (on a group: open or close it)
                 ✎ text      copy to clipboard, close
@@ -512,14 +517,26 @@ procedure_status() { # "updated <day>", plus a hint when that is long ago
   fi
 }
 
+trim_ws() { local t=${1#"${1%%[![:space:]]*}"}; printf '%s' "${t%"${t##*[![:space:]]}"}"; }
+
+cmd_block() { # cmd_block <command> <explanation>: command, explanation, "Wann:" part, each on its own line
+  local cmd=$1 expl=$2 when=""
+  if [[ $expl == *Wann:* ]]; then when="Wann:${expl#*Wann:}"; expl=${expl%%Wann:*}; fi
+  expl=$(trim_ws "$expl"); when=$(trim_ws "$when")
+  printf '%s%s%s\n' "$P_CMD" "$cmd" "$P_RST"
+  [ -z "$expl" ] || printf '    %s\n' "$expl"
+  [ -z "$when" ] || printf '    %s%s%s\n' "$P_WHEN" "$when" "$P_RST"
+}
+
 group_preview() { # the entries of one group, compact
-  local gid=$1 kind target id display expl
+  local gid=$1 kind target id display expl first=1
   # Plain lines: bash scoping hands these empty colours to the sources below.
   local I_TEXT="" I_CMD="" I_PROC="" FADE="" DIM="" RST=""
   while IFS=$'\t' read -r kind target id _ display expl _; do
     [ "$id" = "$gid" ] || continue
     case "$kind" in
-      cmd) printf '%s\n    %s\n' "$target" "$expl" ;;
+      cmd) [ "$first" = 1 ] || printf '\n'   # a blank line between entries, not after the last
+           cmd_block "$target" "$expl"; first=0 ;;
       *)   printf '%s\n' "${display#* }" ;;
     esac
   done < <(list_view flat)
@@ -540,7 +557,7 @@ preview() {
     grp|more) group_preview "$gid" ;;
     text) text_status "$target"; printf '\n'; show_file "$target" preview ;;
     proc) procedure_status "$target"; printf '\n'; show_file "$target" preview ;;
-    cmd)  printf '%s\n\n%s\n\nkeywords: %s\n' "$target" "$expl" "$kw" ;;
+    cmd)  cmd_block "$target" "$expl"; printf '\n%skeywords: %s%s\n' "$P_WHEN" "$kw" "$P_RST" ;;
   esac
 }
 
@@ -604,7 +621,7 @@ on_key() { # on_key tab|enter|keep|footer <line>
     enter)
       if [ -n "${FZF_QUERY:-}" ] && [[ $id != f:* ]]; then
         # Typed faster than the background switch to the flat list: switch now,
-        # wait for the search, then take its best hit (or ask, if there is none).
+        # wait for the search, then take its first hit (or ask, if there is none).
         printf 'flat' > "$RECALL_RUN/view"
         printf '%s+wait+first+accept-or-print-query\n' "$(reload_action flat)"
       elif [ "$kind" = more ]; then
@@ -692,7 +709,9 @@ pick() { # pick <query>; sets PICK_*; returns 1 on esc
     start=(--bind='load:pos(2)+unbind(load)')
   fi
   [ -z "$CLEANUP_MSG" ] || footer="$footer"$'\n'"$CLEANUP_MSG"
-  out=$( fzf --ansi --delimiter=$'\t' --with-nth=5 --id-nth=4 --track "${start[@]}" \
+  # --exact: a plain word must occur as written, not as scattered letters. --no-sort
+  # keeps the groups of the list together while searching.
+  out=$( fzf --ansi --exact --no-sort --delimiter=$'\t' --with-nth=5 --id-nth=4 --track "${start[@]}" \
             --layout=reverse --border=rounded --border-label=' recall ' \
             "${FZF_COLOR_ARGS[@]}" \
             --prompt='› ' --query="$query" --footer="$footer" \

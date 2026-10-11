@@ -152,7 +152,7 @@ Some text with | a pipe outside of a table.
 
 | Befehl | Erklaerung | Stichworte |
 |---|---|---|
-| `wt pick` | Worktree aus Liste waehlen | worktree auswahl |
+| `wt pick` | Worktree aus Liste waehlen Wann: nach dem Clone | worktree auswahl |
 | `git log \| head` | Letzte Commits kurz | verlauf |
 
 ## glab
@@ -238,6 +238,9 @@ for k in "enter" "alt-enter" "esc" "f1" "q" "n " "recall texts" "tab" "ctrl-o" "
 done
 expect_has "keys: names the configured days" "parked 4 days after the copy" "$keys"
 expect_has "keys: names the 24-hour rule" "last 24 hours" "$keys"
+expect_not "keys: no sort key" "f3" "$keys"
+expect_has "keys: says the search is exact" "exact" "$keys"
+expect_has "keys: names the quote for a fuzzy word" "'word" "$keys"
 "$RECALL" bogus </dev/null >/dev/null 2>&1; rc=$?
 expect_eq  "unknown argument: exit 1" 1 "$rc"
 
@@ -247,7 +250,7 @@ expect_eq "flat texts: newest first, README/.keep skipped, symlinks collapsed" \
   "✎ projekt-a · commit msg neu.txt
 ✎ projekt-c · mr-7.md
 ✎ projekt-a · alt.txt" "$(grep '^✎' <<<"$list")"
-expect_has "flat commands: backticks stripped"   "⌘ wt pick — Worktree aus Liste waehlen  worktree auswahl wt" "$list"
+expect_has "flat commands: backticks stripped"   "⌘ wt pick — Worktree aus Liste waehlen Wann: nach dem Clone  worktree auswahl wt" "$list"
 expect_has "flat commands: escaped pipe"         "⌘ git log | head — Letzte Commits kurz  verlauf wt" "$list"
 expect_has "flat commands: colon separator row"  "⌘ glab mr list — Offene MRs  merge request glab" "$list"
 expect_has "flat commands: a tab inside a cell becomes a space" "⌘ tab bed — Tab in der Zelle  tab glab" "$list"
@@ -302,6 +305,9 @@ expect_has "fzf: f1 toggles the help" "f1:execute-silent(" "$args"
 # grep -F treats each line of a multi-line needle as its own pattern, so check line by line
 expect_has "fzf: footer line 1 names the keys" "--footer=tab fold · enter use · ctrl-y copy · alt-enter ask" "$args"
 expect_has "fzf: footer line 2 names the keys" "ctrl-o open · ctrl-k keep · f1 help · f2 list" "$args"
+expect_has "fzf: search is exact" "--exact" "$args"
+expect_has "fzf: list order is kept, not sorted by relevance" "--no-sort" "$args"
+expect_not "fzf: no key toggles the sort" "toggle-sort" "$args"
 
 # The repo of the start directory comes first and opens, also from a worktree.
 git -C "$R2" init -q 2>/dev/null
@@ -342,7 +348,7 @@ flatline=$(RECALL_RUN="$RUN" "$RECALL" --list flat | grep -F 'glab mr list')
 expect_eq  "enter on a search hit: accept" "accept-or-print-query" \
   "$(FZF_QUERY=glab RECALL_RUN="$RUN" "$RECALL" --key enter "$flatline")"
 out=$(FZF_QUERY=glab RECALL_RUN="$RUN" "$RECALL" --key enter "$glab_line")
-expect_has "enter typed before the flat list arrived: switch first, then take the best hit" \
+expect_has "enter typed before the flat list arrived: switch first, then take the first hit" \
   "--list flat)+wait+first+accept-or-print-query" "$out"
 expect_has "enter typed before the flat list arrived: synchronous reload" "reload-sync(" "$out"
 expect_eq  "enter typed before the flat list arrived: view is flat" "flat" "$(cat "$RUN/view")"
@@ -611,11 +617,39 @@ expect_eq "ctrl-o on a command: nothing" "" "$(cat "$OPEN_LOG" 2>/dev/null)"
 
 # ---------- preview ----------
 out=$("$RECALL" --preview "$(line_of "$TMP/flat" "wt pick")" 2>&1)
-expect_eq "preview: command" "wt pick
-
-Worktree aus Liste waehlen
+expect_eq "preview: command, explanation and when on their own lines, keywords last" "wt pick
+    Worktree aus Liste waehlen
+    Wann: nach dem Clone
 
 keywords: worktree auswahl wt" "$out"
+out=$("$RECALL" --preview "$(line_of "$TMP/flat" "git log | head")" 2>&1)
+expect_eq "preview: command without Wann: has no extra line" "git log | head
+    Letzte Commits kurz
+
+keywords: verlauf wt" "$out"
+out=$(env -u NO_COLOR "$RECALL" --preview "$(line_of "$TMP/flat" "wt pick")" 2>&1)
+expect_eq "preview: command in colour, keywords grey" $'\033[1;38;5;110mwt pick\033[0m
+    Worktree aus Liste waehlen
+    \033[38;5;245mWann: nach dem Clone\033[0m
+
+\033[38;5;245mkeywords: worktree auswahl wt\033[0m' "$out"
+out=$("$RECALL" --preview "$(printf 'cmd\tfoo\tc:x\tf:foo\tfoo\t  Wann:   nur   manchmal  \tkw')" 2>&1)
+expect_eq "preview: Wann: at the start of the cell leaves no empty explanation line" "foo
+    Wann:   nur   manchmal
+
+keywords: kw" "$out"
+out=$("$RECALL" --preview "$(printf 'cmd\tfoo\tc:x\tf:foo\tfoo\t  Erst das  Wann: dann   Wann: nochmal \tkw')" 2>&1)
+expect_eq "preview: split at the first Wann:, both parts trimmed" "foo
+    Erst das
+    Wann: dann   Wann: nochmal
+
+keywords: kw" "$out"
+out=$("$RECALL" --preview "$(printf 'cmd\t%s\tc:x\tf:p\tp\t%s\tkw' "printf '%s\\n' %d" '100% a\b %s Wann: \t')" 2>&1)
+expect_eq "preview: percent signs and backslashes are shown as they are" "printf '%s\\n' %d
+    100% a\\b %s
+    Wann: \\t
+
+keywords: kw" "$out"
 expect_has "preview: .txt text via bat" "alter Text" "$("$RECALL" --preview "$(line_of "$TMP/flat" "alt.txt")" 2>/dev/null)"
 out=$("$RECALL" --preview "$(line_of "$TMP/flat" "Git-Branches")" 2>/dev/null)
 expect_has "preview: procedure rendered with glow" "GLOW: ---" "$out"
@@ -627,8 +661,15 @@ expect_has "preview: no front matter, file date" "(file date)" "$(head -n1 <<<"$
 grp=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '⌘ wt')
 expect_eq "preview: command group as a cheat sheet" "wt pick
     Worktree aus Liste waehlen
+    Wann: nach dem Clone
+
 git log | head
     Letzte Commits kurz" "$("$RECALL" --preview "$grp" 2>/dev/null)"
+expect_eq "preview: command group in colour, one blank line between entries only" \
+  $'\033[1;38;5;110mwt pick\033[0m\n    Worktree aus Liste waehlen\n    \033[38;5;245mWann: nach dem Clone\033[0m\n\n\033[1;38;5;110mgit log | head\033[0m\n    Letzte Commits kurz' \
+  "$(env -u NO_COLOR "$RECALL" --preview "$grp" 2>/dev/null)"
+expect_not "preview: NO_COLOR command group carries no escape codes" $'\033' "$("$RECALL" --preview "$grp" 2>/dev/null)"
+expect_not "preview: NO_COLOR single command carries no escape codes" $'\033' "$("$RECALL" --preview "$(line_of "$TMP/flat" "wt pick")" 2>/dev/null)"
 grp=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '✎ projekt-a')
 expect_eq "preview: text group lists its files" "projekt-a · commit msg neu.txt
 projekt-a · alt.txt" "$("$RECALL" --preview "$grp" 2>/dev/null)"
@@ -656,7 +697,7 @@ expect_has "ask: API key removed" "KEY=<unset>" "$log"
 expect_has "ask: streamed answer shown" "Hello world" "$out"
 expect_has "ask: enter returns to the list with the query" "--query=wie raeume ich auf" "$(cat "$FZF_ARGS.2")"
 expect_has "ask: back with a query, the list starts flat" "⌘ wt pick" "$(display "$FZF_IN.2")"
-expect_not "ask: back with a query, the cursor starts on the best match" "load:pos(2)" "$(cat "$FZF_ARGS.2")"
+expect_not "ask: back with a query, the cursor starts on the first match" "load:pos(2)" "$(cat "$FZF_ARGS.2")"
 
 printf 'ASSIST_MODEL=""\n' >> "$HOME/.config/recall/recall.conf"
 reset "ALT frage"
@@ -807,7 +848,7 @@ more=$(RECALL_RUN="$RUN" "$RECALL" --list tree | grep -F '… 2 more')
 expect_has "reopened group is capped again" "… 2 more" "$more"
 out=$(RECALL_RUN="$RUN" "$RECALL" --key tab "$more")
 expect_has "tab on '… more': closes, cursor to the group line" "+wait+pos(1)" "$out"
-expect_has "enter on '… more' while typing: switch to flat, take the best hit (guard)" \
+expect_has "enter on '… more' while typing: switch to flat, take the first hit (guard)" \
   "+wait+first+accept-or-print-query" "$(FZF_QUERY=d RECALL_RUN="$RUN" "$RECALL" --key enter "$more")"
 printf 'tree' > "$RUN/view"   # that guard switched the view file to flat
 expect_eq  "ctrl-y on '… more': nothing copied (guard)" "" \
