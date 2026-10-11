@@ -11,7 +11,7 @@ fuzzy-searchable as soon as you type.
 |------|-------|------------|
 | ✎ | prepared text from `<repo>/.reviews/` (newest first) | copies the content, shows a desktop notification, quits |
 | ⌘ | command from your Markdown command table | copies the command (no trailing newline), quits |
-| ☰ | procedure or how-to note | shows it rendered with `glow` (fallback `bat`); `q` returns to the list |
+| ☰ | procedure or how-to note, titled by `title:`; a `command:` in its front matter follows dimmed (`/mr-review`) | shows it rendered with `glow` (fallback `bat`); `q` returns to the list |
 
 ```
 › _

@@ -349,8 +349,17 @@ front_matter() { # front_matter <file> <key>: the value of "<key>:" in the YAML 
        $0 ~ "^" key ":[ \t]*" { sub("^" key ":[ \t]*", ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$1"
 }
 
-collect_procedures() { # prints "<title>\t<group index>\t<group name>\t<file>"
-  local i pattern f name ex title skip group
+title_and_command() { # "<title>\037<command>" from the front matter, one awk per note (the list is rebuilt on every fold)
+  awk 'function val(k,  v) { v = $0; sub("^" k ":[ \t]*", "", v); gsub(/^["\x27]|["\x27]$/, "", v); return v }
+       NR == 1 && $0 != "---" { exit }
+       NR > 1 && $0 == "---" { exit }
+       !t && /^title:/   { t = 1; title = val("title") }
+       !c && /^command:/ { c = 1; cmd = val("command") }
+       END { printf "%s\037%s\n", title, cmd }' "$1"
+}
+
+collect_procedures() { # prints "<title>\t<group index>\t<group name>\t<file>\t<command>"
+  local i pattern f name ex title cmd skip group
   for i in "${!PROCEDURE_GLOBS[@]}"; do
     pattern=${PROCEDURE_GLOBS[$i]}
     group=${PROCEDURE_GROUPS[$i]:-}
@@ -363,24 +372,25 @@ collect_procedures() { # prints "<title>\t<group index>\t<group name>\t<file>"
         [[ $name == $ex ]] && skip=1
       done
       [ -z "$skip" ] || continue
-      title=$(front_matter "$f" title)
+      IFS=$'\037' read -r title cmd < <(title_and_command "$f")
       [ -n "$title" ] || title=${name%.md}
-      printf '%s\t%s\t%s\t%s\n' "$title" "$i" "$group" "$f"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$title" "$i" "$group" "$f" "$cmd"
     done < <(compgen -G "$pattern" || true)
   done
 }
 
-src_procedures() { # src_procedures tree|flat
+src_procedures() { # src_procedures tree|flat; a "command:" follows the title dimmed, so typing it finds the note
   if [ "$1" = flat ]; then
     collect_procedures | sort -t $'\t' -k1,1 -f |
-      awk -F'\t' -v ic="$I_PROC" -v rst="$RST" '{ printf "proc\t%s\tp:%s\tf:%s\t%s☰%s %s\n", $4, $2, $4, ic, rst, $1 }'
+      awk -F'\t' -v ic="$I_PROC" -v dim="$DIM" -v rst="$RST" '{
+        printf "proc\t%s\tp:%s\tf:%s\t%s☰%s %s%s\n", $4, $2, $4, ic, rst, $1, ($5 != "" ? dim "  /" $5 rst : "") }'
     return 0
   fi
   collect_procedures | sort -t $'\t' -k2,2n -k1,1f |
-    OPEN=$(open_groups) awk -F'\t' -v ic="$I_PROC" -v fade="$FADE" -v rst="$RST" '
+    OPEN=$(open_groups) awk -F'\t' -v ic="$I_PROC" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
       BEGIN { n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1 }
       { g = "p:" $2; if (!(g in cnt)) { order[++ng] = g; name[g] = $3 }
-        k = g SUBSEP (++cnt[g]); file[k] = $4; title[k] = $1 }
+        k = g SUBSEP (++cnt[g]); file[k] = $4; title[k] = $1 ($5 != "" ? dim "  /" $5 rst : "") }
       END {
         for (i = 1; i <= ng; i++) {
           g = order[i]

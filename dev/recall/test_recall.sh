@@ -176,7 +176,7 @@ Inhalt Aufraeumen
 EOF
 printf 'Ohne Frontmatter\n' > "$VAULT/anleitungen/ohne-titel.md"
 printf -- '---\ntitle: Index\n---\n' > "$VAULT/anleitungen/_index.md"
-printf -- '---\ntitle: Altes Runbook\nupdated: 2026-05-20\n---\n' > "$VAULT/runbooks/altes-runbook.md"
+printf -- '---\ntitle: Altes Runbook\ncommand: alt-rb\nupdated: 2026-05-20\n---\n' > "$VAULT/runbooks/altes-runbook.md"
 
 R1="$HOME/GitRepos/projekt-a"
 mkdir -p "$R1/.reviews" "$HOME/GitRepos/projekt-a-worktrees/mr-1" "$HOME/GitRepos/kein-review"
@@ -254,9 +254,16 @@ expect_not "flat commands: header row skipped"   "⌘ Befehl" "$list"
 expect_not "flat commands: two-column table ignored" "⌘ a" "$list"
 expect_not "flat commands: subtitle is not a keyword" "Worktrees" "$list"
 expect_eq "flat procedures: sorted by title, _* skipped, filename fallback" \
-  "☰ Altes Runbook
+  "☰ Altes Runbook  /alt-rb
 ☰ Git-Branches sicher aufraeumen
 ☰ ohne-titel" "$(grep '^☰' <<<"$list")"
+printf 'p:1\n' > "$RUN/open"
+expect_has "tree procedures: the command follows the title" "    Altes Runbook  /alt-rb" "$(tree)"
+expect_has "colours: tree dims the command too" $'Altes Runbook\033[38;5;240m  /alt-rb\033[0m' \
+  "$(env -u NO_COLOR RECALL_RUN="$RUN" "$RECALL" --list tree | cut -f5)"
+printf '' > "$RUN/open"
+expect_has "colours: a procedure's command is dimmed like keywords" $'Altes Runbook\033[38;5;240m  /alt-rb\033[0m' \
+  "$(env -u NO_COLOR RECALL_RUN="$RUN" "$RECALL" --list flat | cut -f5)"
 expect_eq "flat order: texts, commands, procedures" "✎✎✎⌘⌘⌘⌘☰☰☰" \
   "$(awk '{ printf "%s", $1 }' <<<"$list")"
 expect_eq "flat lines carry their group id" "t:projekt-a c:wt p:0" \
