@@ -247,20 +247,35 @@ collect_texts() {
   done
   # real .reviews first: a text shared via a symlinked .reviews keeps the name of the
   # repo it lives in, whatever order the locale sorts the glob in
+  local -a files=() reals=()
   for dir in ${real_dirs[@]+"${real_dirs[@]}"} ${linked_dirs[@]+"${linked_dirs[@]}"}; do
-    repo=$(basename "$(dirname "$dir")")
     for f in "$dir"/*; do
       [ -f "$f" ] || continue
       case "${f##*/}" in *$'\t'*|*$'\n'*) continue ;; esac   # would break the list lines
       case "${f##*/}" in [Rr][Ee][Aa][Dd][Mm][Ee]*) continue ;; esac
-      real=$(realpath "$f" 2>/dev/null) || continue           # vanished meanwhile
-      [ -z "${seen[$real]:-}" ] || continue
-      seen[$real]=1
-      mtime=$(stat -c %Y "$real" 2>/dev/null) || continue
-      text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$now"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$real" "$repo" "${f##*/}" \
-        "$TS_STATE" "$TS_HIDDEN" "$TS_TRASH" "$([ -n "${SEEN[$real]+x}" ] && echo 1 || echo 0)"
+      files+=("$f")
     done
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  # One realpath and one stat for all texts: a call per text costs a fork each,
+  # and the list is built several times per start.
+  local -A mtime_of=()
+  mapfile -d '' reals < <(realpath -zm -- "${files[@]}")
+  while IFS=$'\t' read -r -d '' mtime real; do
+    mtime_of[$real]=$mtime
+  done < <(stat --printf '%Y\t%n\0' -- "${reals[@]}" 2>/dev/null)   # a vanished text is left out
+  local i known
+  for i in "${!files[@]}"; do
+    f=${files[$i]}; real=${reals[$i]}
+    mtime=${mtime_of[$real]:-}
+    [ -n "$mtime" ] || continue
+    [ -z "${seen[$real]:-}" ] || continue
+    seen[$real]=1
+    repo=${f%/.reviews/*}; repo=${repo##*/}
+    known=0; [ -z "${SEEN[$real]+x}" ] || known=1
+    text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$now"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$real" "$repo" "${f##*/}" \
+      "$TS_STATE" "$TS_HIDDEN" "$TS_TRASH" "$known"
   done | sort -t $'\t' -k1,1nr
 }
 
@@ -376,17 +391,21 @@ front_matter() { # front_matter <file> <key>: the value of "<key>:" in the YAML 
        $0 ~ "^" key ":[ \t]*" { sub("^" key ":[ \t]*", ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$1"
 }
 
-title_and_command() { # "<title>\037<command>" from the front matter, one awk per note (the list is rebuilt on every fold)
+title_and_command() { # "<file>\037<title>\037<command>" per note with front matter; one awk for all notes
+  # One awk instead of one per note: the list is rebuilt on every fold.
   awk 'function val(k,  v) { v = $0; sub("^" k ":[ \t]*", "", v); gsub(/^["\x27]|["\x27]$/, "", v); return v }
-       NR == 1 && $0 != "---" { exit }
-       NR > 1 && $0 == "---" { exit }
+       function flush() { if (cur != "") printf "%s\037%s\037%s\n", cur, title, cmd; cur = "" }
+       FNR == 1 { flush(); if ($0 != "---") nextfile; cur = FILENAME; t = c = 0; title = cmd = ""; next }
+       $0 == "---" { flush(); nextfile }
        !t && /^title:/   { t = 1; title = val("title") }
        !c && /^command:/ { c = 1; cmd = val("command") }
-       END { printf "%s\037%s\n", title, cmd }' "$1"
+       END { flush() }' "$@"
 }
 
 collect_procedures() { # prints "<title>\t<group index>\t<group name>\t<file>\t<command>"
-  local i pattern f name ex title cmd skip group
+  local i pattern f name ex title cmd skip group line
+  local -a files=() idx=() groups=()
+  local -A meta=()
   for i in "${!PROCEDURE_GLOBS[@]}"; do
     pattern=${PROCEDURE_GLOBS[$i]}
     group=${PROCEDURE_GROUPS[$i]:-}
@@ -399,10 +418,18 @@ collect_procedures() { # prints "<title>\t<group index>\t<group name>\t<file>\t<
         [[ $name == $ex ]] && skip=1
       done
       [ -z "$skip" ] || continue
-      IFS=$'\037' read -r title cmd < <(title_and_command "$f")
-      [ -n "$title" ] || title=${name%.md}
-      printf '%s\t%s\t%s\t%s\t%s\n' "$title" "$i" "$group" "$f" "$cmd"
+      files+=("$f"); idx+=("$i"); groups+=("$group")
     done < <(compgen -G "$pattern" || true)
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  while IFS= read -r line; do
+    meta[${line%%$'\037'*}]=${line#*$'\037'}
+  done < <(title_and_command "${files[@]}")
+  for i in "${!files[@]}"; do
+    f=${files[$i]}; name=${f##*/}
+    IFS=$'\037' read -r title cmd <<<"${meta[$f]:-}"
+    [ -n "$title" ] || title=${name%.md}
+    printf '%s\t%s\t%s\t%s\t%s\n' "$title" "${idx[$i]}" "${groups[$i]}" "$f" "$cmd"
   done
 }
 
