@@ -819,9 +819,11 @@ expect_eq "footer click without a line number: nothing" "" "$(fclick '' list)"
 # ---------- recent repos open at start, long groups capped ----------
 R4="$HOME/GitRepos/projekt-d"; R5="$HOME/GitRepos/projekt-e"
 mkdir -p "$R4/.reviews" "$R5/.reviews"
+# d1 is from the last hour, d2-d6 older than a day: only d1 is fresh, the cap holds
 for i in 1 2 3 4 5 6; do
   printf 'd%s\n' "$i" > "$R4/.reviews/d$i.txt"
-  touch -d "$(ago $((i * 3600)))" "$R4/.reviews/d$i.txt"
+  age=$((i * 3600)); [ "$i" -eq 1 ] || age=$(((24 + i) * 3600))
+  touch -d "$(ago "$age")" "$R4/.reviews/d$i.txt"
 done
 printf 'e1\n' > "$R5/.reviews/e1.txt"; touch -d "$(ago $((20 * 3600)))" "$R5/.reviews/e1.txt"
 reset ESC
@@ -871,6 +873,23 @@ expect_has "enter on '… more' while typing: switch to flat, take the first hit
 printf 'tree' > "$RUN/view"   # that guard switched the view file to flat
 expect_eq  "ctrl-y on '… more': nothing copied (guard)" "" \
   "$(rm -f "$CLIP"; RECALL_RUN="$RUN" "$RECALL" --copy "$more"; cat "$CLIP" 2>/dev/null)"
+# texts from the last 24 hours are never capped: five fresh ones all show
+for i in 2 3 4 5; do touch -d "$(ago $((i * 3600)))" "$R4/.reviews/d$i.txt"; done
+printf 't:projekt-d\n' > "$RUN/open"; : > "$RUN/full"; printf 'tree' > "$RUN/view"
+RECALL_RUN="$RUN" "$RECALL" --list tree > "$RUN/tree.list"
+expect_eq "cap: every text from the last 24 hours shows, then '… n more'" "✎ projekt-d (6) ▾
+    d1.txt
+    d2.txt
+    d3.txt
+    d4.txt
+    d5.txt
+    … 1 more" "$(display "$RUN/tree.list" | sed -n '/✎ projekt-d/,/more/p')"
+more=$(grep -F '… 1 more' "$RUN/tree.list")
+out=$(RECALL_RUN="$RUN" "$RECALL" --key enter "$more")
+expect_has "enter on '… more' after fresh texts: cursor on the first newly shown text" "+wait+pos($(( $(grep -n $'^grp\tt:projekt-d\t' "$RUN/tree.list" | cut -d: -f1) + 6 )))" "$out"
+for i in 2 3 4 5; do touch -d "$(ago $(((24 + i) * 3600)))" "$R4/.reviews/d$i.txt"; done
+: > "$RUN/full"
+
 printf 'TEXT_SHOW_MAX=0\n' >> "$HOME/.config/recall/recall.conf"
 printf 't:projekt-d\n' > "$RUN/open"
 expect_not "TEXT_SHOW_MAX=0: no cap" "… " "$(RECALL_RUN="$RUN" "$RECALL" --list tree | cut -f5)"

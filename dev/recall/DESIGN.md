@@ -142,9 +142,12 @@ recall cannot size its own window. Terminal launchers that know
   `reload-sync(<flat>)+wait+first+accept-or-print-query`, so the first hit is taken.
   `enter` without a match still prints only the query, which asks the assistant.
 - An open repo group shows at most `TEXT_SHOW_MAX` texts, then a `more` line
-  (`more\t<group>\t<group>\tm:<group>\t… n more`). Its cursor id is `m:<group>`, never
+  (`more\t<group>\t<group>\tm:<group>\t… n more`). Texts changed in the last 24 hours
+  are never cut: a group shows at least all of them, so a text written moments ago does
+  not land behind `more` when parallel sessions wrote several. Its cursor id is `m:<group>`, never
   the group id or an `f:` id, or `--track` would jump to another line. `enter` on it
-  adds the group to the state file `full` and rebuilds the tree uncapped; closing the
+  adds the group to the state file `full` and rebuilds the tree uncapped, the cursor on
+  the first text that was hidden; closing the
   group forgets `full`. A double-click on it is a plain `accept`, which `main` treats
   like a group line. There is no per-group scrolling: fzf has one list, and a
   `transform` per arrow key loses keys typed meanwhile.

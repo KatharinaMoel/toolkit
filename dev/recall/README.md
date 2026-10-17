@@ -30,7 +30,8 @@ The cursor starts on the newest text of the open group, so the hotkey plus
 `enter` copies it.
 `tab` (or `enter` on a group) opens and closes a group.
 At start every repo with a text from the last 24 hours is open; an open group
-shows `TEXT_SHOW_MAX` texts (default 4) and a line `… n more` — `enter` shows all,
+shows `TEXT_SHOW_MAX` texts (default 4), plus every text from the last 24 hours,
+and a line `… n more` — `enter` shows all,
 its preview lists all. The preview of a ⌘ group
 shows all its commands at once — a cheat sheet to learn from: the command in bold
 blue, its explanation below, a `Wann:` part on its own grey line. Typing switches

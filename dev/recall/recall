@@ -57,7 +57,8 @@ PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
 TEXT_HIDE_AFTER_COPY_DAYS=4  # a copied text is parked this many days after the copy
 TEXT_HIDE_UNUSED_DAYS=7      # a text never copied is parked this many days after its last change
 TEXT_TRASH_DAYS=7            # a parked text goes to the desktop trash after this many days
-TEXT_SHOW_MAX=4              # an open repo group shows this many texts, then "… n more" (0 = all)
+TEXT_SHOW_MAX=4              # an open repo group shows this many texts, then "… n more" (0 = all);
+                             #   texts changed in the last 24 hours always show
 STALE_DAYS=90                # procedures not updated for this long are marked as older
 OPEN_CMD="xdg-open"          # ctrl-o opens the file of an entry with this command
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/recall"
@@ -289,6 +290,7 @@ full_groups() { cat "${RECALL_RUN:-/nonexistent}/full" 2>/dev/null || true; }
 
 src_texts() { # src_texts tree|flat; a due text the cleanup could not trash shows as parked
   collect_texts | OPEN=$(open_groups) FULL=$(full_groups) HERE=${RECALL_HERE:-} awk -F'\t' -v view="$1" -v max="$TEXT_SHOW_MAX" \
+      -v since="$(( $(now_epoch) - DAY ))" \
       -v ic="$I_TEXT" -v fade="$FADE" -v dim="$DIM" -v rst="$RST" '
     BEGIN { here = ENVIRON["HERE"]; n = split(ENVIRON["OPEN"], o, "\n"); for (i = 1; i <= n; i++) isopen[o[i]] = 1
       m2 = split(ENVIRON["FULL"], f2, "\n"); for (i = 1; i <= m2; i++) isfull[f2[i]] = 1 }
@@ -297,6 +299,7 @@ src_texts() { # src_texts tree|flat; a due text the cleanup could not trash show
     {
       if (!($3 in cnt)) order[++nr] = $3
       k = $3 SUBSEP (++cnt[$3]); r_real[k] = $2; r_name[k] = $4
+      if ($1 > since) fresh[$3]++   # newest first: the fresh texts lead their group
       na++; a_real[na] = $2; a_repo[na] = $3; a_name[na] = $4
     }
     END {
@@ -313,7 +316,9 @@ src_texts() { # src_texts tree|flat; a due text the cleanup could not trash show
         repo = ord[i]; g = "t:" repo
         printf "grp\t%s\t%s\t%s\t%s✎%s %s %s(%d)%s %s\n", g, g, g, ic, rst, repo, fade, cnt[repo], rst, arrow(g)
         if (g in isopen) {
-          lim = (max > 0 && !(g in isfull) && cnt[repo] > max) ? max : cnt[repo]
+          # the cap hides old texts only: one written moments ago must not land behind "more"
+          cap = (fresh[repo] > max) ? fresh[repo] : max
+          lim = (max > 0 && !(g in isfull) && cnt[repo] > cap) ? cap : cnt[repo]
           for (j = 1; j <= lim; j++)
             printf "text\t%s\t%s\tf:%s\t    %s\n", r_real[repo SUBSEP j], g, r_real[repo SUBSEP j], r_name[repo SUBSEP j]
           if (lim < cnt[repo])
@@ -655,9 +660,11 @@ on_key() { # on_key tab|enter|keep|footer <line>
         printf 'flat' > "$RECALL_RUN/view"
         printf '%s+wait+first+accept-or-print-query\n' "$(reload_action flat)"
       elif [ "$kind" = more ]; then
+        local shown   # texts above the more line: fresh ones can lift the group past the cap
+        shown=$(src_texts tree | G=$gid awk -F'\t' '$1 == "text" && $3 == ENVIRON["G"] { n++ } END { print n + 0 }')
         grep -qxF -- "$gid" "$RECALL_RUN/full" 2>/dev/null || printf '%s\n' "$gid" >> "$RECALL_RUN/full"
         build_list tree
-        printf '%s+wait+pos(%s)\n' "$(reload_action tree)" "$(( $(group_line "$gid") + TEXT_SHOW_MAX + 1 ))"
+        printf '%s+wait+pos(%s)\n' "$(reload_action tree)" "$(( $(group_line "$gid") + shown + 1 ))"
       elif [ "$kind" = grp ]; then toggle_group "$gid"; build_list tree; reload_action tree
       else printf 'accept-or-print-query\n'; fi ;;
     keep)
