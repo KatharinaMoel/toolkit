@@ -111,6 +111,15 @@ printf 'TOPSECRET\n' > "$TMP/secret.txt"
 printf -- '---\nname: evil\0371\0372\0373\0374\037%s\ndescription: d\037e\r\n---\ninject body\n' "$TMP/secret.txt" \
   > "$(mkdir -p "$CH/skills/inject" && printf '%s' "$CH/skills/inject/SKILL.md")"
 put "$CH/commands/nl"$'\n'"fake.md" 'newline in the file name\n'
+# kios-generated commands: the marker on line 4, 5 or 1 (before the front matter)
+# shellcheck disable=SC2016  # the backticks are part of the kios marker text
+marker() { printf '<!-- kios:generated | Quelle: %s | Nicht von Hand aendern - aendere die Quelle und fuehre `kios sync` aus. -->' "$1"; }
+printf -- '---\ndescription: four\n---\n%s\nbody four\n' "$(marker 40-runbooks/x.md)" > "$CH/commands/gen4.md"
+printf -- '---\ndescription: five\nargument-hint: x\n---\n%s\nbody five\n' "$(marker 40-runbooks/x.md)" > "$CH/commands/gen5.md"
+printf -- '%s\n---\ndescription: one\n---\nbody one\n' "$(marker templates/merken.md)" > "$TMP/proj/.claude/commands/gen1.md"
+# a marker after the first 2000 bytes does not count
+{ printf 'filler %.0s' $(seq 1 300); printf '\n%s\n' "$(marker 40-runbooks/x.md)"; } > "$CH/commands/late.md"
+put "$TMP/Mein Vault/40-runbooks/x.md" 'VAULT-SECRET\n'   # space on purpose; must never be printed
 CONF="$HOME/.config/skill-show/skill-show.conf"
 : > "$CONF"   # exists from the start, so tests can fill and empty it without changing the snapshot
 
@@ -280,6 +289,31 @@ run /sub:nested-cmd --path
 expect_eq  "/sub:name with slash, --path" "$CH/commands/sub/nested-cmd.md" "$OUT"
 run nested-cmd
 expect_eq  "a subfolder command is not found by its bare name" 1 "$RC"
+
+# ---------- kios source ----------
+printf 'SOURCE_ROOTS=("%s")\n' "$TMP/Mein Vault" > "$CONF"
+run gen4
+expect_has "marker on line 4: source resolved to a full path" \
+  "    source:  $TMP/Mein Vault/40-runbooks/x.md (kios sync: edit the source, not this file)" "$OUT"
+run gen5
+expect_has "marker on line 5: source resolved" "    source:  $TMP/Mein Vault/40-runbooks/x.md (kios sync" "$OUT"
+expect_eq  "source: comes after file: and before the cat line" "file:|source:|>" \
+  "$(sed -n '2,4p' "$TMP/out" | awk '{print $1}' | paste -sd'|')"
+run gen1 --project "$TMP/proj"
+expect_has "marker on line 1: found; unresolvable source printed raw" \
+  "    source:  templates/merken.md (kios; not found under SOURCE_ROOTS)" "$OUT"
+for n in gen4 gen5 gen1; do
+  run "$n" --project "$TMP/proj"
+  expect_not "$n: the source note itself is never printed" "VAULT-SECRET" "$OUT$ERR"
+done
+run late
+expect_not "a marker after 2000 bytes does not count" "source:" "$OUT"
+run plain
+expect_not "a plain command has no source:" "source:" "$OUT"
+: > "$CONF"
+run gen4
+expect_has "without SOURCE_ROOTS: raw value and the hint to set it" \
+  "    source:  40-runbooks/x.md (kios; set SOURCE_ROOTS in ~/.config/skill-show/skill-show.conf to resolve it)" "$OUT"
 
 # ---------- records cannot be spoofed ----------
 for n in 3 4 evil inject fake nl; do

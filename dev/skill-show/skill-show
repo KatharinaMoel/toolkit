@@ -242,6 +242,25 @@ lookup() {
 readable() { [ -r "$1" ] || die "cannot read $1"; }   # before any output: never an empty block
 shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # for the "> cat" line
 
+resolve_source() { # resolve_source <relative path>: full path of the first SOURCE_ROOTS hit, or nothing
+  local root
+  for root in "${SOURCE_ROOTS[@]}"; do
+    [ -e "$root/$1" ] && { realpath -- "$root/$1"; return 0; }
+  done
+  return 0
+}
+
+source_line() { # source_line <kios value>: where kios sync took the file from; checks existence only, never reads it
+  local full
+  if [ "${#SOURCE_ROOTS[@]}" -eq 0 ]; then
+    printf '    source:  %s (kios; set SOURCE_ROOTS in ~/.config/skill-show/skill-show.conf to resolve it)\n' "$1"
+  elif full=$(resolve_source "$1") && [ -n "$full" ]; then
+    printf '    source:  %s (kios sync: edit the source, not this file)\n' "$full"
+  else
+    printf '    source:  %s (kios; not found under SOURCE_ROOTS)\n' "$1"
+  fi
+}
+
 more_files() { # more_files <skill dir>: the other files, full paths, sorted, at most 50
   local -a files=()
   mapfile -t files < <(find -L "$1" -type f ! -path "$1/SKILL.md" 2>/dev/null | LC_ALL=C sort)
@@ -275,6 +294,7 @@ show_entry() { # show_entry <record> <status>
   printf '    file:    %s\n' "$file"
   real=$(realpath -- "$file")
   [ "$real" = "$file" ] || printf '    link:    %s\n' "$real"
+  [ -z "$kios" ] || source_line "$kios"
   [ "$kind" != skill ] || more_files "${file%/SKILL.md}"
   printf '    > cat %s\n' "$(shell_quote "$file")"
   printf '──── begin ────\n'
