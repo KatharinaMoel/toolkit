@@ -451,6 +451,33 @@ run alpha
 expect_eq  "broken installed_plugins.json: personal skills still work" 0 "$RC"
 cat "$TMP/inst.bak" > "$CH/plugins/installed_plugins.json"
 
+# ---------- not found ----------
+run brainstorming
+expect_eq  "not found: exit 1" 1 "$RC"
+expect_eq  "not found: nothing on stdout" "" "$OUT"
+expect_has "not found: says so" "skill-show: no file for /brainstorming." "$ERR"
+expect_has "not found: points to the places in --help" "skill-show --help lists them" "$ERR"
+expect_has "not found: suggests the plugin skill" "Plugin skills with this name: /superpowers:brainstorming" "$ERR"
+run code-review
+expect_has "not found: suggests the claude.ai plugin skill" "Plugin skills with this name: /engineering:code-review" "$ERR"
+run sp-cmd
+expect_has "not found: suggests the plugin command" "Plugin commands with this name: /superpowers:sp-cmd" "$ERR"
+run nested-cmd
+expect_has "not found: suggests the subfolder command" "Commands in a subfolder with this name: /sub:nested-cmd" "$ERR"
+run simplify
+expect_has "unknown name: most likely bundled" "most likely a bundled skill or a built-in command" "$ERR"
+expect_not "unknown name: no suggestion line" "with this name" "$ERR"
+printf 'BUILTIN_NAMES=(loop simplify)\n' > "$CONF"
+run /simplify
+: > "$CONF"
+expect_has "name in BUILTIN_NAMES: said plainly" "/simplify is a bundled skill or built-in command of Claude Code" "$ERR"
+expect_not "name in BUILTIN_NAMES: no 'most likely'" "most likely" "$ERR"
+run pydantic-ai:building-pydantic-ai-agents
+expect_has "prefixed not found: explains the prefix" "the name in its plugin.json" "$ERR"
+run --help
+expect_has "--help lists where it looks" "/etc/claude-code/.claude/skills" "$OUT"
+expect_has "--help lists the plugin places" "installed_plugins.json" "$OUT"
+
 # ---------- records cannot be spoofed ----------
 for n in 3 4 evil inject fake nl; do
   run "$n"

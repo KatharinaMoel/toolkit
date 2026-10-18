@@ -45,6 +45,22 @@ usage:
   skill-show --help
 
 <name> works with or without a leading slash, and as plugin:skill.
+
+Where it looks (a bare name: places 1-7, first match wins; plugin:name: 8-10
+and command subfolders):
+  1 managed skills     /etc/claude-code/.claude/skills/<dir>/SKILL.md
+  2 personal skills    ~/.claude/skills/<dir>/SKILL.md
+  3 project skills     <project>/.claude/skills/<dir>/SKILL.md
+  4 nested skills      .claude/skills in each folder from here up to the project root
+  5 extra dir skills   .claude/skills in each EXTRA_DIRS folder (config)
+  6 personal commands  ~/.claude/commands/<name>.md, <sub>/<name>.md runs as /<sub>:<name>
+  7 project commands   <project>/.claude/commands/<name>.md, same for subfolders
+  8 claude.ai skills   ~/.claude/skills/synced/<bucket>/<dir>, as /anthropic-skills:<name>
+  9 plugins            the installPath in ~/.claude/plugins/installed_plugins.json
+ 10 claude.ai plugins  ~/.claude/plugins/synced/<bucket>/<plugin>~g<generation>
+~/.claude is $CLAUDE_CONFIG_DIR when that is set. Bundled skills and built-in
+commands of Claude Code (/simplify, /loop, ...) have no file to show.
+
 Config: ~/.config/skill-show/skill-show.conf (see example.conf)
 EOF
 }
@@ -431,6 +447,40 @@ show_entry() { # show_entry <record> <status>
   print_content "$file"
 }
 
+# ---------- not found ----------
+not_found() { # not_found <prefix> <bare>: explain on stderr, exit 1
+  local inv=$2 builtin=0 n kind group
+  [ -z "$1" ] || inv="$1:$2"
+  printf 'skill-show: no file for /%s.\n' "$inv" >&2
+  printf '  It is not in any place skill-show looks (skill-show --help lists them).\n' >&2
+  if [ -n "$1" ]; then
+    printf '  The part before the colon is the name in its plugin.json, not the folder name;\n' >&2
+    printf '  skill-show --list shows every prefix it found.\n' >&2
+    exit 1
+  fi
+  for n in "${BUILTIN_NAMES[@]}"; do [ "$n" != "$2" ] || builtin=1; done
+  if [ "$builtin" -eq 1 ]; then
+    printf '  /%s is a bundled skill or built-in command of Claude Code (BUILTIN_NAMES in your config):\n' "$2" >&2
+  else
+    printf '  If /%s appears in Claude Code'"'"'s / menu, it is most likely a bundled skill or a built-in command:\n' "$2" >&2
+  fi
+  printf '  its text is compiled into the Claude Code program, and there is no file to show.\n' >&2
+  # the same name with a prefix: plugins, claude.ai, command subfolders
+  local -a p_skills=() p_cmds=() subs=()
+  while IFS="$US" read -r inv kind group; do
+    case "$group" in
+      personal-command|project-command) subs+=("$inv") ;;
+      *) if [ "$kind" = skill ]; then p_skills+=("$inv"); else p_cmds+=("$inv"); fi ;;
+    esac
+  done < <({ gather_local; gather_plugins; emit_records; } | awk -F "$US" -v n="$2" -v OFS="$US" \
+             '$2 ~ /:/ && ($5 == n || $6 == n) { print $2, $3, $4 }' | sort -u)
+  join_list() { local IFS=,; printf '%s' "${*}" | sed 's/,/, /g'; }
+  [ "${#p_skills[@]}" -eq 0 ] || printf '  Plugin skills with this name: %s\n' "$(join_list "${p_skills[@]}")" >&2
+  [ "${#p_cmds[@]}" -eq 0 ] || printf '  Plugin commands with this name: %s\n' "$(join_list "${p_cmds[@]}")" >&2
+  [ "${#subs[@]}" -eq 0 ] || printf '  Commands in a subfolder with this name: %s\n' "$(join_list "${subs[@]}")" >&2
+  exit 1
+}
+
 # ---------- main ----------
 if [ "$HAVE_ARG" -eq 1 ]; then
   mapfile -t MATCHES < <(lookup "$NAME_PREFIX" "$NAME_BARE")
@@ -439,7 +489,7 @@ if [ "$HAVE_ARG" -eq 1 ]; then
     printf 'skill-show: /%s needs jq to look up plugins - install it with: sudo dnf install jq\n' "$inv_name" >&2
     exit 2
   fi
-  [ "${#MATCHES[@]}" -gt 0 ] || die "no file for /$inv_name."
+  [ "${#MATCHES[@]}" -gt 0 ] || not_found "$NAME_PREFIX" "$NAME_BARE"
 
   # status of every match against the active one (the first)
   IFS="$US" read -r _ _ a_kind a_group _ <<<"${MATCHES[0]}"
