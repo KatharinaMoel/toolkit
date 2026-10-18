@@ -46,7 +46,7 @@ Without a config file the page shows what Claude Code itself has:
 | Eigene Skills | `~/.claude/skills/*/SKILL.md`, personal agents in `~/.claude/agents/` |
 | Installierte Plugins | skills, commands and agents under each `installPath` in `~/.claude/plugins/installed_plugins.json` |
 | Von claude.ai synchronisiert | `~/.claude/skills/synced/` and `~/.claude/plugins/synced/` (observed layout, best-effort) |
-| Hooks | `type: command` hooks in `~/.claude/settings.json` |
+| Hooks | `type: command` hooks in `~/.claude/settings.json`, named after their script; a hook whose command names no clear script is listed as "eingebetteter Befehl", without the command text |
 | Verwaltet | `/etc/claude-code/.claude/skills/` |
 
 `~/.claude` is `$CLAUDE_CONFIG_DIR` when set. Everything else is optional and
@@ -58,6 +58,9 @@ in [`example.conf`](example.conf)):
 - `source_roots`: if a tool generates your commands and leaves a marker
   `<!-- kios:generated | Quelle: <path> | … -->` in them, the page links each
   command to its source and marks those whose source is gone.
+- `source_prefixes`: when the source path in the marker does not match the folder
+  layout (`templates/x.md` for `…/templates/agent/system-commands/x.md`), map the
+  prefix to the folder.
 - `projects`: project folders whose `.claude/` gets a lane (fixed in the config, so
   the page is the same wherever a session starts).
 - `tools`, `builtins`, `areas`, `title`, `refresh_hint`, `hide`, `narrative`.

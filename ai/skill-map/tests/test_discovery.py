@@ -165,3 +165,30 @@ def test_a_plugin_without_entries_keeps_its_group(w):
     g = {x.id: x for x in w.groups}
     assert g["plugin:emptyplug"].counts == {"skill": 0, "command": 0, "agent": 0}
     assert g["plugin:emptyplug"].origin["vendor"] == "Hook Maker"
+
+
+def test_source_prefixes_map_a_raw_value_to_another_folder(world, home, conf):
+    from world import CONFIG, MARK, put
+    put(home / ".claude/commands/mapped.md", "---\ndescription: m\n---\n" + MARK.format("templates/mapped.md") + "\n")
+    put(home / "gen/agent/system-commands/mapped.md", "template\n")
+    w = discover(load_config())
+    assert "source-missing" in w.entries["mapped"].flags
+    conf(CONFIG.replace("[[projects]]", '[source_prefixes]\n"templates/" = "~/gen/agent/system-commands/"\n\n[[projects]]', 1))
+    w = discover(load_config())
+    assert "source-missing" not in w.entries["mapped"].flags
+    assert w.entries["mapped"].source_path == home / "gen/agent/system-commands/mapped.md"
+    assert "source-missing" not in w.entries["k-start"].flags        # roots still work
+
+
+def test_hooks_without_a_clear_script_are_listed_without_their_command(world, home):
+    s = home / ".claude/settings.json"
+    data = json.loads(s.read_text())
+    data["hooks"]["Notification"] = [{"hooks": [
+        {"type": "command", "command": 'if [ -n "$X" ]; then printf hidden-text; fi', "statusMessage": "Orca"},
+        {"type": "command", "command": "notify-send other-hidden-text"}]}]
+    s.write_text(json.dumps(data))
+    w = discover(load_config())
+    inline = sorted(k for k in w.entries if k.startswith("hook:Notification:"))
+    assert len(inline) == 2 and all(w.entries[k].path is None for k in inline)
+    assert w.entries[inline[0]].desc == "Orca" or w.entries[inline[1]].desc == "Orca"
+    assert "hidden-text" not in json.dumps([vars(e) for e in w.entries.values()], default=str)

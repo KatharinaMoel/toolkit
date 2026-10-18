@@ -27,6 +27,7 @@ class Config:
     hide: list[str] = field(default_factory=list)            # keys or glob patterns over keys
     areas: dict[str, str] = field(default_factory=dict)      # runbook tag -> area shown on the page
     source_roots: list[Path] = field(default_factory=list)
+    source_prefixes: dict[str, Path] = field(default_factory=dict)   # raw source prefix -> folder
     synced_skill_prefix: str = "anthropic-skills"            # observed, not documented
     narrative: Path = field(default_factory=lambda: config_dir() / "erzaehlung.html")
     artifact_url: str | None = None
@@ -93,6 +94,8 @@ def load_config(path: Path | None = None) -> Config:
         cfg.source_roots = [expand(r) for r in _str_list(data, "source_roots", where)]
     if "builtins" in data:
         cfg.builtins = _str_table(data, "builtins", where)
+    if "source_prefixes" in data:
+        cfg.source_prefixes = {k: expand(v) for k, v in _str_table(data, "source_prefixes", where).items()}
     if "areas" in data:
         cfg.areas = _str_table(data, "areas", where)
     if "withhold_text" in data:
