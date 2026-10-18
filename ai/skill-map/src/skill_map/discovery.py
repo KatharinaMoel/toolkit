@@ -15,6 +15,7 @@ import glob
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -88,6 +89,29 @@ LANES = [
 PROJECT_SCOPE = "für alle im Repo · nur in diesem Projekt"
 ENV_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 INTERPRETERS = {"python", "python3", "bash", "sh", "node", "zsh", "uv", "uvx", "npx"}
+
+
+SAFE_WORD = re.compile(r"[\w./~+-]+")
+
+
+def _hook_script(command: str) -> str | None:
+    """The word of a hook command that names its script, or None. Parsed like a shell;
+    env (with its options) and NAME=value words are skipped, so a token set inline never
+    becomes a key. Fails closed: a word that does not look like a path is refused."""
+    try:
+        words = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    while words and (Path(words[0]).name == "env" or ENV_WORD.match(words[0])
+                     or words[0].startswith("-")):          # env, its options, NAME=value
+        words = words[1:]
+    if words and Path(words[0]).name in INTERPRETERS and len(words) > 1:
+        words = words[1:]
+        while words and words[0].startswith("-"):     # python3 -u script.py
+            words = words[1:]
+    if not words or not SAFE_WORD.fullmatch(words[0]):
+        return None
+    return words[0]
 
 
 def managed_dir() -> Path:
@@ -440,15 +464,10 @@ class _Collector:
                     for h in block.get("hooks") or []:
                         if not isinstance(h, dict) or h.get("type") != "command" or not isinstance(h.get("command"), str):
                             continue
-                        # Skip env and NAME=value words: a token set inline must never become a key.
-                        words = h["command"].split()
-                        while words and (words[0] == "env" or ENV_WORD.match(words[0])):
-                            words = words[1:]
-                        if words and Path(words[0]).name in INTERPRETERS and len(words) > 1:
-                            words = words[1:]
-                        if not words or "=" in words[0]:
+                        word = _hook_script(h["command"])
+                        if word is None:    # cannot tell safely which word names the script: skip
+                            self.notes.append(f"a {event} hook in {tilde(sf)} is not listed: its command could not be read safely")
                             continue
-                        word = words[0]
                         path = expand(word)
                         desc = h.get("statusMessage") if isinstance(h.get("statusMessage"), str) else ""
                         self.add(Entry(f"hook:{event}:{path.name}", path.name, event, "hook", "hooks", "hooks", desc,

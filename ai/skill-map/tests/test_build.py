@@ -253,3 +253,19 @@ def test_account_ids_and_emails_never_in_any_field(world, home, tmp_path):
     dumped = json.dumps(inv)
     assert FAKE_ID not in dumped and mail not in dumped
     assert {g["id"]: g for g in inv["groups"]}["plugin:reviewkit"]["origin"]["vendor"] == "Review People"
+
+
+def test_hook_commands_are_parsed_like_a_shell_and_fail_closed(world, home, tmp_path):
+    part = "-".join(["fake", "quoted", "secret"])
+    s = home / ".claude/settings.json"
+    data = json.loads(s.read_text())
+    data["hooks"]["Notification"] = [{"hooks": [
+        {"type": "command", "command": f'MY_VAR="{part} more" ~/.claude/hooks/q.sh'},
+        {"type": "command", "command": f"/usr/bin/env -i MY_VAR={part} ~/.claude/hooks/e.sh"},
+        {"type": "command", "command": f"echo '{part}"},                      # unbalanced quote
+        {"type": "command", "command": f"{part}$(id) && x"}]}]
+    s.write_text(json.dumps(data))
+    inv, _, _ = run_build(tmp_path)
+    page = (tmp_path / "out/skill-map.html").read_text(encoding="utf-8")
+    assert part not in json.dumps(inv) and part not in page and "more" not in json.dumps(list(inv["entries"]))
+    assert "hook:Notification:q.sh" in inv["entries"] and "hook:Notification:e.sh" in inv["entries"]
