@@ -91,7 +91,8 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
     for key, e in world.entries.items():
         count, last = usage.counts.get(key, (0, None))
         source_unknown = e.source_note is not None and e.source_path is None
-        classified = _classified(e) or source_unknown     # unknown classification counts as classified
+        classified = (_classified(e) or source_unknown     # unknown classification counts as classified
+                      or key in cfg.withhold_text)          # what made the text private is usually in the description too
         desc, runbook = _clean(e.desc), e.runbook
         if isinstance(runbook, dict):
             runbook = dict(runbook, tags=[_clean(t) for t in runbook.get("tags") or []])

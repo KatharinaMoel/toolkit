@@ -87,8 +87,8 @@ that no longer exists is struck through on the page and listed at the top.
   reason, when the config says so (`withhold_text`), when the file or its source note
   carries a `classification:` other than `public` or `internal` (or cannot be read),
   when its source note cannot be found, when it is not valid UTF-8, or when it
-  contains an account id. Classified files also publish no description, title or
-  tags.
+  contains an account id. Classified files and entries in `withhold_text` also
+  publish no description, title or tags.
 - **Session logs** give counts and dates per known entry only. Names that match no
   entry are kept only if they look like a command name (`^/?[A-Za-z0-9._:-]{1,80}$`).
 - **Paths** show `~` for your home and `<konto>` for account ids. Plugin author

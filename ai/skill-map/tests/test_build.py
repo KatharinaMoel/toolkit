@@ -287,3 +287,11 @@ def test_only_path_like_words_name_a_hook_script(world, home, tmp_path):
     assert "hook:Notification:notify-send" not in inv["entries"]
     inline = [e for k, e in inv["entries"].items() if k.startswith("hook:Notification:") and e["path"] is None]
     assert inline and all(e["name"] == "eingebetteter Befehl" for e in inline)
+
+
+def test_withheld_by_config_publishes_no_description_either(world, home, tmp_path):
+    (home / ".claude/skills/zeit/SKILL.md").write_text("---\nname: zeit\ndescription: NAME-IN-DESC\n---\nx\n")
+    inv, wl, _ = run_build(tmp_path)
+    assert inv["entries"]["zeit"]["text"] == "withheld"
+    assert inv["entries"]["zeit"]["desc"] == ""
+    assert "NAME-IN-DESC" not in json.dumps([inv, wl])
