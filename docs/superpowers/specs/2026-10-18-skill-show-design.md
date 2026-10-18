@@ -2,6 +2,8 @@
 
 Status: spec, agreed with the user on 2026-10-18. Not implemented yet.
 Target: `dev/skill-show/` in this repository.
+Moved on 2026-10-18 to `ai/skill-show/`, the area for tools around AI agents;
+paths below that name `dev/skill-show` mean that folder now.
 Workflow for the builder: superpowers `writing-plans`, then implementation with TDD.
 Everything the builder needs is below; open questions are marked as such.
 

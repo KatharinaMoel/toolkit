@@ -3,7 +3,7 @@
 # throwaway HOME and project under mktemp. Touches neither the real ~/.claude
 # nor ~/.config.
 #
-#   bash dev/skill-show/test_skill_show.sh
+#   bash ai/skill-show/test_skill_show.sh
 #
 # PATH holds only stubs plus links to basic system tools, so the real fzf and
 # bat are never called; stubs for curl, wget and claude log every call, and the

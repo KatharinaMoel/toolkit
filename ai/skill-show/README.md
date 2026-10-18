@@ -177,9 +177,9 @@ Fedora: `sudo dnf install jq fzf bat`
 ## Setup
 
 ```bash
-ln -s "$PWD/dev/skill-show/skill-show" ~/.local/bin/skill-show
+ln -s "$PWD/ai/skill-show/skill-show" ~/.local/bin/skill-show
 mkdir -p ~/.config/skill-show
-cp dev/skill-show/example.conf ~/.config/skill-show/skill-show.conf   # optional, then edit
+cp ai/skill-show/example.conf ~/.config/skill-show/skill-show.conf   # optional, then edit
 ```
 
 Every setting is optional: `SOURCE_ROOTS`, `EXTRA_DIRS`, `BUILTIN_NAMES`,
@@ -188,7 +188,7 @@ Every setting is optional: `SOURCE_ROOTS`, `EXTRA_DIRS`, `BUILTIN_NAMES`,
 ## Tests
 
 ```bash
-bash dev/skill-show/test_skill_show.sh
+bash ai/skill-show/test_skill_show.sh
 ```
 
 Runs in a throwaway `HOME` and project with stubs for `fzf`, `bat`, `curl`,
