@@ -173,8 +173,9 @@ The header and end line are never sent through `bat`.
 ### Where it looks
 
 `$CLAUDE_HOME` below means `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`. (Claude Code reads
-`CLAUDE_CONFIG_DIR` to relocate `~/.claude`; the builder verifies this in the current
-docs and drops it if it no longer exists.) The project root `$PROJECT` is
+`CLAUDE_CONFIG_DIR` to relocate `~/.claude`. Builder check 2026-10-18: documented on
+code.claude.com/docs/en/env-vars, "All settings, session history, and plugins are
+stored under this path".) The project root `$PROJECT` is
 `git rev-parse --show-toplevel` from the current directory, else the current
 directory; `--project <dir>` overrides it (also useful for tests).
 
@@ -199,12 +200,23 @@ Rules per source:
 - **Skill name**: front matter `name:` of `SKILL.md`; without one, the directory name.
   The docs say the directory name "also invokes the skill", so a skill whose `name:`
   differs from its folder is found under **both** names; the list shows the
-  `name:` value and the folder in brackets. (Docs wording is ambiguous; builder:
-  verify with a dummy skill in a live session if cheap, otherwise keep both.)
+  `name:` value and the folder in brackets. (Builder check 2026-10-18: the skills
+  docs say "`name` sets the command that the `/` menu shows and that you type, unless
+  another command already uses that name. The directory name also invokes the
+  skill." No live test was run — the user decided to go without one — so both names
+  are kept.)
 - **Command name**: file name without `.md`. Commands in subfolders
-  (`commands/<sub>/<name>.md`) are listed under `<name>` with `<sub>` as a label,
-  as Claude Code did for namespaced commands. Builder: check the current docs; if
-  subfolders are no longer supported, skip them and say so in the README.
+  (`commands/<sub>/<name>.md`) are invoked as `/<sub>:<name>` — **changed by the
+  builder** on 2026-10-18 from "listed under `<name>` with `<sub>` as a label": the
+  skills docs call subfolders "the older format and still works" and name them as
+  "Subdirectory path relative to `commands/` with each `/` replaced by `:`, then the
+  file name without extension" (example `/frontend:component`). Consequences: a
+  prefixed name is looked up in command subfolders (groups 6–7) as well as in groups
+  8–10; a bare name does not match a subfolder command but the not-found message
+  suggests it; if a subfolder and a plugin share the prefix, both are shown and the
+  header says it cannot tell which one Claude Code uses. Without `jq`, a prefixed name
+  that matches a subfolder command is shown with a note that plugins were not
+  checked; otherwise it is the usual exit 2.
 - **Skipped**: every entry whose name starts with `.` (observed:
   `~/.claude/skills/.trash/` holds deleted skills; `synced/` also has `.bucket-*`
   files), and the folder `synced` inside `$CLAUDE_HOME/skills` for groups 2–5 (it
@@ -220,15 +232,18 @@ Rules per source:
   `plugins/cache/claude-plugins-official/<plugin>/` and a temporary clone
   `plugins/cache/temp_subdir_*.clone/`. A `scope` other than `user` (project or
   local) counts only when its project path equals `$PROJECT`; the field name was not
-  observed (all entries here are `user`) — builder: check the docs or a project
-  install; if unknown, include such entries with the label `(scope: <scope>, project unknown)`.
+  observed (all entries here are `user`). Builder check 2026-10-18: the plugin
+  loading docs say only that the file "records each install with its `scope`,
+  `installPath`, and `version`"; no project path field is documented. So such entries
+  are included with the label `(scope: <scope>, project unknown)`.
 - **Enabled or not**: a plugin whose key is `false` in `enabledPlugins` of
   `$CLAUDE_HOME/settings.json`, `$PROJECT/.claude/settings.json` or
   `$PROJECT/.claude/settings.local.json` is still listed and shown, labelled
   `(disabled)`. Spec author decided: transparency includes things that are switched
-  off; hiding them would make "why is this not running?" harder. Builder: the order in
-  which these files override each other follows the settings docs (local > project >
-  user is the usual order; verify).
+  off; hiding them would make "why is this not running?" harder. Order (builder check
+  2026-10-18, settings and plugin loading docs): the sources "merge key by key. For
+  each plugin id, the value that applies is the one from the highest-precedence source
+  that mentions the id" — local > project > user.
 - **claude.ai plugins (observed)**: `plugins/synced/<bucket>/manifest.json` lists
   `{"plugins": [{"name": "engineering", "generation": 3, ...}]}`, and the folder in
   use is `<name>~g<generation>` (it also contains an empty file `.in_use`). Older
@@ -303,11 +318,14 @@ collide because of their prefix; project root and nested skill both load.
 (e.g. personal command vs. project skill). Spec author decided: all skills before all
 commands, because "the skill wins" is the only documented rule between the two
 kinds. The README states this order and marks that one case as unverified; the
-header then says `active (by the precedence in the README)`. Builder: if a quick live
-test (two dummy entries, `/name` in a scratch session) is possible, run it and adjust;
-otherwise keep the order and the marking.
+header then says `active (by the precedence in the README)`. Builder 2026-10-18: no
+live test was run (creating dummy skills and commands was blocked by the permission
+check, and the user decided to go without one), so the order and the marking stay.
+The skills docs row "A skill and a file in `.claude/commands/` | The skill" does not
+say whether a personal `~/.claude/commands/` file counts.
 
-A prefixed name (`plugin:skill`) looks only in groups 8–10. Two installed plugins
+A prefixed name (`plugin:skill`) looks only in groups 8–10, plus command subfolders
+(see "Command name"). Two installed plugins
 with the same `plugin.json` name (different marketplaces) are listed together; both
 are shown as matches, the header says it cannot tell which one Claude Code uses, exit
 code 0 if it printed content (`--all` implied), and the README documents it.
@@ -322,7 +340,9 @@ not-found message lists prefixed matches as suggestions ("Did you mean
 
 Header and end line go to **stdout** together with the content. Spec author decided:
 for this tool the path is part of the result (the user asked for "path first"), and
-whether Claude Code's `!` shows stderr in the chat was not verified. Notes about
+`--raw`/`--path` and pipes stay clean. (Observed 2026-10-18, Claude Code 2.1.302:
+`!` puts stderr into the chat too, merged into the stdout block — see Open question
+3.) Notes about
 skipped sources and suggestions go to stderr, as in `wt` and `recall`. `--raw` and
 `--path` print no header.
 
@@ -603,13 +623,25 @@ Not part of phase 1.
    author knows none. If one exists, phase 1 may call it for not-found names — but
    only if it is local (no network) and prints the text unchanged; otherwise keep the
    message.
+   **Resolved 2026-10-18 (builder):** none found. The skills docs only say "Bundled
+   skills are prompt-based"; no CLI command prints their text. The message stays.
 2. **Precedence across kinds and levels** (personal command vs. project skill of the
    same name) is not documented. See "Precedence"; decide by a live test if possible.
+   **Still open 2026-10-18:** no live test (blocked by the permission check; the user
+   decided to go without). The spec order stays, the header and README mark the case
+   as unverified.
 3. **Does Claude Code's `!` output include stderr?** It decides whether the notes on
    stderr are visible in the chat. The design does not depend on it (everything the
    user asked for is on stdout); the README should state the observed behaviour.
+   **Resolved 2026-10-18 (observed by the user, Claude Code 2.1.302):**
+   `! sh -c 'echo OUT; echo ERR >&2'` shows both `OUT` and `ERR` in the chat, merged
+   into the stdout block (the stderr block stays empty). So the notes on stderr are
+   visible in the chat. Not documented; may change with an update.
 4. **claude.ai synced folders** (`skills/synced`, `plugins/synced`, the `~g<N>`
    generations, the `anthropic-skills` prefix) are observed, not documented. If a
    Claude Code update changes them, the related tests still pass (they use the
    fixture) but the real lookup breaks — the README should say these two groups are
    best-effort.
+5. **Case sensitivity** (builder, 2026-10-18): the skills docs mention ignoring case
+   only when synced claude.ai skills collide with local ones; general name matching is
+   not documented and not live-tested. Matching stays case-sensitive as decided above.
