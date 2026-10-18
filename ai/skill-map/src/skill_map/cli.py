@@ -1,5 +1,6 @@
 """Command line: build, diff, mark-published, check, fingerprint."""
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from .build import build, fingerprint
 from .config import ConfigError, load_config
 from .discovery import DiscoveryError, discover
 from .paths import state_dir
+from .state import check_message, diff, mark_published
 
 DESCRIPTION = """\
 skill-map - an overview page of the skills, commands, plugins and agents Claude Code can use
@@ -50,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 2
+    if args.command == "check":
+        return _check()
     try:
         cfg = load_config()
     except ConfigError as e:
@@ -61,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
             out = Path(args.out) if args.out else state_dir() / "build"
             build(cfg, out, log)
             return 0
+        if args.command == "diff":
+            return diff(args.texts, log, print)
+        if args.command == "mark-published":
+            return mark_published(cfg, log)
         if args.command == "fingerprint":
             fp, rows = fingerprint(discover(cfg))
             print(fp)
@@ -70,5 +78,20 @@ def main(argv: list[str] | None = None) -> int:
     except DiscoveryError as e:
         print(f"skill-map: {e}", file=sys.stderr)
         return 1
-    print(f"skill-map: {args.command} is not implemented yet", file=sys.stderr)  # replaced task by task
-    return 1
+    return 2
+
+
+def _check() -> int:
+    """Hook mode: one JSON line with a systemMessage, or nothing. Never fails the session
+    start and never reads stdin (Claude Code passes hook JSON there; it is not needed)."""
+    title = "Skill-Landkarte"
+    try:
+        cfg = load_config()
+        title = cfg.title
+        message = check_message(cfg)
+    except Exception as e:      # noqa: BLE001 - any error becomes one visible line, exit 0
+        reason = str(e).splitlines()[0] if str(e) else type(e).__name__
+        message = f"{title}: Prüfung fehlgeschlagen ({reason[:160]})"
+    if message:
+        print(json.dumps({"systemMessage": message}, ensure_ascii=False))
+    return 0

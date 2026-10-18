@@ -31,6 +31,7 @@ class Config:
     narrative: Path = field(default_factory=lambda: config_dir() / "erzaehlung.html")
     artifact_url: str | None = None
     title: str = "Skill-Landkarte"
+    refresh_hint: str = "skill-map build"                    # how to refresh, named in the hook line and on the page
 
 
 def default_path() -> Path:
@@ -76,6 +77,8 @@ def load_config(path: Path | None = None) -> Config:
         cfg.vault = expand(_str(data, "vault", where))
     if "title" in data:
         cfg.title = _str(data, "title", where)
+    if "refresh_hint" in data:
+        cfg.refresh_hint = _str(data, "refresh_hint", where)
     if "synced_skill_prefix" in data:
         cfg.synced_skill_prefix = _str(data, "synced_skill_prefix", where)
     if "artifact_url" in data:

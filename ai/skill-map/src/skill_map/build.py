@@ -126,7 +126,7 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
 
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     inventory = {
-        "schema": 1, "generated": now, "title": cfg.title, "fingerprint": fp,
+        "schema": 1, "generated": now, "title": cfg.title, "refresh_hint": cfg.refresh_hint, "fingerprint": fp,
         "usage": {"since": usage.since, "sessions": usage.sessions, "method": USAGE_METHOD,
                   "unmatched": usage.unmatched},
         "places": [vars(p) for p in world.places],

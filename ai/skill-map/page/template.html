@@ -550,7 +550,7 @@ a.legend-link:hover,a.legend-link:focus-visible{outline:2px solid currentColor;o
   function renderFresh(){
     var f = $('fresh'); f.textContent = '';
     var p = el('p'); p.append(document.createTextNode('Erzeugt am ' + day(inv.generated) + ' · Fingerabdruck '), el('code', null, inv.fingerprint.slice(7, 19)),
-      document.createTextNode(' · neu erzeugen mit '), el('code', null, 'skill-map build'));
+      document.createTextNode(' · aktualisieren mit '), el('code', null, inv.refresh_hint || 'skill-map build'));
     f.append(p);
     if (inv.usage.unmatched.length) {
       f.append(el('p', 'src', 'In den Protokollen, aber hier ohne Eintrag: ' + inv.usage.unmatched.slice(0, 12).map(function(u){ return u.name + ' (' + u.count + ')'; }).join(', ')));
