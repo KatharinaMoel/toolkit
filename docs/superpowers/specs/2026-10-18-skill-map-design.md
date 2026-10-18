@@ -1,7 +1,7 @@
-# skill-landkarte — design
+# skill-map (Skill-Landkarte) — design
 
 Status: spec, written on 2026-10-18 from the user's decisions. Not implemented yet.
-Target: `dev/skill-landkarte/` in this repository.
+Target: `ai/skill-map/` in this repository.
 Workflow for the builder: superpowers `writing-plans`, then implementation with TDD.
 Everything the builder needs is below. The builder works without asking the user,
 except at the points marked **needs the user's OK**.
@@ -16,10 +16,10 @@ Marking used in this spec (same as in `2026-10-18-skill-show-design.md`):
 
 Inputs this spec builds on:
 
-- `docs/superpowers/specs/assets/skill-landkarte/prototype-v5.html`: the page as
+- `docs/superpowers/specs/assets/skill-map/prototype-v5.html`: the page as
   published today (version 5). Its lists, tables and usage numbers are typed in by
   hand; only the full texts come from `wortlaut.json` via `fetch`.
-- `docs/superpowers/specs/assets/skill-landkarte/build_wortlaut.py`: the one-off
+- `docs/superpowers/specs/assets/skill-map/build_wortlaut.py`: the one-off
   script that produced that `wortlaut.json`.
 - `docs/superpowers/specs/2026-10-18-skill-show-design.md`: the related tool. Its
   "Where it looks" table and "Precedence" rules are the reference for discovery here.
@@ -34,7 +34,7 @@ come from, how often she uses them, and lets her read the full text of each file
 one click. Today the page is a snapshot: every list and number was typed in by hand,
 so it goes stale as soon as a plugin updates or a runbook is added.
 
-`skill-landkarte` keeps the page current:
+`skill-map` keeps the page current:
 
 1. a build step reads the same places on disk and the session logs, and writes the
    data the page shows (`inventory.json`) plus the full texts (`wortlaut.json`);
@@ -52,7 +52,7 @@ runs with the user present.
 
 ## Goals
 
-1. `skill-landkarte build` writes `inventory.json`, `wortlaut.json` and the page
+1. `skill-map build` writes `inventory.json`, `wortlaut.json` and the page
    `index.html` into a build folder, from local files only.
 2. The inventory covers every entry the prototype shows: personal and project
    commands, personal skills, vault runbooks, installed plugins (skills, commands,
@@ -69,9 +69,9 @@ runs with the user present.
 6. Hand-written parts reference entries by key. A key that no longer exists is shown
    as missing on the page and reported by the build.
 7. A fingerprint over the set of entries (without usage) is stored at publish time.
-   `skill-landkarte check`, run as a SessionStart hook, prints one line when the
+   `skill-map check`, run as a SessionStart hook, prints one line when the
    current set differs, and nothing otherwise.
-8. `skill-landkarte diff` tells Claude which texts are new or changed since the last
+8. `skill-map diff` tells Claude which texts are new or changed since the last
    publish, so they can be read before publishing.
 9. Tests run with an artificial `HOME`, fixture files and fixture session logs, never
    against the real machine.
@@ -119,11 +119,11 @@ runs with the user present.
 - Folder layout (spec author decided, following `media/transcribe`):
 
   ```
-  dev/skill-landkarte/
-    skill-landkarte          launcher (bash): runs python3 -m skill_landkarte with
+  ai/skill-map/
+    skill-map          launcher (bash): runs python3 -m skill_map with
                              PYTHONPATH=<this folder>/src, resolves its real path so a
                              symlink in ~/.local/bin works
-    src/skill_landkarte/     the package (module split left to the builder)
+    src/skill_map/     the package (module split left to the builder)
     page/template.html       the page, with slots for the narrative
     README.md                usage, requirements, setup, places, usage method, limits
     example.conf             anonymized config (TOML syntax, says so on line 1)
@@ -136,12 +136,12 @@ runs with the user present.
 - Repo integration, part of phase 1:
   - row in the **Tools** table of the top-level `README.md` (area `dev`);
   - a CI job like the `transcribe` job: Python 3.12, `pip install pytest`, `bash -n`
-    and `shellcheck` on the launcher, `python -m pytest -q dev/skill-landkarte/tests`;
-  - add `dev/skill-landkarte/skill-landkarte` to `is_ci_shell` in
+    and `shellcheck` on the launcher, `python -m pytest -q ai/skill-map/tests`;
+  - add `ai/skill-map/skill-map` to `is_ci_shell` in
     `.githooks/pre-commit` (its comment says to keep it in sync with `ci.yml`).
-- Config: `${XDG_CONFIG_HOME:-~/.config}/skill-landkarte/skill-landkarte.conf`
+- Config: `${XDG_CONFIG_HOME:-~/.config}/skill-map/skill-map.conf`
   (TOML). Every key optional. Machine-specific values never go into the repo.
-- State: `${XDG_STATE_HOME:-~/.local/state}/skill-landkarte/` holds `build/`,
+- State: `${XDG_STATE_HOME:-~/.local/state}/skill-map/` holds `build/`,
   `published/`, `published.prev/`. Nothing else is written anywhere.
 - `$CLAUDE_HOME` means `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, as in the skill-show
   spec (the builder verifies `CLAUDE_CONFIG_DIR` once in the current docs).
@@ -154,11 +154,11 @@ runs with the user present.
   hook line are **German** (the page is German today; the user gave the hook line in
   German).
 - Setup like the other tools:
-  `ln -s "$PWD/dev/skill-landkarte/skill-landkarte" ~/.local/bin/skill-landkarte`.
+  `ln -s "$PWD/ai/skill-map/skill-map" ~/.local/bin/skill-map`.
 
 ## Decided by the user
 
-- Place: `toolkit/dev/skill-landkarte/`.
+- Place: `toolkit/ai/skill-map/`.
 - Goal: the page stays current. Only Claude can publish (Artifact tool, same URL).
 - A build writes `inventory.json` (all entries: name, invocation, kind, group/place,
   origin/vendor/version, description, path with `~`, status and area for runbooks
@@ -195,7 +195,7 @@ runs with the user present.
 The larger ones, with reasons in the sections below:
 
 1. **The narrative and all personal settings live outside the repo**, in
-   `~/.config/skill-landkarte/`; `build` merges the narrative into `index.html`.
+   `~/.config/skill-map/`; `build` merges the narrative into `index.html`.
 2. **One discovery function** serves both `build` and `check`, so the hook and the
    page can never disagree about what exists.
 3. **Metadata only in `inventory.json`, text only in `wortlaut.json`.**
@@ -402,12 +402,12 @@ the user does not want listed at all.
 ### Command line
 
 ```text
-skill-landkarte build [--out DIR]     write inventory.json, wortlaut.json, index.html (default DIR: <state>/build)
-skill-landkarte diff [--texts]        compare <state>/build with <state>/published; --texts prints the full texts to read
-skill-landkarte mark-published        after a successful publish: rotate published -> published.prev, copy build -> published
-skill-landkarte check                 hook mode: one line when the set changed, else nothing; always exit 0
-skill-landkarte fingerprint           print the current fingerprint and the sorted set it is computed from
-skill-landkarte --help
+skill-map build [--out DIR]     write inventory.json, wortlaut.json, index.html (default DIR: <state>/build)
+skill-map diff [--texts]        compare <state>/build with <state>/published; --texts prints the full texts to read
+skill-map mark-published        after a successful publish: rotate published -> published.prev, copy build -> published
+skill-map check                 hook mode: one line when the set changed, else nothing; always exit 0
+skill-map fingerprint           print the current fingerprint and the sorted set it is computed from
+skill-map --help
 ```
 
 Exit codes: 0 done; 1 runtime error (unreadable required file, invalid JSON in
@@ -430,8 +430,8 @@ claude.ai skill, installed plugin, claude.ai plugin), with these differences:
 - Additionally:
   - **agents**: `<installPath>/agents/*.md` of installed plugins (as
     `build_wortlaut.py`) and `$CLAUDE_HOME/agents/*.md`;
-  - **vault runbooks**: `<vault>/40-runbooks/*.md` (config `vault`, default
-    `~/notes`), skipping files that start with `_` (observed: `_guide.md`), front
+  - **vault runbooks**: `<vault>/40-runbooks/*.md` (config `vault`, no default: without it there
+    are no runbook entries), skipping files that start with `_` (observed: `_guide.md`), front
     matter only (no text in `wortlaut.json`);
   - **hooks**: the `hooks` object of `$CLAUDE_HOME/settings.json` and of
     `<project>/.claude/settings.json` for each configured project: one entry per
@@ -512,7 +512,7 @@ decided where marked.
 ### Narrative merge
 
 The narrative is the user's own HTML fragment file
-`~/.config/skill-landkarte/erzaehlung.html` (config `narrative`, default that path).
+`~/.config/skill-map/erzaehlung.html` (config `narrative`, default that path).
 Spec author decided — **outside the repo**: it is personal (her projects, her
 recommendations), and the repo's engine/config split forbids that content in the repo.
 The repo ships `example-erzaehlung.html` with neutral content that exercises every
@@ -701,7 +701,7 @@ Artifact tool reported success.
   SessionStart command hook may print `systemMessage` JSON (the existing hook relies
   on it, which is evidence but not proof).
 - Performance: target < 300 ms wall time on the author's machine
-  (`time skill-landkarte check`), measured by the builder and written in the README
+  (`time skill-map check`), measured by the builder and written in the README
   with date and number. Python start plus about 20 small JSON reads and a few
   directory listings should fit; if not, the builder may cache per-plugin metadata
   keyed by `installed_plugins.json` mtime in the state folder (and documents it).
@@ -717,7 +717,7 @@ after the user agrees, with the `update-config` skill. The existing entries
 "SessionStart": [
   { "hooks": [ { "type": "command", "command": "/home/me/.claude/hooks/session-start-boundary.sh", "timeout": 10, "statusMessage": "Startort und Modus prüfen" } ] },
   { "matcher": "startup",
-    "hooks": [ { "type": "command", "command": "/home/me/.local/bin/skill-landkarte check", "timeout": 5 } ] }
+    "hooks": [ { "type": "command", "command": "/home/me/.local/bin/skill-map check", "timeout": 5 } ] }
 ]
 ```
 
@@ -746,14 +746,14 @@ Front matter:
 title: Skill-Landkarte aktualisieren
 type: runbook
 command: landkarte-aktualisieren
-aliases: [skill-landkarte, landkarte, skill-uebersicht]
+aliases: [skill-map, landkarte, skill-uebersicht]
 tags: [runbook, claude-code, skills, entwicklung]
 classification: internal
 status: entwurf
 secrets: []
 context: [10-context/praeferenzen.md]
 risk: aussen
-rueckweg: Vorige Fassung liegt in ~/.local/state/skill-landkarte/published.prev/ - mit denselben Schritten unter derselben URL erneut veroeffentlichen.
+rueckweg: Vorige Fassung liegt in ~/.local/state/skill-map/published.prev/ - mit denselben Schritten unter derselben URL erneut veroeffentlichen.
 created: <date of creation>
 updated: <date of creation>
 source: manual
@@ -763,27 +763,27 @@ source: manual
 Content to write (in German, in the vault's style):
 
 - **Auf einen Blick**: Aufruf `/landkarte-aktualisieren`; table `# · Befehl · wozu`:
-  1. `skill-landkarte build` — Daten und Seite neu erzeugen
-  2. `skill-landkarte diff` — was ist neu, weg, geändert
-  3. `skill-landkarte diff --texts` — neue und geänderte Texte lesen
+  1. `skill-map build` — Daten und Seite neu erzeugen
+  2. `skill-map diff` — was ist neu, weg, geändert
+  3. `skill-map diff --texts` — neue und geänderte Texte lesen
   4. Artifact-Tool `read`, dann `publish` — unter derselben URL veröffentlichen
-  5. `skill-landkarte mark-published` — Fingerabdruck speichern
+  5. `skill-map mark-published` — Fingerabdruck speichern
 - **Zweck**: Die Skill-Landkarte auf claude.ai aktuell halten, wenn der
   SessionStart-Hook "Skill-Landkarte veraltet" meldet oder die Nutzerin es wünscht —
   ohne ungelesene oder persönliche Texte zu veröffentlichen.
 - **Eingaben**: none required; optional a reason (hook line).
 - **Eckdaten**: Artifact URL from config `artifact_url`;
-  build folder `~/.local/state/skill-landkarte/build/`; config
-  `~/.config/skill-landkarte/skill-landkarte.conf`; narrative
-  `~/.config/skill-landkarte/erzaehlung.html`; tool in `~/GitRepos/toolkit/dev/skill-landkarte/`.
+  build folder `~/.local/state/skill-map/build/`; config
+  `~/.config/skill-map/skill-map.conf`; narrative
+  `~/.config/skill-map/erzaehlung.html`; tool in `~/GitRepos/toolkit/ai/skill-map/`.
 - **Ablauf**:
-  1. `skill-landkarte build`; report errors and stop on exit ≠ 0.
-  2. `skill-landkarte diff`; tell the user the differences in plain words (new,
+  1. `skill-map build`; report errors and stop on exit ≠ 0.
+  2. `skill-map diff`; tell the user the differences in plain words (new,
      removed, changed entries; missing narrative keys; withheld texts).
-  3. `skill-landkarte diff --texts`; read **every** printed text completely. Look for
+  3. `skill-map diff --texts`; read **every** printed text completely. Look for
      personal data: names of private persons, contract or time-account details,
      health, money, e-mail addresses, account IDs, tokens. Additionally run the
-     secret scanner: `kios scan --stdin < ~/.local/state/skill-landkarte/build/wortlaut.json`
+     secret scanner: `kios scan --stdin < ~/.local/state/skill-map/build/wortlaut.json`
      (exit 2 = probable secret → stop).
   4. Anything personal → propose a `withhold_text` (or `hide`) entry to the user,
      add it with her OK, back to step 1.
@@ -794,11 +794,11 @@ Content to write (in German, in the vault's style):
      too).
   7. Artifact tool, `action: read` on the URL (the tool requires reading an artifact
      from an earlier conversation before updating it), then `action: publish` with
-     `url` = the URL, `file_path` = `~/.local/state/skill-landkarte/build/index.html`,
+     `url` = the URL, `file_path` = `~/.local/state/skill-map/build/index.html`,
      `files` = `{"inventory.json": "<build>/inventory.json", "wortlaut.json": "<build>/wortlaut.json"}`.
      Never without `url` (that would create a new page). If the publish is refused
      because of a newer version, stop and tell the user; never use `force`.
-  8. Only after a successful publish: `skill-landkarte mark-published`.
+  8. Only after a successful publish: `skill-map mark-published`.
   9. Add a line to `## Historie` (date, what changed).
 - **Entscheidungsregeln**:
   - Nothing is published that was not read in this session or an earlier publish
@@ -833,7 +833,7 @@ the wording; the rules "same URL" and "nothing unread" stay.
 
 ## Test cases
 
-`python -m pytest -q dev/skill-landkarte/tests`, style of `media/transcribe/tests`
+`python -m pytest -q ai/skill-map/tests`, style of `media/transcribe/tests`
 (`conftest.py` puts `src/` on `sys.path`). A shared fixture builds an artificial world
 in `tmp_path` and sets `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`; unsets
 `CLAUDE_CONFIG_DIR`. An autouse fixture replaces `socket.socket` with a function that
@@ -942,7 +942,7 @@ user's real build before the first publish.
 
 ## Later
 
-- **`skill-show --tsv`**: once `dev/skill-show` exists, `build` takes skills and
+- **`skill-show --tsv`**: now that `ai/skill-show` exists, `build` takes skills and
   commands (skill-show groups 1–10) from `skill-show --tsv` (columns: invocation,
   kind, group, name, file, status, kios source, description) and keeps its own code
   only for what skill-show does not cover: agents, runbooks, hooks, tools, builtins,
@@ -994,7 +994,7 @@ user's real build before the first publish.
    `text_sha256` (the hook would then read every skill file, still without logs;
    probably still under 300 ms, not measured)? The spec keeps the user's decision
    until she says otherwise.
-2. **The prototype assets in the repo.** `docs/superpowers/specs/assets/skill-landkarte/`
+2. **The prototype assets in the repo.** `docs/superpowers/specs/assets/skill-map/`
    is untracked today. `prototype-v5.html` contains the user's personal narrative and
    usage numbers, and the repo is shared on GitHub. Should the assets be committed
    with this spec, committed after anonymizing, or stay local? The builder needs the
@@ -1011,3 +1011,35 @@ user's real build before the first publish.
   (`docs/superpowers/specs/assets/` is in `.git/info/exclude`).
 - Personal values (artifact URL, vault path, project names) were removed from this
   spec before its first commit; they belong in the local config.
+
+## Revision 2026-10-18 (user decided): generic first, in `ai/`
+
+The tool is built so that colleagues can use it for their own setup. This section
+overrides the parts above where they differ.
+
+- **Name and place:** `ai/skill-map/` (the `ai/` area holds tools that keep work
+  with AI agents transparent; `ai/skill-show` is the sibling). Command
+  `skill-map`, package `skill_map`, config
+  `${XDG_CONFIG_HOME:-~/.config}/skill-map/skill-map.conf`, state
+  `${XDG_STATE_HOME:-~/.local/state}/skill-map/`. The page may still be called
+  "Skill-Landkarte": config `title` (default `Skill-Landkarte`), also used in the
+  hook lines.
+- **Zero config works:** without a config file, `build` shows everything at
+  Claude Code's own places (skill-show groups 1–3 and 6–10, plugin agents,
+  personal agents, hooks in `$CLAUDE_HOME/settings.json`) plus usage. Everything
+  personal is an optional source switched on in the config: `vault` (runbooks
+  folder and kios source notes), `source_roots`, `projects`, `tools`, `builtins`,
+  `areas`, `withhold_text`, `hide`, `artifact_url`, `narrative`.
+- **Public docs use neutral scenarios** ("if you keep runbooks in a notes vault,
+  set `vault`"), never the author's real setup. The author's own values live only
+  in her local config and narrative.
+- **Two page outputs:** `build` writes `index.html` + `inventory.json` +
+  `wortlaut.json` (for publishing as an Artifact, as above) **and**
+  `skill-map.html`, one self-contained file with both JSON documents embedded as
+  `<script type="application/json">` blocks, which opens from disk in any browser
+  without a server and without claude.ai. The page uses embedded data when present,
+  else fetches the files.
+- **Phase 2 (not now):** `skill-map init` writes a commented config with what it can
+  detect, and `SETUP.md` holds a prompt for Claude Code that asks the questions only
+  a person can answer (own notes, what to hide, areas), writes the config and shows
+  it for review.
