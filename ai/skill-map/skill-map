@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# skill-map - starter: finds the package relative to its real path, so a symlink
+#             in ~/.local/bin is enough. Standard library only, no venv.
+set -euo pipefail
+
+HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m skill_map "$@"
