@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # TEMP until every option and setting is read (Task 7)
+# skill-show - print the file Claude Code uses for /<name>, byte for byte,
+#              with its path in front. No model reads it for you.
+#
+#   skill-show <name>     show the skill or command behind /<name>
+#   skill-show            list every name, grouped by where it lives
+#
+# Read-only: writes nothing, no network, never calls claude.
+# Generic engine; personal paths come from ~/.config/skill-show/skill-show.conf.
+# The design is docs/superpowers/specs/2026-10-18-skill-show-design.md.
+set -euo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- output helpers (notes on stderr, like wt and recall) ----------
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_NOTE=$'\033[1;33m'; C_ERR=$'\033[1;31m'; C_OFF=$'\033[0m'
+else
+  C_NOTE=""; C_ERR=""; C_OFF=""
+fi
+note() { printf '%s! %s%s\n' "$C_NOTE" "$1" "$C_OFF" >&2; }
+die() { printf '%sskill-show: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+usage_error() { # usage_error <message>: usage on stderr, exit 2
+  printf 'skill-show: %s\n\n' "$1" >&2
+  usage >&2
+  exit 2
+}
+re_ascii() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }   # character classes ASCII only (under de_DE, [A-Za-z] also matches umlauts)
+
+usage() {
+  cat <<'EOF'
+skill-show - show the file behind a Claude Code skill or slash command, unchanged
+
+usage:
+  skill-show <name>            show the file Claude Code uses for /<name>, then list shadowed ones
+  skill-show <name> --all      show the content of every match, in precedence order
+  skill-show <name> --path     print only the path of the active match (with --all: every match)
+  skill-show <name> --raw      print only the content, no header or end line
+  skill-show <name> --pretty   content through bat (colour only; text unchanged)
+  skill-show                   list every name (picker with fzf when run in a terminal)
+  skill-show --list            always the plain list
+  skill-show --tsv             machine-readable list, one entry per line
+  skill-show --project <dir>   take <dir> as the project instead of the current git repo
+  skill-show --help
+
+<name> works with or without a leading slash, and as plugin:skill.
+Config: ~/.config/skill-show/skill-show.conf (see example.conf)
+EOF
+}
+
+# ---------- config ----------
+SOURCE_ROOTS=()                       # folders a kios source path is resolved against, in order
+EXTRA_DIRS=()                         # folders with .claude/skills, like claude --add-dir
+BUILTIN_NAMES=()                      # names you know are bundled skills or built-in commands
+SYNCED_SKILL_PREFIX="anthropic-skills"  # prefix of claude.ai skills (observed, not documented)
+
+CONF="$HOME/.config/skill-show/skill-show.conf"
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && source "$CONF"
+
+# ---------- name ----------
+NAME_PREFIX=""   # plugin (or command subfolder) part of plugin:skill, empty for a bare name
+NAME_BARE=""     # the name after the prefix
+name_part_ok() { [ "$1" != "." ] && [ "$1" != ".." ] && re_ascii "$1" '^[A-Za-z0-9._-]+$'; }
+parse_name() { # parse_name <arg>: sets NAME_PREFIX and NAME_BARE, exit 2 for an invalid name
+  local n=${1#/}
+  if [[ $n == *:* ]]; then
+    NAME_PREFIX=${n%%:*}; NAME_BARE=${n#*:}
+    name_part_ok "$NAME_PREFIX" || usage_error "invalid name '$1': allowed are ASCII letters, digits, '.', '_' and '-'"
+  else
+    NAME_PREFIX=""; NAME_BARE=$n
+  fi
+  name_part_ok "$NAME_BARE" || usage_error "invalid name '$1': allowed are ASCII letters, digits, '.', '_' and '-'"
+}
+
+# ---------- command line ----------
+OPT_ALL=0; OPT_PATH=0; OPT_RAW=0; OPT_PRETTY=0; OPT_LIST=0; OPT_TSV=0
+PROJECT=""
+ARG=""; HAVE_ARG=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --all)     OPT_ALL=1 ;;
+    --path)    OPT_PATH=1 ;;
+    --raw)     OPT_RAW=1 ;;
+    --pretty)  OPT_PRETTY=1 ;;
+    --list)    OPT_LIST=1 ;;
+    --tsv)     OPT_TSV=1 ;;
+    --project)
+      [ $# -ge 2 ] || usage_error "--project needs a folder"
+      [ -d "$2" ] || usage_error "--project: no such folder: $2"
+      PROJECT=$(cd "$2" && pwd); shift ;;
+    --) shift
+        [ $# -le 1 ] || usage_error "only one name at a time"
+        [ $# -eq 0 ] || { ARG=$1; HAVE_ARG=1; }
+        break ;;
+    -*) usage_error "unknown option '$1'" ;;
+    *)  [ "$HAVE_ARG" -eq 0 ] || usage_error "only one name at a time"
+        ARG=$1; HAVE_ARG=1 ;;
+  esac
+  shift
+done
+[ -n "$PROJECT" ] || PROJECT=$(git rev-parse --show-toplevel 2>/dev/null) || PROJECT=$PWD
+
+[ "$HAVE_ARG" -eq 0 ] || parse_name "$ARG"
