@@ -41,3 +41,13 @@ def conf(home):
         p.write_text(text, encoding="utf-8")
         return p
     return write
+
+
+@pytest.fixture
+def world(home, conf, monkeypatch, tmp_path):
+    """The whole fixture world plus its config; returns the paths from make_world."""
+    from world import CONFIG, make_world
+    managed = tmp_path / "etc-claude-code"
+    monkeypatch.setenv("SKILL_MAP_MANAGED_DIR", str(managed))
+    conf(CONFIG)
+    return make_world(home, managed)
