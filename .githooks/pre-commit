@@ -8,6 +8,11 @@
 #   1. every added/copied/modified/renamed file goes through `kios scan --stdin`
 #      (secret scanner of the author's vault tooling; set KIOS_BIN if it is not in PATH)
 #   2. the shell scripts that CI also checks go through `bash -n` and `shellcheck`
+#   3. every such file is checked against your own private patterns (home folder,
+#      private project names, ...), one fixed string per line in
+#      ${TOOLKIT_PRIVATE_PATTERNS:-~/.config/toolkit/private-patterns}; empty lines
+#      and lines starting with # are ignored. The file stays local, so the patterns
+#      themselves never become public. Without the file this check is skipped.
 #
 # Fail fast: a missing scanner or a crashing scan stops the commit instead of
 # letting it through silently. CI stays the binding check; this is an early warning.
@@ -32,6 +37,12 @@ if ! command -v "$KIOS" >/dev/null 2>&1; then
   exit 1
 fi
 
+PATTERNS_FILE="${TOOLKIT_PRIVATE_PATTERNS:-$HOME/.config/toolkit/private-patterns}"
+PATTERNS=""
+if [ -f "$PATTERNS_FILE" ]; then
+  PATTERNS=$(grep -v -e '^[[:space:]]*$' -e '^#' "$PATTERNS_FILE" || true)
+fi
+
 fail=0
 while IFS= read -r -d '' file; do
   # Regular files only; symlinks (mode 120000) store just the target path.
@@ -46,6 +57,12 @@ while IFS= read -r -d '' file; do
     fail=1
   elif [ "$rc" -ne 0 ]; then
     echo "pre-commit: kios scan failed (exit $rc) on $file - commit stopped to be safe." >&2
+    fail=1
+  fi
+
+  if [ -n "$PATTERNS" ] && hits=$(git show ":$file" | grep -n -F -f <(printf '%s\n' "$PATTERNS")); then
+    echo "pre-commit: $file contains a private pattern from $PATTERNS_FILE:" >&2
+    printf '%s\n' "$hits" | sed "s|^|  $file:|" >&2
     fail=1
   fi
 
