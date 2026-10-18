@@ -27,19 +27,28 @@ def fingerprint(world: World) -> tuple[str, list[list[str]]]:
     return "sha256:" + hashlib.sha256(data).hexdigest(), rows
 
 
-def _head(path: Path | None) -> bytes:
-    if path is None:
-        return b""
+def _head(path: Path) -> bytes | None:
+    """The first 4 KiB, or None when the file cannot be read."""
     try:
         with path.open("rb") as f:
             return f.read(4096)
     except OSError:
-        return b""
+        return None
 
 
 def _classified(e) -> bool:
-    """The entry's own file or its kios source note is classified (fails closed)."""
-    return is_classified(_head(e.path)) or is_classified(_head(e.source_path))
+    """The entry's own file or its kios source note is classified. Fails closed: a
+    file that cannot be read counts as classified. Hooks, tools and builtins have no
+    front matter of their own, so only skills, commands, agents and runbooks count."""
+    if e.kind not in TEXT_KINDS + ("runbook",):
+        return False
+    for p in (e.path, e.source_path):
+        if p is None:
+            continue
+        head = _head(p)
+        if head is None or is_classified(head):
+            return True
+    return False
 
 
 def _clean(text):
@@ -70,7 +79,8 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
     entries, texts = {}, {}
     for key, e in world.entries.items():
         count, last = usage.counts.get(key, (0, None))
-        classified = _classified(e)
+        source_unknown = e.source_note is not None and e.source_path is None
+        classified = _classified(e) or source_unknown     # unknown classification counts as classified
         desc, runbook = _clean(e.desc), e.runbook
         if isinstance(runbook, dict):
             runbook = dict(runbook, tags=[_clean(t) for t in runbook.get("tags") or []])
@@ -86,8 +96,7 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
             item["matcher"] = e.extra.get("matcher", "")
         if e.kind in TEXT_KINDS and e.path is not None:
             try:
-                r = text_for(key, e.path, cfg, e.source_path,
-                             source_unknown=e.source_note is not None and e.source_path is None)
+                r = text_for(key, e.path, cfg, e.source_path, source_unknown=source_unknown)
             except OSError:
                 item["text"] = "withheld"
                 item["flags"] = sorted(e.flags | {"withheld"})

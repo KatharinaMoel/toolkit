@@ -170,3 +170,24 @@ def test_unresolvable_source_note_withholds_the_text(world, home, tmp_path):
     assert inv["entries"]["gone"]["text"] == "withheld"
     assert "Einstufung unbekannt" in wl["entries"]["gone"]["withheld"]
     assert inv["entries"]["k-start"]["text"] == "shown"            # resolved source, not classified
+
+
+def test_unknown_source_hides_the_description_too(world, home, tmp_path):
+    (home / ".claude/commands/gone.md").write_text(
+        "---\ndescription: GONE-DESC\n---\n<!-- kios:generated | Quelle: templates/missing.md | x -->\n")
+    inv, _, _ = run_build(tmp_path)
+    assert inv["entries"]["gone"]["desc"] == ""
+
+
+@pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root reads everything")
+def test_unreadable_source_note_counts_as_classified(world, home, tmp_path):
+    note = home / "vault/40-runbooks/rb-a.md"
+    (home / ".claude/commands/rb-a.md").write_text(
+        "---\ndescription: RBA-DESC\n---\n<!-- kios:generated | Quelle: 40-runbooks/rb-a.md | x -->\n")
+    note.chmod(0)
+    try:
+        inv, wl, _ = run_build(tmp_path)
+    finally:
+        note.chmod(0o644)
+    assert "RBA-DESC" not in json.dumps([inv, wl])
+    assert inv["entries"]["rb-a"]["text"] == "withheld"
