@@ -43,6 +43,12 @@ git config core.hooksPath .githooks   # once per clone; worktrees share it
   not found (set `KIOS_BIN` to point to it), the hook stops the commit instead of
   skipping the scan silently. Without `kios`, leave the hook off or replace the scan
   step in `.githooks/pre-commit` with your own scanner.
+- **Private patterns:** strings that must never reach this public repository (your
+  home folder, private project names) go one per line into
+  `~/.config/toolkit/private-patterns` (or the file `TOOLKIT_PRIVATE_PATTERNS`
+  names); a staged file containing one stops the commit with file and line. The
+  file stays local, so the patterns themselves are never published. Without it the
+  check is skipped.
 - **Shell checks:** `bash -n` and `shellcheck` on the staged versions of the scripts
   that CI checks; keep the list in the hook in sync with `ci.yml`.
 - **Bypass once:** `git commit --no-verify`.

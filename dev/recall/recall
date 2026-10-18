@@ -57,6 +57,7 @@ PROCEDURE_EXCLUDE=("_*")     # file name patterns to skip
 TEXT_HIDE_AFTER_COPY_DAYS=4  # a copied text is parked this many days after the copy
 TEXT_HIDE_UNUSED_DAYS=7      # a text never copied is parked this many days after its last change
 TEXT_TRASH_DAYS=7            # a parked text goes to the desktop trash after this many days
+TEXT_KEEP=()                 # file name patterns in .reviews that are never parked or trashed (lasting notes)
 TEXT_SHOW_MAX=4              # an open repo group shows this many texts, then "… n more" (0 = all);
                              #   texts changed in the last 24 hours always show
 STALE_DAYS=90                # procedures not updated for this long are marked as older
@@ -172,6 +173,15 @@ day_of() { date -d "@$1" +%Y-%m-%d; }
 # parked, due), TS_HIDDEN and TS_TRASH. Pure: the state is computed, never stored.
 # "First seen" gives a text that is new to recall - first start, restored from the
 # trash, its folder back after an absence - a fresh clock instead of its old mtime.
+text_kept() { # text_kept <file name>: listed in TEXT_KEEP, so never parked or trashed
+  local p
+  for p in "${TEXT_KEEP[@]}"; do
+    # shellcheck disable=SC2254  # $p is a glob pattern on purpose
+    case "$1" in $p) return 0 ;; esac
+  done
+  return 1
+}
+
 text_state() {
   local mtime=$1 copied=$2 kept=$3 seen=$4 now=$5 start
   start=$(( mtime > kept ? mtime : kept ))
@@ -265,7 +275,7 @@ collect_texts() {
   while IFS=$'\t' read -r -d '' mtime real; do
     mtime_of[$real]=$mtime
   done < <(stat --printf '%Y\t%n\0' -- "${reals[@]}" 2>/dev/null)   # a vanished text is left out
-  local i known
+  local i known st hidden trash
   for i in "${!files[@]}"; do
     f=${files[$i]}; real=${reals[$i]}
     mtime=${mtime_of[$real]:-}
@@ -275,8 +285,10 @@ collect_texts() {
     repo=${f%/.reviews/*}; repo=${repo##*/}
     known=0; [ -z "${SEEN[$real]+x}" ] || known=1
     text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$now"
+    st=$TS_STATE; hidden=$TS_HIDDEN; trash=$TS_TRASH
+    if text_kept "${f##*/}"; then st=active; hidden=0; trash=0; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$real" "$repo" "${f##*/}" \
-      "$TS_STATE" "$TS_HIDDEN" "$TS_TRASH" "$known"
+      "$st" "$hidden" "$trash" "$known"
   done | sort -t $'\t' -k1,1nr
 }
 
@@ -531,6 +543,7 @@ text_status() { # one line on the state of a text
   load_text_state
   text_state "$mtime" "${COPIED[$real]:-0}" "${KEPT[$real]:-0}" "${SEEN[$real]:-0}" "$(now_epoch)"
   [ "${COPIED[$real]:-0}" -eq 0 ] || copied=" · copied $(day_of "${COPIED[$real]}")"
+  if text_kept "${real##*/}"; then printf 'kept for good (TEXT_KEEP)%s\n' "$copied"; return 0; fi
   case "$TS_STATE" in
     active) printf 'active%s · parked from %s\n' "$copied" "$(day_of "$TS_HIDDEN")" ;;
     *)      printf 'parked since %s%s · trash from %s · ctrl-k keeps it\n' \

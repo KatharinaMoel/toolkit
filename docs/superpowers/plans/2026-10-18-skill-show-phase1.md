@@ -13,13 +13,13 @@
 
 ## Context
 
-Katharina will den Text eines Skills/Commands ungefiltert sehen, ohne dass ein Modell ihn liest — vor allem per `! skill-show <name>` in Claude Code. Phase 1 = nur das CLI-Werkzeug plus Repo-Integration; recall-Gruppe (Phase 2) und Übersichten (Phase 3) bleiben draußen.
+Die Nutzerin will den Text eines Skills/Commands ungefiltert sehen, ohne dass ein Modell ihn liest — vor allem per `! skill-show <name>` in Claude Code. Phase 1 = nur das CLI-Werkzeug plus Repo-Integration; recall-Gruppe (Phase 2) und Übersichten (Phase 3) bleiben draußen.
 
 ## Rahmen (aus dem Auftrag, gilt für jeden Schritt)
 
 - Worktree per Runbook `/feature-bauen`: `git worktree add -b feat/skill-show ../toolkit-worktrees/skill-show main` (vom **lokalen** main → kein Upstream). Prüfen: `git -C ../toolkit-worktrees/skill-show rev-parse --abbrev-ref @{u}` muss scheitern. push.default ist nicht gesetzt (= simple) → blankes `git push` verweigert ohne Upstream.
-- **Kein Commit, kein Push, kein Merge ohne Katharinas OK.** Die „Commit“-Schritte unten bedeuten: Nachricht nach `$SCRATCH/commit-msg-<n>.txt` schreiben, Dateien einzeln vorschlagen, auf OK warten, dann `git add <datei> …` (einzeln) und `git commit -F <datei>`. Keine Co-Authored-By-Zeilen, kein `git add -A`.
-- Aus `~/ki-os` nichts lesen (auch nicht die Vault-Quelle des Runbooks, die das Runbook eigentlich verlangt; den Entscheidungslog-Schritt des Runbooks lasse ich deshalb weg und nenne die Entscheidungen stattdessen in Spec/README). Beim Handtest liest skill-show von kios-Dateien nur die Kopfzeilen (erste 2000 Bytes) und prüft Quellen nur auf Existenz.
+- **Kein Commit, kein Push, kein Merge ohne OK der Nutzerin.** Die „Commit“-Schritte unten bedeuten: Nachricht nach `$SCRATCH/commit-msg-<n>.txt` schreiben, Dateien einzeln vorschlagen, auf OK warten, dann `git add <datei> …` (einzeln) und `git commit -F <datei>`. Keine Co-Authored-By-Zeilen, kein `git add -A`.
+- Aus dem Wissens-Vault nichts lesen (auch nicht die Vault-Quelle des Runbooks, die das Runbook eigentlich verlangt; den Entscheidungslog-Schritt des Runbooks lasse ich deshalb weg und nenne die Entscheidungen stattdessen in Spec/README). Beim Handtest liest skill-show von kios-Dateien nur die Kopfzeilen (erste 2000 Bytes) und prüft Quellen nur auf Existenz.
 - Merge/`worktree remove` nur vom Hauptbaum aus und erst nach Freigabe.
 
 ## Schritt 0 — Offene Fragen der Spec klären (vor jedem Code)
@@ -166,7 +166,7 @@ Empfehlung **Native** (ich setze Task für Task selbst um, am Ende ein unabhäng
 ## Verifikation
 
 1. `bash dev/skill-show/test_skill_show.sh` → `all tests passed`; `bash -n` + `shellcheck` auf beide Skripte sauber; recall- und wt-Tests unverändert grün.
-2. Handtest aus dem Worktree (echter HOME, nur lesend): `dev/skill-show/skill-show teamwork-tasks`, `zeiterfassung` (link:), `superpowers:brainstorming`, `anthropic-skills:pdf`, `engineering:code-review`, `simplify` (exit 1), ohne Argument | head, `--tsv | awk -F'\t' 'NF!=8'` leer, `time skill-show --list` deutlich < 1 s; danach `git status` im Repo sauber, `~/.claude` unverändert (Checksum vorher/nachher).
+2. Handtest aus dem Worktree (echter HOME, nur lesend): `dev/skill-show/skill-show open-topics`, ein verlinkter Skill (link:), `superpowers:brainstorming`, `anthropic-skills:pdf`, `engineering:code-review`, `simplify` (exit 1), ohne Argument | head, `--tsv | awk -F'\t' 'NF!=8'` leer, `time skill-show --list` deutlich < 1 s; danach `git status` im Repo sauber, `~/.claude` unverändert (Checksum vorher/nachher).
 3. Du einmal in Claude Code: `! dev/skill-show/skill-show feature-bauen` (bzw. nach Setup `! skill-show feature-bauen`).
 
 ## Abschluss-Antwort (Inhalt)
