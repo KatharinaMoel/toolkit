@@ -21,7 +21,7 @@ set -uo pipefail
 # Shell scripts checked by CI (keep in sync with .github/workflows/ci.yml)
 is_ci_shell() {
   case "$1" in
-    dev/wt/wt|dev/wt/test_wt.sh|dev/recall/recall|dev/recall/test_recall.sh|dev/skill-show/skill-show|dev/skill-show/test_skill_show.sh|media/transcribe/transcribe) return 0 ;;
+    dev/wt/wt|dev/wt/test_wt.sh|dev/recall/recall|dev/recall/test_recall.sh|ai/skill-show/skill-show|ai/skill-show/test_skill_show.sh|media/transcribe/transcribe) return 0 ;;
     *) return 1 ;;
   esac
 }

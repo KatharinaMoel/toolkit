@@ -16,14 +16,14 @@ jobs:
           find . -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
           bash -n dev/wt/wt dev/wt/test_wt.sh
           bash -n dev/recall/recall dev/recall/test_recall.sh
-          bash -n dev/skill-show/skill-show dev/skill-show/test_skill_show.sh
+          bash -n ai/skill-show/skill-show ai/skill-show/test_skill_show.sh
 
       - name: ShellCheck
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck jq
           shellcheck dev/wt/wt dev/wt/test_wt.sh
           shellcheck dev/recall/recall dev/recall/test_recall.sh
-          shellcheck dev/skill-show/skill-show dev/skill-show/test_skill_show.sh
+          shellcheck ai/skill-show/skill-show ai/skill-show/test_skill_show.sh
 
       - name: wt tests
         run: bash dev/wt/test_wt.sh
@@ -32,7 +32,7 @@ jobs:
         run: bash dev/recall/test_recall.sh
 
       - name: skill-show tests
-        run: bash dev/skill-show/test_skill_show.sh
+        run: bash ai/skill-show/test_skill_show.sh
 
   transcribe:
     name: transcribe tests (Python 3.12, stdlib + pytest)
