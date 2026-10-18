@@ -1,8 +1,12 @@
 """Command line: build, diff, mark-published, check, fingerprint."""
 import argparse
 import sys
+from pathlib import Path
 
+from .build import build, fingerprint
 from .config import ConfigError, load_config
+from .discovery import DiscoveryError, discover
+from .paths import state_dir
 
 DESCRIPTION = """\
 skill-map - an overview page of the skills, commands, plugins and agents Claude Code can use
@@ -51,6 +55,20 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         print(f"skill-map: {e}", file=sys.stderr)
         return 2
+    log = lambda line: print(line, file=sys.stderr)   # explain-then-run, on stderr
+    try:
+        if args.command == "build":
+            out = Path(args.out) if args.out else state_dir() / "build"
+            build(cfg, out, log)
+            return 0
+        if args.command == "fingerprint":
+            fp, rows = fingerprint(discover(cfg))
+            print(fp)
+            for row in rows:
+                print("\t".join(row))
+            return 0
+    except DiscoveryError as e:
+        print(f"skill-map: {e}", file=sys.stderr)
+        return 1
     print(f"skill-map: {args.command} is not implemented yet", file=sys.stderr)  # replaced task by task
-    del cfg
     return 1

@@ -41,7 +41,7 @@ def _classified(data: bytes) -> bool:
     return False
 
 
-def _withheld_text(reason: str, path: Path) -> str:
+def withheld_text(reason: str, path: Path) -> str:
     return f"Der Wortlaut wird hier bewusst nicht gezeigt: {reason}. Volltext lokal: {tilde(path)}"
 
 
@@ -66,5 +66,5 @@ def text_for(key: str, path: Path, cfg: Config, source_note: Path | None) -> Tex
             if UUID_RE.search(text):
                 reason, text = ACCOUNT_ID_REASON, None
     if reason is not None:
-        return TextResult("withheld", None, _withheld_text(reason, path), sha)
+        return TextResult("withheld", None, withheld_text(reason, path), sha)
     return TextResult("shown", text, None, sha)
