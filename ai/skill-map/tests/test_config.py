@@ -88,3 +88,16 @@ def test_tilde_replaces_home_and_account_ids(home):
 
 def test_tilde_replaces_account_ids_in_capitals(home):
     assert tilde("/x/00000000-AAAA-4222-8333-444444444444/y") == "/x/<konto>/y"
+
+
+def test_example_conf_loads_with_every_key_switched_on(home, tmp_path):
+    import re
+    example = Path(__file__).resolve().parent.parent / "example.conf"
+    lines = [m.group(1) for m in (re.match(r"^# ((\[\[?[a-z_]+\]\]?)|([a-z_-]+ = .*))$", l)
+                                  for l in example.read_text(encoding="utf-8").splitlines()) if m]
+    text = "\n".join(lines).replace('withhold_text = ["timesheet"]\n', "")   # the table form replaces the list
+    p = tmp_path / "all.conf"
+    p.write_text(text + "\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.vault == home / "notes" and cfg.projects[0].label == "App"
+    assert cfg.withhold_text == {"timesheet": "enthält Stand und Vertragsdetails"}
