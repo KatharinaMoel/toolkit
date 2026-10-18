@@ -23,6 +23,7 @@ on any Linux. Each tool's README states its actual requirements.
 |------|------|--------------|
 | [dev/wt](dev/wt/) | dev | Disposable git worktrees for parallel MR reviews and branch work — with per-review database copies |
 | [dev/recall](dev/recall/) | dev | One hotkey, one fuzzy list: copy prepared commit/MR texts and forgotten commands, read procedures — with Claude Code as a read-only fallback for fuzzy questions |
+| [dev/skill-show](dev/skill-show/) | dev | Shows the file behind a Claude Code skill or slash command byte for byte, with its path and the precedence among same-named ones — no model reads it for you |
 | [media/transcribe](media/transcribe/) | media | Public podcast episodes (or any audio) to Markdown — the publisher's transcript when the feed has one, otherwise local CPU recognition with timestamps; resumable queue for multi-day runs |
 
 ## Development
