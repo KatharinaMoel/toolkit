@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034  # TEMP until every option and setting is read (Task 7)
 # skill-show - print the file Claude Code uses for /<name>, byte for byte,
 #              with its path in front. No model reads it for you.
 #
@@ -447,6 +446,85 @@ show_entry() { # show_entry <record> <status>
   print_content "$file"
 }
 
+# ---------- list ----------
+# list_rows: every record plus its status and, when shadowed, "<group>|<kind>" of
+# the entry that wins; best first per invocation (same rules as a lookup).
+list_rows() {
+  { gather_local; gather_plugins; emit_records; } | sort -s -t "$US" -k1,1n | awk -F "$US" -v OFS="$US" '
+    { st = "active"; by = ""
+      if ($2 ~ /:/) { if ($8 == "disabled") st = "disabled" }
+      else if (!($2 in first)) { first[$2] = $4; kind[$2] = $3 }
+      else if ($4 == "nested" && first[$2] == "project-skill") st = "also-loaded"
+      else { st = "shadowed"; by = first[$2] "|" kind[$2] }
+      print $0, st, by }'
+}
+
+# list_lines: "<invocation>\037<entry>\037<notes>\037<section heading>" per entry, in list order
+list_lines() {
+  local rank inv kind group name dirname file label kios desc heading st by sec entry notes dir
+  while IFS="$US" read -r rank inv kind group name dirname file label kios desc heading st by; do
+    case "$group" in
+      plugin|claude-ai-plugin)
+        if [ "$kind" = skill ]; then dir=${file%/skills/*}; else dir=${file%/commands/*}; fi
+        sec="$heading  $dir" ;;
+      claude-ai-skill) sec="claude.ai skills  ${file%/*/SKILL.md}" ;;
+      personal-command|project-command)
+        dir=${file%/*}; [ -z "$label" ] || dir=${dir%/*}
+        sec="${GROUP_WORDS[$group]} commands  $dir" ;;
+      *) sec="${GROUP_WORDS[$group]} skills  ${file%/*/SKILL.md}" ;;
+    esac
+    entry=$inv; notes=""
+    if [ "$kind" = skill ]; then
+      [ "$dirname" = "$name" ] || entry+=" [$dirname]"
+      dir=${file%/SKILL.md}
+      [ ! -L "$dir" ] || notes+="-> $(realpath -- "$dir")  "
+    fi
+    [ -z "$kios" ] || notes+="kios: $kios  "
+    case "$st" in
+      shadowed) notes+="(shadowed by ${GROUP_WORDS[${by%|*}]} ${by#*|})" ;;
+      also-loaded) notes+="(also loaded)" ;;
+    esac
+    printf '%s\n' "$rank$US$sec$US$inv$US$entry$US${notes%  }"
+  done < <(list_rows) | LC_ALL=C sort -s -t "$US" -k1,1n -k2,2 -k3,3 |
+    awk -F "$US" -v OFS="$US" '{ print $3, $4, $5, $2 }' 
+}
+
+print_list() {
+  local inv entry notes sec prev=""
+  while IFS="$US" read -r inv entry notes sec; do
+    [ "$sec" = "$prev" ] || { printf '%s\n' "$sec"; prev=$sec; }
+    if [ -n "$notes" ]; then printf '  %-38s %s\n' "$entry" "$notes"; else printf '  %s\n' "$entry"; fi
+  done < <(list_lines)
+  printf 'not files: bundled skills and built-in commands of Claude Code (see skill-show --help)\n'
+}
+
+print_tsv() { # one line per entry; a tab in a value becomes a space (here only)
+  local rank inv kind group name dirname file label kios desc heading st by v
+  local -a cols
+  while IFS="$US" read -r rank inv kind group name dirname file label kios desc heading st by; do
+    cols=()
+    for v in "$inv" "$kind" "$group" "$name" "$file" "$st" "$kios" "$desc"; do cols+=("${v//$'\t'/ }"); done
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${cols[@]}"
+  done < <(list_rows)
+}
+
+# The picker needs a terminal on both ends, so inside Claude Code's ! (no TTY)
+# it can never hang. SKILL_SHOW_FORCE_TTY=1 exists for the tests only.
+want_picker() {
+  [ "$OPT_LIST" -eq 0 ] && command -v fzf >/dev/null 2>&1 &&
+    { [ "${SKILL_SHOW_FORCE_TTY:-}" = 1 ] || { [ -t 0 ] && [ -t 1 ]; }; }
+}
+
+pick() { # enter: the normal output for the entry; esc: exit 130
+  local line rc=0
+  line=$(list_lines | awk -F "$US" -v OFS=$'\t' '{ print $1, $2, $4 }' |
+    fzf --ansi --exact --no-sort --delimiter=$'\t' --with-nth=2,3 --layout=reverse \
+        --border=rounded --border-label=' skill-show ' \
+        --preview="'$SELF' --raw {1}" --preview-window='right,55%,wrap') || rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
+  exec "$SELF" --project "$PROJECT" "${line%%$'\t'*}"
+}
+
 # ---------- not found ----------
 not_found() { # not_found <prefix> <bare>: explain on stderr, exit 1
   local inv=$2 builtin=0 n kind group
@@ -482,6 +560,13 @@ not_found() { # not_found <prefix> <bare>: explain on stderr, exit 1
 }
 
 # ---------- main ----------
+if [ "$HAVE_ARG" -eq 0 ]; then
+  if [ "$OPT_TSV" -eq 1 ]; then print_tsv
+  elif want_picker; then pick
+  else print_list
+  fi
+  exit 0
+fi
 if [ "$HAVE_ARG" -eq 1 ]; then
   mapfile -t MATCHES < <(lookup "$NAME_PREFIX" "$NAME_BARE")
   inv_name=$NAME_BARE; [ -z "$NAME_PREFIX" ] || inv_name="$NAME_PREFIX:$NAME_BARE"

@@ -44,6 +44,14 @@ done
 # bat also prints the file it was given last, like the real one does without colour.
 # shellcheck disable=SC2016  # unexpanded on purpose: it is the stub's code
 printf 'for last; do :; done\ncat -- "$last"\n' >> "$STUBS/bat"
+# fzf also keeps its input in $TMP/fzf.in; with $FZF_PICK set it picks the first
+# line containing it, otherwise it quits like esc (exit 130).
+cat >> "$STUBS/fzf" <<'EOF'
+cat > "$FZF_IN"
+[ -n "${FZF_PICK:-}" ] || exit 130
+grep -m1 -F -- "$FZF_PICK" "$FZF_IN" || exit 1
+EOF
+export FZF_IN="$TMP/fzf.in"
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$JQBIN:$SYS"
 cd "$TMP" || exit 1   # no git repo around
@@ -477,6 +485,65 @@ expect_has "prefixed not found: explains the prefix" "the name in its plugin.jso
 run --help
 expect_has "--help lists where it looks" "/etc/claude-code/.claude/skills" "$OUT"
 expect_has "--help lists the plugin places" "installed_plugins.json" "$OUT"
+
+# ---------- list ----------
+run
+expect_eq  "list: exit 0" 0 "$RC"
+LIST=$OUT
+expect_has "list: group heading with its folder" "personal skills  $CH/skills" "$LIST"
+expect_has "list: a skill whose folder differs shows the folder" "  /beta [renamed]" "$LIST"
+expect_has "list: a symlinked skill shows where it points" "-> $TMP/outside/link skill" "$LIST"
+expect_has "list: kios source, raw" "kios: 40-runbooks/x.md" "$LIST"
+expect_has "list: shadowed entries say so" "(shadowed by personal skill)" "$LIST"
+expect_has "list: plugin heading" "plugin superpowers 7.0.0 (mkt)  $PC/mkt/superpowers/7.0.0" "$LIST"
+expect_has "list: disabled plugin heading" "plugin offplug 1.0.0 (mkt) (disabled)" "$LIST"
+expect_has "list: claude.ai plugin heading" "claude.ai plugin engineering (generation 3)" "$LIST"
+expect_eq  "list: last line names what has no file" \
+  "not files: bundled skills and built-in commands of Claude Code (see skill-show --help)" "$(tail -n1 "$TMP/out")"
+for inv in /plain /superpowers:brainstorming /engineering:code-review /anthropic-skills:pdf /sub:nested-cmd /mgd /gen4; do
+  expect_eq "list: $inv exactly once" 1 "$(grep -c -- "^  $inv\( \|$\)" "$TMP/out")"
+done
+expect_eq  "list: /alpha twice (skill and command)" 2 "$(grep -c -- '^  /alpha\( \|$\)' "$TMP/out")"
+for gone in /old /anthropic-skills:notlisted /anthropic-skills:escape .bucket; do
+  expect_not "list: never $gone" "$gone" "$LIST"
+done
+expect_not "list: never an old plugin version" "6.4.1" "$LIST"
+expect_not "list: never a temporary clone" "temp_subdir" "$LIST"
+in_dir "$TMP/proj/pkg" --list
+expect_has "list from pkg: nested skill also loaded" "(also loaded)" "$OUT"
+expect_has "list from pkg: nested heading with its folder" "nested skills  $TMP/proj/pkg/.claude/skills" "$OUT"
+
+# ---------- --tsv ----------
+run --tsv
+TSV=$OUT
+expect_eq  "--tsv: exit 0" 0 "$RC"
+expect_eq  "--tsv: every line has 8 fields" "" "$(awk -F'\t' 'NF != 8' "$TMP/out")"
+expect_eq  "--tsv: status is one of four values" "" "$(cut -f6 "$TMP/out" | grep -vxE 'active|shadowed|also-loaded|disabled')"
+expect_has "--tsv: a shadowed command" "$(printf '/alpha\tcommand\tpersonal-command\talpha\t%s\tshadowed' "$CH/commands/alpha.md")" "$TSV"
+expect_has "--tsv: kios source and description" "$(printf '\tactive\t40-runbooks/x.md\tfour')" "$TSV"
+expect_has "--tsv: disabled plugin" "$(printf '/offplug:offskill\tskill\tplugin\toffskill\t%s\tdisabled' "$PC/mkt/offplug/1.0.0/skills/offskill/SKILL.md")" "$TSV"
+expect_not "--tsv: no heading lines" "not files" "$TSV"
+in_dir "$TMP/proj/pkg" --tsv
+expect_has "--tsv from pkg: also-loaded" "$(printf '\tnested\tprojonly\t%s\talso-loaded' "$TMP/proj/pkg/.claude/skills/projonly/SKILL.md")" "$OUT"
+
+# ---------- picker ----------
+"$RM" -f "$TMP/fzf.log"
+run
+expect_eq  "no terminal: fzf is never called" "no" "$([ -e "$TMP/fzf.log" ] && echo yes || echo no)"
+SKILL_SHOW_FORCE_TTY=1 FZF_PICK=/plain "$SS" > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "picker: enter shows the picked entry" "$("$SS" plain 2>/dev/null)" "$(cat "$TMP/out")"
+expect_eq  "picker: exit 0" 0 "$RC"
+expect_has "picker: fzf gets the entries" "/superpowers:brainstorming" "$(cat "$FZF_IN")"
+expect_has "picker: the preview is skill-show --raw" "--raw {1}" "$(cat "$TMP/fzf.log")"
+SKILL_SHOW_FORCE_TTY=1 "$SS" > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "picker: esc exits 130" 130 "$RC"
+expect_eq  "picker: esc prints nothing" "" "$(cat "$TMP/out")"
+"$RM" -f "$TMP/fzf.log"
+SKILL_SHOW_FORCE_TTY=1 "$SS" --list > "$TMP/out" 2>&1
+expect_eq  "--list: never the picker" "no" "$([ -e "$TMP/fzf.log" ] && echo yes || echo no)"
+PATH="$JQBIN:$SYS" SKILL_SHOW_FORCE_TTY=1 "$SS" > "$TMP/out" 2>&1; RC=$?
+expect_eq  "terminal without fzf: the plain list" 0 "$RC"
+expect_has "terminal without fzf: the plain list" "personal skills" "$(cat "$TMP/out")"
 
 # ---------- records cannot be spoofed ----------
 for n in 3 4 evil inject fake nl; do
