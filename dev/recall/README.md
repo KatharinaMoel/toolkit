@@ -77,6 +77,9 @@ them to the desktop trash — never deleting them outright:
 | 7 days parked | moved to the trash with `gio trash` at the next start of recall |
 
 - `ctrl-k` on a text keeps it: its clock starts again.
+- Lasting notes that live in `.reviews/` for good (an open-topics list, a log) go
+  into `TEXT_KEEP` as file name patterns: they stay active and are never parked
+  or trashed; the preview says `kept for good (TEXT_KEEP)`.
 - A text new to recall starts its clock when recall first sees it, not at its
   file date. On the very first start nothing is trashed; old texts are parked a
   week later. A text restored from the trash gets a fresh clock the same way.

@@ -516,6 +516,23 @@ list=$(flat)
 expect_eq  "no gio: due text listed as parked" parked "$(state_of due2.txt)"
 mv "$TMP/gio.off" "$STUBS/gio"
 
+# TEXT_KEEP: lasting notes in .reviews are never parked or trashed
+lc_file offene-themen.md $((40 * D))
+lc_file notes-keep.txt $((40 * D))
+printf 'TEXT_KEEP=("offene-themen.md" "*-keep.txt")\n' >> "$HOME/.config/recall/recall.conf"
+reset ESC
+"$RECALL" </dev/null >/dev/null 2>&1
+expect_not "TEXT_KEEP: a listed name is never trashed" "offene-themen.md" "$(cat "$GIO_LOG" 2>/dev/null)"
+expect_not "TEXT_KEEP: a matching pattern is never trashed" "notes-keep.txt" "$(cat "$GIO_LOG" 2>/dev/null)"
+list=$(flat)
+expect_eq  "TEXT_KEEP: listed as active" active "$(state_of offene-themen.md)"
+expect_eq  "TEXT_KEEP: glob pattern listed as active" active "$(state_of notes-keep.txt)"
+expect_has "TEXT_KEEP: the preview says it stays" "kept for good (TEXT_KEEP)" \
+  "$("$RECALL" --preview "$(line_of "$TMP/flat" " offene-themen.md")" 2>/dev/null)"
+sed -i '$d' "$HOME/.config/recall/recall.conf"
+list=$(flat)
+expect_eq  "without TEXT_KEEP the same old file is parked" parked "$(state_of offene-themen.md)"
+
 # odd file names: README in any case is skipped, tab or newline in a name is skipped
 printf 'x\n' > "$LC/repo/.reviews/readme.md"
 printf 'x\n' > "$LC/repo/.reviews/tab	name.txt"
