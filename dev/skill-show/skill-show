@@ -135,7 +135,7 @@ file_meta() {
   [ $# -gt 0 ] || return 0
   LC_ALL=C awk '
     function clean(v) { gsub(/[\037\r\t]/, " ", v); return v }   # a value must not break a record
-    function val(k,  v) { v = $0; sub("^" k ":[ \t]*", "", v); gsub(/^["\x27]|["\x27]$/, "", v); return clean(v) }
+    function val(k,  v) { v = $0; sub("^" k ":[ \t]*", "", v); sub(/[ \t]+$/, "", v); gsub(/^["\x27]|["\x27]$/, "", v); return clean(v) }
     function flush() { if (cur != "") printf "%s\037%s\037%s\037%s\n", cur, name, desc, kios; cur = "" }
     FNR == 1 { flush(); cur = FILENAME; name = desc = kios = ""; bytes = 0; fm = 0 }
     { sub(/\r$/, "") }
@@ -264,6 +264,7 @@ gather_plugins() {
   # claude.ai skills (observed, not documented): the folders the bucket's manifest names
   for b in "$CLAUDE_HOME/skills/synced"/*/; do
     b=${b%/}
+    [ -d "$b" ] || continue   # no synced folder: the glob stays literal
     # an empty manifest.json parses as nothing: treat it like a missing one
     if [ -f "$b/manifest.json" ] && listed=$(jq -r '.skills[].name' "$b/manifest.json" 2>/dev/null) && [ -n "$listed" ]; then
       while IFS= read -r n; do
@@ -287,7 +288,8 @@ gather_plugins() {
           (($u[0].enabledPlugins // {}) + ($p[0].enabledPlugins // {}) + ($l[0].enabledPlugins // {})) as $en
           | $i[0].plugins | to_entries[] | .key as $k | .value[]
           | [$k, .installPath, (.version // ""), (.scope // "user"),
-             (if $en[$k] == false then "disabled" else "" end)] | join($s)' 2>/dev/null); then
+             (if $en[$k] == false then "disabled" else "" end)]
+          | map(tostring | gsub("[\u001f\n\r\t]"; " ")) | join($s)' 2>/dev/null); then
       while IFS="$US" read -r key path version scope state; do
         [ -n "$key" ] && [ -d "$path" ] || continue
         safe_path "$path" || continue
@@ -306,6 +308,7 @@ gather_plugins() {
   # else the folder marked .in_use
   for b in "$CLAUDE_HOME/plugins/synced"/*/; do
     b=${b%/}
+    [ -d "$b" ] || continue   # no synced folder: the glob stays literal
     if [ -f "$b/manifest.json" ] && listed=$(jq -r --arg s "$US" '.plugins[] | [.name, (.generation | tostring)] | join($s)' "$b/manifest.json" 2>/dev/null) &&
        [ -n "$listed" ]; then
       while IFS="$US" read -r n gen; do
@@ -337,14 +340,29 @@ gather_plugins() {
   # one jq for all of them, the install key or folder name when it has none.
   local -a pjs=()
   for d in "${roots[@]}"; do [ -f "$d/.claude-plugin/plugin.json" ] && pjs+=("$d/.claude-plugin/plugin.json"); done
+  # shellcheck disable=SC2016  # $s is a jq variable
+  local pj_prog='[input_filename, (.name // "" | tostring)] | join($s)'
   if [ "${#pjs[@]}" -gt 0 ]; then
+    # jq stops at the first broken file; then read them one by one, so only that one falls back
+    if ! out=$(jq -r --arg s "$US" "$pj_prog" "${pjs[@]}" 2>/dev/null); then
+      out=""
+      for path in "${pjs[@]}"; do
+        if n=$(jq -r --arg s "$US" "$pj_prog" "$path" 2>/dev/null); then out+="$n"$'\n'
+        else note "cannot read $path - using the install key as the prefix"; fi
+      done
+    fi
     while IFS="$US" read -r path name; do
+      [ -n "$path" ] || continue
       pj_name["${path%/.claude-plugin/plugin.json}"]=$name
-    done < <(jq -r --arg s "$US" '[input_filename, (.name // "")] | join($s)' "${pjs[@]}" 2>/dev/null || true)
+    done <<<"$out"
   fi
   for d in "${roots[@]}"; do
     name=${pj_name[$d]:-}
-    name_part_ok "$name" 2>/dev/null || name=${r_fallback[$d]}
+    if [ -n "$name" ] && ! name_part_ok "$name"; then
+      note "unusable name in $d/.claude-plugin/plugin.json: $(printf '%q' "$name") - using the install key as the prefix"
+      name=""
+    fi
+    [ -n "$name" ] || name=${r_fallback[$d]}
     head=${r_head[$d]//%NAME%/$name}
     add_skills "${r_group[$d]}" "${RANK[${r_group[$d]}]}" "$d/skills" "$name" "$head" "${r_label[$d]}"
     add_commands "${r_group[$d]}" "$d/commands" "$name" "$head" "${r_label[$d]}"
@@ -354,10 +372,16 @@ gather_plugins() {
 # emit_records: one record per gathered file
 emit_records() {
   local f file name desc kios dirname inv
+  local -a readable_files=()
   local -A meta=()
+  # awk stops at the first file it cannot read, which would drop the names of all
+  # files after it; so only readable files go in, and the others are named.
+  for f in "${SKILL_FILES[@]}" "${COMMAND_FILES[@]}"; do
+    if [ -r "$f" ]; then readable_files+=("$f"); else note "cannot read $f - listed by its file name only"; fi
+  done
   while IFS="$US" read -r file name desc kios; do
     meta["$file"]="$name$US$desc$US$kios"
-  done < <(file_meta "${SKILL_FILES[@]}" "${COMMAND_FILES[@]}" 2>/dev/null)
+  done < <(file_meta "${readable_files[@]}")
   for f in "${SKILL_FILES[@]}"; do
     IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
     dirname=${f%/SKILL.md}; dirname=${dirname##*/}

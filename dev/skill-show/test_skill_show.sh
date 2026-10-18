@@ -545,6 +545,56 @@ PATH="$JQBIN:$SYS" SKILL_SHOW_FORCE_TTY=1 "$SS" > "$TMP/out" 2>&1; RC=$?
 expect_eq  "terminal without fzf: the plain list" 0 "$RC"
 expect_has "terminal without fzf: the plain list" "personal skills" "$(cat "$TMP/out")"
 
+# ---------- final review fixes ----------
+# A Claude home without any synced folder: no note about folders that do not exist.
+mkdir -p "$TMP/bare/skills/only"; printf -- '---\nname: only\n---\nx\n' > "$TMP/bare/skills/only/SKILL.md"
+CLAUDE_CONFIG_DIR="$TMP/bare" "$SS" --list > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "no synced folders: list exit 0" 0 "$RC"
+expect_eq  "no synced folders: no note at all" "" "$(cat "$TMP/err")"
+CLAUDE_CONFIG_DIR="$TMP/bare" "$SS" x:y > /dev/null 2> "$TMP/err"
+expect_not "no synced folders: a prefixed lookup notes nothing about synced/*" "synced" "$(cat "$TMP/err")"
+
+# One unreadable SKILL.md must not wipe the names of the others.
+if [ "$(id -u)" -ne 0 ]; then
+  put "$CH/skills/aaa0/SKILL.md" '---\nname: aaa0\n---\nlocked\n'
+  chmod 000 "$CH/skills/aaa0/SKILL.md"
+  run beta
+  expect_has "unreadable sibling: beta (name:) still found" "    file:    $CH/skills/renamed/SKILL.md" "$OUT"
+  expect_has "unreadable sibling: named in a note" "$CH/skills/aaa0/SKILL.md" "$ERR"
+  run --list
+  expect_has "unreadable sibling: the list keeps name: values" "  /beta [renamed]" "$OUT"
+  chmod 644 "$CH/skills/aaa0/SKILL.md"; "$RM" -r "$CH/skills/aaa0"
+fi
+
+# One broken plugin.json must not rename the plugins after it.
+SPJ="$PC/mkt/superpowers/7.0.0/.claude-plugin/plugin.json"
+cp "$SPJ" "$TMP/spj.bak"; printf '{broken' > "$SPJ"
+run ai:building-pydantic-ai-agents
+expect_eq  "broken plugin.json elsewhere: ai: still found" 0 "$RC"
+expect_has "broken plugin.json: named in a note" "$SPJ" "$ERR"
+run superpowers:brainstorming
+expect_eq  "broken plugin.json: falls back to the install key, visibly" 0 "$RC"
+printf '{"name": "bad name"}' > "$SPJ"
+run superpowers:brainstorming
+expect_has "plugin.json with an unusable name: named in a note" "$SPJ" "$ERR"
+cat "$TMP/spj.bak" > "$SPJ"
+
+# name: with trailing blanks is trimmed, as YAML does.
+put "$CH/skills/tdir/SKILL.md" '---\nname: trail \t\n---\ntrailing blanks\n'
+run trail
+expect_eq  "name: with trailing blanks: found" 0 "$RC"
+run --tsv
+expect_has "name: with trailing blanks: no blank in the invocation" "$(printf '/trail\tskill')" "$OUT"
+"$RM" -r "$CH/skills/tdir"
+
+# installed_plugins.json values cannot shift the record fields either.
+cp "$CH/plugins/installed_plugins.json" "$TMP/inst.bak"
+sed -i 's/"version": "7.0.0"/"version": "7\\u001fX\\u001fY"/' "$CH/plugins/installed_plugins.json"
+run superpowers:brainstorming
+expect_has "\\037 in installed_plugins.json: cleaned, no false label" \
+  "==> /superpowers:brainstorming · skill · plugin superpowers 7 X Y (mkt) · active" "$OUT"
+cat "$TMP/inst.bak" > "$CH/plugins/installed_plugins.json"
+
 # ---------- records cannot be spoofed ----------
 for n in 3 4 evil inject fake nl; do
   run "$n"
