@@ -1,0 +1,68 @@
+<!--
+  Example narrative for skill-map: your own texts on the page.
+  Copy to ~/.config/skill-map/erzaehlung.html and write your own.
+  Refer to entries with data-key="KEY"; `skill-map fingerprint` lists every key.
+  A key that does not exist (any more) is struck through on the page and listed
+  at the top, so you notice it. data-copy="TEXT" adds a copy button (empty: the call).
+  Every part is optional; sections must not nest.
+-->
+
+<section data-slot="ablauf">
+  <div class="sec-head">
+    <h2>Ein Vorhaben von Anfang bis Ende</h2>
+    <p>Links, was du aufrufst, rechts, was den Schritt absichert.</p>
+  </div>
+  <div class="flow">
+    <div class="step"><div class="what"><span class="label">Klären</span>
+      <h3><code data-key="superpowers:brainstorming" data-copy="">brainstorming</code></h3>
+      <ul><li>Fragen statt Annahmen, am Ende ein Design</li></ul></div>
+      <div class="guard"><span class="label">Absicherung</span><ul><li>nichts wird gebaut vor der Freigabe</li></ul></div></div>
+    <div class="step"><div class="what"><span class="label">Planen</span>
+      <h3><code data-key="superpowers:writing-plans">writing-plans</code></h3>
+      <ul><li>Plan mit Dateien und Tests</li></ul></div>
+      <div class="guard"><span class="label">Absicherung</span><ul><li>Plan-Modus: erst Freigabe</li></ul></div></div>
+  </div>
+</section>
+
+<section data-slot="chain">
+  <div class="sec-head"><h2>Eine Kette in einem Bild</h2></div>
+  <div class="chain" role="list">
+    <span class="node" role="listitem" data-key="superpowers:brainstorming">brainstorming</span><span class="arr" aria-hidden="true">→</span>
+    <span class="node" role="listitem" data-key="superpowers:writing-plans">writing-plans</span><span class="arr" aria-hidden="true">→</span>
+    <span class="node" role="listitem" data-key="superpowers:executing-plans">executing-plans</span>
+    <span class="side">Bei Bedarf: <code data-key="superpowers:systematic-debugging">systematic-debugging</code>.</span>
+  </div>
+</section>
+
+<section data-slot="wofuer">
+  <div class="sec-head"><h2>Wofür nehme ich was</h2><p>Eine Empfehlung, keine feste Regel.</p></div>
+  <div class="uc">
+    <div class="card"><h3>Idee noch unscharf</h3><p><code data-key="superpowers:brainstorming" data-copy="">superpowers:brainstorming</code></p>
+      <p class="alt">Danach <code data-key="superpowers:writing-plans">writing-plans</code>.</p></div>
+    <div class="card"><h3>Eigene Änderung prüfen</h3><p><code data-key="builtin:code-review" data-copy="/code-review">/code-review</code></p></div>
+  </div>
+</section>
+
+<section data-slot="repo-wissen">
+  <div class="tbox"><h3><span class="tag t-repo">Projekt</span> Wissen und Absicherung</h3>
+    <div class="tscroll"><table><thead><tr><th>Datei</th><th>Wofür</th></tr></thead><tbody>
+      <tr><td>AGENTS.md</td><td>Regeln für alle KI-Agenten</td></tr>
+      <tr><td>CONTRIBUTING.md</td><td>Branches und Merge Requests</td></tr>
+    </tbody></table></div></div>
+</section>
+
+<section data-slot="auffaellig">
+  <div class="sec-head"><h2>Was auffällt</h2></div>
+  <ul class="gaps">
+    <li><strong>Viel installiert, wenig genutzt.</strong> Die Zahlen im Cheat-Sheet zeigen, was davon wirklich vorkommt.</li>
+    <li>Ein Verweis auf etwas, das es nicht gibt, wird markiert: <code data-key="example:no-such-skill">example:no-such-skill</code>.</li>
+  </ul>
+</section>
+
+<template data-lane-note="personal-commands">Ändern immer in der Quelle, nie in der erzeugten Datei.</template>
+<template data-lane-note="plugins">Es zählt nur die installierte Version; im Cache liegen oft viele alte.</template>
+
+<script type="application/json" data-kurz>
+{"superpowers:brainstorming": "Fragen stellen, bis klar ist, was gebaut wird",
+ "superpowers:writing-plans": "Umsetzungsplan aus einer Spec"}
+</script>

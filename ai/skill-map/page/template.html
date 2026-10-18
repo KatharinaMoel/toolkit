@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title><!-- title --></title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,750&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: Kopf, Landkarte der Ablageorte (Spuren), Erzählung, Nachschlagen, Cheat-Sheet. Farbe kodiert den Ablageort. */
+:root{
+  --bg:#f6f7f4; --surface:#ffffff; --fg:#1d2321; --muted:#5d6763; --line:#d9ded9;
+  --vault:#2f7a5b; --vault-bg:#e6f2ec;
+  --plugin:#4b4fa8; --plugin-bg:#ebebf8;
+  --synced:#9a6a12; --synced-bg:#f7efdc;
+  --repo:#a2405a; --repo-bg:#f6e6ea;
+  --cli:#1f6f86; --cli-bg:#e2f0f4;
+  --ok:#2f7a5b; --draft:#9a6a12;
+  --display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body:"Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#141917; --surface:#1c2220; --fg:#e7ece9; --muted:#9aa5a0; --line:#2e3633;
+  --vault:#6fc79f; --vault-bg:#1d3329; --plugin:#a3a6f0; --plugin-bg:#25263f;
+  --synced:#e2b55c; --synced-bg:#3a2f18; --repo:#ec8fa6; --repo-bg:#3a2229;
+  --cli:#6fc3db; --cli-bg:#173039; --ok:#6fc79f; --draft:#e2b55c; color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#141917; --surface:#1c2220; --fg:#e7ece9; --muted:#9aa5a0; --line:#2e3633;
+  --vault:#6fc79f; --vault-bg:#1d3329; --plugin:#a3a6f0; --plugin-bg:#25263f;
+  --synced:#e2b55c; --synced-bg:#3a2f18; --repo:#ec8fa6; --repo-bg:#3a2229;
+  --cli:#6fc3db; --cli-bg:#173039; --ok:#6fc79f; --draft:#e2b55c; color-scheme:dark }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.55;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:32px 64px}
+.wrap{max-width:1180px;margin:0 auto;display:grid;gap:48px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:clamp(28px,4vw,42px);font-weight:750}
+h2{font-size:24px;font-weight:750}
+h3{font-size:17px;font-weight:600}
+p{margin:0;max-width:68ch}
+code,.mono{font-family:var(--mono);font-size:.86em}
+header{display:grid;gap:12px}
+.lede{color:var(--muted);font-size:17px}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.tag{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;letter-spacing:.02em;padding:3px 9px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.t-vault{color:var(--vault);background:var(--vault-bg)} .t-plugin{color:var(--plugin);background:var(--plugin-bg)}
+.t-synced{color:var(--synced);background:var(--synced-bg)} .t-repo{color:var(--repo);background:var(--repo-bg)}
+.t-cli{color:var(--cli);background:var(--cli-bg)} .t-muted{color:var(--muted);background:var(--bg)}
+section{display:grid;gap:18px}
+.sec-head{display:grid;gap:6px}
+.sec-head p{color:var(--muted)}
+.banner{background:var(--synced-bg);border:1px solid var(--draft);border-radius:6px;padding:12px 16px;font-size:15px}
+/* Landkarte */
+.lanes{display:grid;gap:14px}
+.lane{display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:start;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:6px;padding:14px 16px}
+.lane .where{display:grid;gap:4px;min-width:0}
+.lane .where .scope{font-size:13px;color:var(--muted)}
+.lane .where code{word-break:break-all;color:var(--c)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.chip{font-family:var(--mono);font-size:12.5px;padding:2px 8px;border-radius:4px;background:var(--cbg);color:var(--fg);border:1px solid transparent}
+.chip.draft{border-style:dashed;border-color:var(--draft)}
+.chip.stale{opacity:.6;text-decoration:line-through}
+.chip.dim{opacity:.55}
+.chip small{color:var(--muted);font-size:11px}
+.lane .note{grid-column:2;font-size:14px;color:var(--muted)}
+.flowline{font-family:var(--mono);font-size:13px;color:var(--muted);padding-left:16px;border-left:2px dotted var(--line);margin-left:108px}
+@media (max-width:720px){ .lane{grid-template-columns:1fr} .lane .note{grid-column:1} .flowline{margin-left:8px} }
+/* Erzählung */
+.flow{display:grid;gap:10px;counter-reset:step}
+.step{display:grid;grid-template-columns:44px minmax(0,1.1fr) minmax(0,1fr);gap:16px;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px}
+.step::before{counter-increment:step;content:counter(step);font-family:var(--display);font-weight:750;font-size:22px;color:var(--muted);line-height:1}
+.step .what{display:grid;gap:6px;min-width:0}
+.step .guard{display:grid;gap:6px;min-width:0;border-left:1px solid var(--line);padding-left:16px}
+.label{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.step ul{margin:0;padding-left:18px;display:grid;gap:2px;font-size:14.5px}
+@media (max-width:720px){ .step{grid-template-columns:32px minmax(0,1fr)} .step .guard{grid-column:2;border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:10px} }
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px}
+.chain .node{font-family:var(--mono);font-size:13px;padding:6px 10px;border-radius:4px;background:var(--plugin-bg);color:var(--plugin);border:1px solid var(--plugin)}
+.chain .arr{color:var(--muted)}
+.chain .side{font-size:13px;color:var(--muted);flex-basis:100%;margin-top:6px}
+.uc{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}
+.uc .card{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.uc .card p{font-size:14.5px}
+.uc .alt{font-size:13px;color:var(--muted)}
+.gaps{display:grid;gap:10px}
+.gaps li{max-width:80ch}
+.callout{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px;display:grid;gap:8px}
+.callout ol{margin:0;padding-left:20px;display:grid;gap:4px}
+.gone{text-decoration:line-through;color:var(--draft);outline:1px dashed var(--draft);outline-offset:2px}
+.gone-label{font-family:var(--mono);font-size:11px;color:var(--draft);margin-left:6px;text-decoration:none}
+/* Tabellen */
+.tables{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px}
+.tbox{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px;display:grid;gap:10px;min-width:0;align-content:start}
+.tscroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{text-align:left;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td:first-child{font-family:var(--mono);font-size:13px;white-space:nowrap}
+.st{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.st.ok{color:var(--ok)} .st.dr{color:var(--draft)}
+footer{color:var(--muted);font-size:13px}
+.cp{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:6px;vertical-align:-5px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;padding:0}
+.cp:hover{color:var(--fg);border-color:var(--muted)} .cp:focus-visible{outline:2px solid var(--plugin);outline-offset:2px}
+.cp svg{width:12px;height:12px} .cp.done{color:var(--ok);border-color:var(--ok)}
+.src{font-size:12.5px;color:var(--muted)} .src b{color:var(--fg);font-weight:600}
+.use{font-family:var(--mono);font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.use.zero{color:var(--muted)}
+.area{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:999px;white-space:nowrap;color:var(--cli);background:var(--cli-bg)}
+.muted{color:var(--muted)}
+/* Nachschlagen */
+.lookup{display:grid;gap:10px}
+.lookup .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.lookup input{font:inherit;font-size:15px;padding:8px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);min-width:0;flex:1 1 260px}
+.lookup input:focus-visible{outline:2px solid var(--plugin);outline-offset:1px}
+.lookup .hint{font-size:13px;color:var(--muted)}
+#groups{display:grid;gap:10px}
+details.grp{background:var(--surface);border:1px solid var(--line);border-radius:6px}
+details.grp summary{cursor:pointer;padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline;list-style:none}
+details.grp summary::-webkit-details-marker{display:none}
+details.grp summary::before{content:"▸";color:var(--muted);font-size:12px}
+details.grp[open] summary::before{content:"▾"}
+details.grp summary b{font-family:var(--display);font-size:16px}
+details.grp summary .src{flex:1 1 240px}
+details.grp summary .n{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.items{display:grid;gap:0;padding:0 16px 10px}
+.item{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:4px 14px;padding:8px 0;border-top:1px solid var(--line);align-items:baseline}
+.item .desc{font-size:13.5px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.kind{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-left:6px}
+@media (max-width:640px){ .item{grid-template-columns:1fr} }
+.doclink{font:inherit;font-family:var(--mono);font-size:13px;background:none;border:0;padding:0;color:var(--plugin);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;text-align:left}
+.doclink:hover{text-decoration-thickness:2px} .doclink:focus-visible{outline:2px solid var(--plugin);outline-offset:2px}
+.viewer{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:color-mix(in srgb, var(--bg) 70%, transparent);
+  padding:calc(16px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))}
+.viewer[hidden]{display:none}
+.viewer .box{background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.18);width:min(980px,100%);max-height:100%;display:grid;grid-template-rows:auto 1fr;min-height:0}
+.viewer header{display:grid;gap:6px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.viewer .top{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.viewer .top h3{font-family:var(--mono);font-size:16px;font-weight:600;word-break:break-all}
+.viewer .top .sp{flex:1}
+.viewer .meta{font-size:13px;color:var(--muted);word-break:break-all}
+.viewer .withheld{color:var(--draft);font-family:var(--mono);font-size:12px}
+.btn{font:inherit;font-size:13px;padding:5px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg);cursor:pointer}
+.btn:hover{border-color:var(--muted)} .btn:focus-visible{outline:2px solid var(--plugin);outline-offset:2px}
+.viewer pre{margin:0;padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;min-height:0;color:var(--fg)}
+.go{cursor:pointer;transition:border-color .15s, background-color .15s}
+.chip.go{border-color:var(--line);text-decoration:underline;text-decoration-color:color-mix(in srgb, currentColor 35%, transparent);text-underline-offset:3px}
+.chip.go:hover,.chip.go:focus-visible{border-color:var(--fg);outline:none}
+.chain .node.go:hover,.chain .node.go:focus-visible{background:var(--surface);outline:none}
+.chain code.go{text-decoration:underline;text-underline-offset:3px;color:var(--plugin)}
+.chip.go::after{content:" ↗";font-size:10px;color:var(--muted)}
+@keyframes flash{0%{box-shadow:0 0 0 3px var(--plugin)}100%{box-shadow:0 0 0 0 transparent}}
+details.grp.flash,.item.flash{animation:flash 1.6s ease-out}
+@media (prefers-reduced-motion: reduce){ details.grp.flash,.item.flash{animation:none;outline:2px solid var(--plugin)} }
+.backlink{font-size:13px;color:var(--plugin)}
+section[id], details.grp{scroll-margin-top:16px}
+a.legend-link{text-decoration:none;cursor:pointer}
+a.legend-link:hover,a.legend-link:focus-visible{outline:2px solid currentColor;outline-offset:1px}
+.lane{scroll-margin-top:16px}
+@keyframes laneflash{0%{box-shadow:0 0 0 3px var(--c)}100%{box-shadow:0 0 0 0 transparent}}
+.lane:target{animation:laneflash 1.6s ease-out}
+@media (prefers-reduced-motion: reduce){ .lane:target{animation:none;outline:2px solid var(--c)} }
+</style>
+<!-- narrative -->
+<!-- data -->
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1 id="title"></h1>
+  <p class="lede" id="lede"></p>
+  <div class="legend" id="legend" aria-label="Legende"></div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<section id="wo">
+  <div class="sec-head">
+    <h2>Wo was liegt</h2>
+    <p>Jede Zeile ist ein Ablageort. Links steht, wo die Dateien liegen und für wen sie gelten, rechts was dort liegt. Unterstrichene Bausteine sind klickbar: ein Befehl öffnet seinen Wortlaut, ein Paket springt zu seiner Gruppe im Bereich „Nachschlagen“.</p>
+  </div>
+  <div class="lanes" id="lanes"><p class="muted">Daten werden geladen …</p></div>
+</section>
+
+<!-- slot:ablauf -->
+<!-- slot:chain -->
+
+<section id="nachschlagen">
+  <div class="sec-head">
+    <h2>Nachschlagen</h2>
+    <a class="backlink" href="#wo">↑ zurück zur Landkarte</a>
+    <p>Alle Einträge nach Herkunft gruppiert und zugeklappt. Ein Klick auf einen Namen öffnet den vollständigen Text, genau so, wie er in der Datei steht.</p>
+  </div>
+  <div class="lookup">
+    <div class="bar"><label for="q" class="hint">Suchen</label><input id="q" type="search" placeholder="Name oder Stichwort" autocomplete="off"><span class="hint" id="qcount"></span></div>
+    <div id="groups"></div>
+  </div>
+</section>
+
+<!-- slot:wofuer -->
+
+<section id="cheat">
+  <div class="sec-head">
+    <h2>Cheat-Sheet</h2>
+    <p id="cheat-intro"></p>
+  </div>
+  <div class="tables" id="tables"></div>
+  <!-- slot:repo-wissen -->
+</section>
+
+<!-- slot:auffaellig -->
+
+<section id="aktuell">
+  <div class="sec-head"><h2>Aktuell halten</h2></div>
+  <div class="callout" id="fresh"></div>
+</section>
+
+<footer id="foot"></footer>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  var KIND = {skill: 'Skill', command: 'Befehl', agent: 'Agent', runbook: 'Runbook', hook: 'Hook', tool: 'Werkzeug', builtin: 'eingebaut'};
+  var COLOR = {vault: ['var(--vault)', 'var(--vault-bg)'], plugin: ['var(--plugin)', 'var(--plugin-bg)'],
+               synced: ['var(--synced)', 'var(--synced-bg)'], repo: ['var(--repo)', 'var(--repo-bg)'],
+               cli: ['var(--cli)', 'var(--cli-bg)'], muted: ['var(--muted)', 'var(--bg)']};
+  var inv = null, texts = null, textsFailed = false, current = null, lastFocus = null;
+
+  function $(id){ return document.getElementById(id); }
+  function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function readJSON(id){ var s = $(id); if (!s) return null; try { return JSON.parse(s.textContent); } catch (e) { return null; } }
+  function day(iso){ return iso ? iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.' + iso.slice(0, 4) : ''; }
+  function short(iso){ return iso ? iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.' : ''; }
+  var NARR = readJSON('narrative') || {lane_notes: {}, kurz: {}};
+
+  // The user's own narrative is trusted HTML; nothing from the data ever goes through here.
+  function insertNarrative(target, html){
+    target.innerHTML = html;
+  }
+
+  // ---------- copy ----------
+  function icon(done){
+    var ns = 'http://www.w3.org/2000/svg', s = document.createElementNS(ns, 'svg');
+    s.setAttribute('viewBox', '0 0 16 16'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor');
+    s.setAttribute('stroke-width', done ? '2' : '1.6'); s.setAttribute('aria-hidden', 'true');
+    function add(tag, attrs){ var n = document.createElementNS(ns, tag); for (var k in attrs) n.setAttribute(k, attrs[k]); s.appendChild(n); }
+    if (done) add('path', {d: 'M3 8.5l3 3 7-7'});
+    else { add('rect', {x: '5', y: '5', width: '9', height: '9', rx: '1.5'}); add('path', {d: 'M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5'}); }
+    return s;
+  }
+  function copyText(text, done){
+    function fallback(){ var t = document.createElement('textarea'); t.value = text; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); done(); } catch (e) {} document.body.removeChild(t); }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  }
+  function copyButton(text){
+    var b = el('button', 'cp'); b.type = 'button'; b.title = 'Kopieren: ' + text; b.setAttribute('aria-label', 'Kopieren'); b.appendChild(icon(false));
+    b.addEventListener('click', function(ev){
+      ev.stopPropagation();
+      copyText(text, function(){ b.textContent = ''; b.appendChild(icon(true)); b.classList.add('done'); b.setAttribute('aria-label', 'Kopiert');
+        setTimeout(function(){ b.textContent = ''; b.appendChild(icon(false)); b.classList.remove('done'); b.setAttribute('aria-label', 'Kopieren'); }, 1400); });
+    });
+    return b;
+  }
+  function textCopy(btn, text){
+    copyText(text, function(){ var o = btn.textContent; btn.textContent = 'Kopiert'; setTimeout(function(){ btn.textContent = o; }, 1300); });
+  }
+  var COPY = {};   // data-copy overrides from the narrative
+  document.querySelectorAll('[data-key][data-copy]').forEach(function(n){ if (n.dataset.copy) COPY[n.dataset.key] = n.dataset.copy; });
+  function callOf(key){ var e = inv.entries[key]; return COPY[key] || (e && e.call) || ''; }
+
+  // ---------- viewer ----------
+  var viewer = el('div', 'viewer'); viewer.hidden = true; viewer.setAttribute('role', 'dialog'); viewer.setAttribute('aria-modal', 'true'); viewer.setAttribute('aria-labelledby', 'vtitle');
+  var box = el('div', 'box'), head = el('header'), top = el('div', 'top'), vtitle = el('h3'); vtitle.id = 'vtitle';
+  var bCall = el('button', 'btn', 'Aufruf kopieren'), bText = el('button', 'btn', 'Text kopieren'), bClose = el('button', 'btn', 'Schließen');
+  bCall.type = bText.type = bClose.type = 'button';
+  top.append(vtitle, el('span', 'sp'), bCall, bText, bClose);
+  var vmeta = el('div', 'meta'), vdesc = el('div', 'meta'), vnote = el('div', 'withheld');
+  head.append(top, vmeta, vdesc, vnote);
+  var pre = el('pre'); pre.tabIndex = 0;
+  box.append(head, pre); viewer.append(box); document.body.append(viewer);
+
+  function originText(g){
+    if (!g) return '';
+    var o = g.origin;
+    if (!o) return g.title;
+    var parts = [(o.type === 'claude.ai' ? 'claude.ai ' : 'Plugin ') + o.plugin];
+    if (o.vendor) parts.push('von ' + o.vendor);
+    if (o.version) parts.push('Version ' + o.version);
+    if (o.marketplace) parts.push('Marktplatz ' + o.marketplace);
+    if (o.installed) parts.push('installiert ' + day(o.installed));
+    return parts.join(' · ');
+  }
+  function groupOf(id){ for (var i = 0; i < inv.groups.length; i++) if (inv.groups[i].id === id) return inv.groups[i]; return null; }
+  function fillViewer(){
+    var key = current, e = inv.entries[key];
+    vtitle.textContent = e.call || e.name;
+    vmeta.textContent = [KIND[e.kind] || e.kind, originText(groupOf(e.group)), e.path || ''].filter(Boolean).join(' · ');
+    vdesc.textContent = NARR.kurz[key] || e.desc || '';
+    vnote.textContent = ''; bText.hidden = true;
+    if (e.text === 'none') { pre.textContent = 'Für diese Art von Eintrag zeigt die Seite keinen Wortlaut.'; return; }
+    if (textsFailed) { pre.textContent = 'Die Texte konnten nicht geladen werden. Seite neu laden; hilft das nicht, fehlt die Datei wortlaut.json neben der Seite.'; return; }
+    if (!texts) { pre.textContent = 'Text wird geladen …'; return; }
+    var t = texts.entries[key];
+    if (!t) { pre.textContent = 'Kein Wortlaut vorhanden.'; return; }
+    if (t.withheld != null) { vnote.textContent = 'zurückgehalten'; pre.textContent = t.withheld; return; }
+    pre.textContent = t.text; bText.hidden = false;
+  }
+  function open(key){
+    if (!inv || !inv.entries[key]) return;
+    current = key; lastFocus = document.activeElement;
+    fillViewer(); pre.scrollTop = 0; viewer.hidden = false; bClose.focus();
+  }
+  function close(){ viewer.hidden = true; current = null; if (lastFocus && lastFocus.focus) lastFocus.focus(); }
+  bClose.addEventListener('click', close);
+  bCall.addEventListener('click', function(){ if (current) textCopy(bCall, callOf(current)); });
+  bText.addEventListener('click', function(){ if (current && texts && texts.entries[current] && texts.entries[current].text != null) textCopy(bText, texts.entries[current].text); });
+  viewer.addEventListener('click', function(ev){ if (ev.target === viewer) close(); });
+  document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape' && !viewer.hidden) close(); });
+
+  // ---------- navigation ----------
+  function scrollTo(node){ node.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'}); }
+  function flash(node){ node.classList.remove('flash'); void node.offsetWidth; node.classList.add('flash'); }
+  function clearSearch(){ var q = $('q'); if (q.value) { q.value = ''; filter(); } }
+  function goGroup(id){
+    var d = document.querySelector('details.grp[data-group="' + CSS.escape(id) + '"]');
+    if (!d) return;
+    clearSearch(); d.open = true; scrollTo(d); flash(d);
+    var s = d.querySelector('summary'); if (s) s.focus({preventScroll: true});
+  }
+  function goEntry(key){
+    var row = document.querySelector('.item[data-key="' + CSS.escape(key) + '"]');
+    if (!row) return;
+    clearSearch(); row.closest('details').open = true; scrollTo(row); flash(row);
+  }
+  function makeLink(node, action, title){
+    node.classList.add('go'); node.setAttribute('role', 'button'); node.tabIndex = 0; node.title = title;
+    node.addEventListener('click', action);
+    node.addEventListener('keydown', function(ev){ if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); action(); } });
+  }
+  function entryAction(key){
+    var e = inv.entries[key];
+    return e.text === 'none' ? function(){ goEntry(key); } : function(){ open(key); };
+  }
+  function doclink(key, label){ var b = el('button', 'doclink', label); b.type = 'button'; b.addEventListener('click', function(){ open(key); }); return b; }
+
+  // ---------- header, banner ----------
+  function renderHeader(){
+    $('title').textContent = inv.title; document.title = inv.title;
+    $('lede').textContent = 'Wo Skills, Befehle, Plugins und Agenten liegen, woher sie kommen und wie oft sie genutzt werden. Stand '
+      + day(inv.generated) + ', aus den Dateien und Session-Protokollen auf diesem Rechner gelesen.';
+    var legend = $('legend');
+    inv.places.forEach(function(p){
+      var a = el('a', 'tag t-' + p.color + ' legend-link', p.title + ' ↓'); a.href = '#lane-' + p.id; legend.append(a);
+    });
+    var d = el('span', 'tag', 'gestrichelt = Entwurf'); d.style.color = 'var(--draft)'; d.style.borderStyle = 'dashed'; legend.append(d);
+    var missing = inv.narrative.missing_keys;
+    if (missing.length) {
+      var b = $('banner');
+      b.textContent = missing.length + (missing.length === 1 ? ' Verweis' : ' Verweise') + ' im handgeschriebenen Text '
+        + (missing.length === 1 ? 'zeigt' : 'zeigen') + ' auf Einträge, die es nicht mehr gibt: ' + missing.join(', ');
+      b.hidden = false;
+    }
+  }
+
+  // ---------- lanes ----------
+  function entriesIn(test){ return Object.keys(inv.entries).filter(function(k){ return test(inv.entries[k], k); }); }
+  function countLabel(c){
+    var parts = [];
+    if (c.skill) parts.push(c.skill + (c.skill === 1 ? ' Skill' : ' Skills'));
+    if (c.command) parts.push(c.command + (c.command === 1 ? ' Befehl' : ' Befehle'));
+    if (c.agent) parts.push(c.agent + (c.agent === 1 ? ' Agent' : ' Agenten'));
+    return parts.length ? ' (' + parts.join(', ') + ')' : '';
+  }
+  function chipLabel(e){
+    if (e.kind === 'hook') return e.call + ': ' + e.name;
+    if (e.kind === 'runbook' || e.kind === 'tool') return e.name;
+    if (e.kind === 'agent') return e.name + ' (Agent)';
+    return e.call || e.name;
+  }
+  function renderLanes(){
+    var lanes = $('lanes'); lanes.textContent = '';
+    var ids = inv.places.map(function(p){ return p.id; });
+    inv.places.forEach(function(p){
+      var c = COLOR[p.color] || COLOR.muted;
+      var lane = el('div', 'lane'); lane.id = 'lane-' + p.id; lane.style.setProperty('--c', c[0]); lane.style.setProperty('--cbg', c[1]);
+      var where = el('div', 'where'); where.append(el('h3', null, p.title));
+      if (p.path) where.append(el('code', null, p.path));
+      where.append(el('span', 'scope', p.scope));
+      var chips = el('div', 'chips');
+      if (p.id === 'plugins' || p.id === 'claude-ai') {
+        inv.groups.filter(function(g){ return g.place === p.id; }).forEach(function(g){
+          var members = entriesIn(function(e){ return e.group === g.id; });
+          var label = g.origin && g.origin.plugin ? g.origin.plugin : g.title;
+          var chip = el('span', 'chip', label + countLabel(g.counts));
+          if (members.length && members.every(function(k){ return inv.entries[k].flags.indexOf('disabled') >= 0; })) { chip.classList.add('dim'); chip.textContent += ' (aus)'; }
+          if (members.length) makeLink(chip, function(){ goGroup(g.id); }, 'Zur Gruppe im Nachschlagen');
+          chips.append(chip);
+        });
+      } else {
+        entriesIn(function(e){ return e.place === p.id; }).sort(function(a, b){ return chipLabel(inv.entries[a]).localeCompare(chipLabel(inv.entries[b])); }).forEach(function(k){
+          var e = inv.entries[k], chip = el('span', 'chip', chipLabel(e));
+          if (e.flags.indexOf('draft') >= 0) chip.classList.add('draft');
+          if (e.flags.indexOf('source-missing') >= 0) { chip.classList.add('stale'); chip.title = 'Quelle nicht mehr vorhanden'; }
+          if (e.flags.indexOf('shadowed') >= 0) { chip.classList.add('stale'); chip.title = 'überdeckt von einem gleichnamigen Eintrag'; }
+          if (e.flags.indexOf('no-command') >= 0) chip.append(el('small', null, ' · noch kein Command'));
+          makeLink(chip, entryAction(k), e.text === 'none' ? 'Im Nachschlagen zeigen' : 'Wortlaut öffnen');
+          chips.append(chip);
+        });
+      }
+      lane.append(where, chips);
+      if (NARR.lane_notes[p.id]) { var note = el('p', 'note'); insertNarrative(note, NARR.lane_notes[p.id]); lane.append(note); }
+      lanes.append(lane);
+      if (p.id === 'vault-runbooks' && ids.indexOf('personal-commands') >= 0) {
+        var fl = el('div', 'flowline', '↓ '); fl.append(el('code', null, 'kios sync'), document.createTextNode(' erzeugt daraus Commands')); lanes.append(fl);
+      }
+    });
+  }
+
+  // ---------- cheat sheet ----------
+  var COUNTED = {skill: 1, command: 1, agent: 1, runbook: 1, builtin: 1};   // the logs say nothing about hooks and tools
+  function useCell(e){
+    if (!COUNTED[e.kind]) return el('td', 'use zero', '–');
+    var td = el('td', 'use' + (e.usage.count ? '' : ' zero'));
+    td.textContent = e.usage.count ? e.usage.count + ' · ' + short(e.usage.last) : '0';
+    return td;
+  }
+  function nameCell(key, label){
+    var e = inv.entries[key], td = el('td');
+    td.append(e.text === 'none' ? document.createTextNode(label) : doclink(key, label));
+    var call = callOf(key);
+    if (call && e.kind !== 'hook') td.append(copyButton(call));
+    if (e.flags.indexOf('shadowed') >= 0) td.append(el('span', 'muted', ' (überdeckt)'));
+    return td;
+  }
+  function byUse(a, b){ var x = inv.entries[a], y = inv.entries[b]; return (y.usage.count - x.usage.count) || (x.call || x.name).localeCompare(y.call || y.name); }
+  function table(color, tag, title, heads, keys, row, src){
+    if (!keys.length) return;
+    var box = el('div', 'tbox'), h = el('h3'); h.append(el('span', 'tag t-' + color, tag), document.createTextNode(' ' + title));
+    var scroll = el('div', 'tscroll'), t = el('table'), thead = el('thead'), tr = el('tr'), tbody = el('tbody');
+    heads.forEach(function(x){ tr.append(el('th', null, x)); });
+    thead.append(tr); keys.forEach(function(k){ tbody.append(row(k)); });
+    t.append(thead, tbody); scroll.append(t); box.append(h, scroll);
+    if (src) box.append(src);
+    $('tables').append(box);
+  }
+  function plainRow(label){ return function(k){ var e = inv.entries[k], tr = el('tr'); tr.append(nameCell(k, label(e)), el('td', null, NARR.kurz[k] || e.desc || '–'), useCell(e)); return tr; }; }
+  function srcLine(text){ return el('p', 'src', text); }
+  function renderTables(){
+    var u = inv.usage;
+    $('cheat-intro').textContent = '„Aufrufe“ zählt, wie oft ein Eintrag in den Session-Protokollen'
+      + (u.since ? ' seit dem ' + day(u.since) : '') + ' aufgerufen oder geladen wurde (' + u.sessions + ' Sessions); das ist eine Näherung. Der Knopf neben dem Namen kopiert den Aufruf.';
+    var E = inv.entries, H3 = ['Name', 'Was er tut', 'Aufrufe · zuletzt'];
+    var callName = function(e){ return e.call || e.name; };
+    table('vault', 'kios', 'Grundbefehle aus Vorlagen', H3,
+      entriesIn(function(e){ return e.place === 'personal-commands' && e.source_note && e.source_note.indexOf('templates/') === 0; }).sort(byUse),
+      plainRow(callName));
+    table('vault', 'Runbooks', 'selbst geschrieben', ['Befehl', 'Was er tut', 'Bereich', 'Status', 'Aufrufe · zuletzt'],
+      entriesIn(function(e){ return e.kind === 'runbook'; }).sort(byUse), function(k){
+        var e = E[k], tr = el('tr'), rb = e.runbook || {};
+        var first = rb.command_entry ? nameCell(rb.command_entry, '/' + rb.command) : el('td', null, e.name);
+        if (!rb.command_entry) first.append(el('span', 'muted', ' · noch ohne Command'));
+        var area = el('td'); if (rb.area) area.append(el('span', 'area', rb.area)); else area.textContent = (rb.tags || []).join(', ') || '–';
+        var st = el('td'); st.append(el('span', 'st ' + (rb.status === 'entwurf' ? 'dr' : 'ok'), rb.status === 'entwurf' ? 'Entwurf' : (rb.status || '–')));
+        tr.append(first, el('td', null, NARR.kurz[k] || e.desc || '–'), area, st, useCell(e));
+        return tr;
+      });
+    table('vault', 'eigene', 'Befehle', H3, entriesIn(function(e){
+      return e.place === 'personal-commands' && !(e.source_note && e.source_note.indexOf('templates/') === 0) && typeof e.runbook !== 'string';
+    }).sort(byUse), plainRow(callName));
+    table('vault', 'eigene', 'Skills und Agenten', H3, entriesIn(function(e){ return e.place === 'personal-skills'; }).sort(byUse), plainRow(callName));
+    var empty = [];
+    inv.groups.filter(function(g){ return g.place === 'plugins'; }).forEach(function(g){
+      var keys = entriesIn(function(e){ return e.group === g.id; }).sort(byUse);
+      if (!keys.length) { empty.push(g); return; }
+      table('plugin', g.origin.plugin, 'Plugin', H3, keys, plainRow(function(e){ return e.kind === 'agent' ? e.name : e.name; }), srcLine('Quelle: ' + originText(g) + '.'));
+    });
+    if (empty.length) {
+      var box = el('div', 'tbox'); box.append(el('h3', null, 'Weitere installierte Plugins ohne eigene Befehle'));
+      box.append(srcLine(empty.map(function(g){ return g.origin.plugin + (g.origin.vendor ? ' (' + g.origin.vendor + ')' : ''); }).join(', ')));
+      $('tables').append(box);
+    }
+    var synced = inv.groups.filter(function(g){ return g.place === 'claude-ai'; });
+    if (synced.length) {
+      var sbox = el('div', 'tbox'), h = el('h3'); h.append(el('span', 'tag t-synced', 'claude.ai'), document.createTextNode(' Synchronisiert'));
+      var t = el('table'), thead = el('thead'), tr = el('tr'), tbody = el('tbody');
+      ['Paket', 'Was drin ist', 'Quelle'].forEach(function(x){ tr.append(el('th', null, x)); });
+      synced.forEach(function(g){
+        var row = el('tr'), names = el('td');
+        entriesIn(function(e){ return e.group === g.id; }).forEach(function(k, i){ if (i) names.append(document.createTextNode(', ')); names.append(doclink(k, inv.entries[k].name)); });
+        var first = el('td', null, g.origin.plugin); first.classList.add('mono');
+        row.append(first, names, el('td', 'src', g.origin.vendor || '–')); tbody.append(row);
+      });
+      thead.append(tr); t.append(thead, tbody); var sc = el('div', 'tscroll'); sc.append(t); sbox.append(h, sc); $('tables').append(sbox);
+    }
+    inv.places.filter(function(p){ return p.id.indexOf('project:') === 0; }).forEach(function(p){
+      table('repo', p.title, 'im Projekt', H3, entriesIn(function(e){ return e.place === p.id; }).sort(byUse), plainRow(callName));
+    });
+    table('cli', 'toolkit', 'Werkzeuge im Terminal', H3, entriesIn(function(e){ return e.kind === 'tool'; }).sort(byUse), plainRow(function(e){ return e.name; }));
+    table('muted', 'eingebaut', 'in Claude Code', H3, entriesIn(function(e){ return e.kind === 'builtin'; }).sort(byUse), plainRow(callName));
+    table('muted', 'Hooks', 'laufen automatisch', ['Ereignis: Skript', 'Wofür', 'Aufrufe · zuletzt'], entriesIn(function(e){ return e.kind === 'hook'; }), plainRow(chipLabel));
+    table('muted', 'verwaltet', 'von der Organisation', H3, entriesIn(function(e){ return e.place === 'managed'; }).sort(byUse), plainRow(callName));
+  }
+
+  // ---------- lookup ----------
+  function renderGroups(){
+    var groupsEl = $('groups'); groupsEl.textContent = '';
+    inv.groups.forEach(function(g){
+      var keys = entriesIn(function(e){ return e.group === g.id; });
+      if (!keys.length) return;
+      var d = el('details', 'grp'); d.dataset.group = g.id;
+      var s = el('summary'); s.append(el('b', null, g.title), el('span', 'src', originText(g) === g.title ? '' : originText(g)), el('span', 'n', keys.length + (keys.length === 1 ? ' Eintrag' : ' Einträge')));
+      d.append(s);
+      var items = el('div', 'items');
+      keys.forEach(function(k){
+        var e = inv.entries[k], row = el('div', 'item'); row.dataset.key = k;
+        row.dataset.search = ((e.call || '') + ' ' + e.name + ' ' + (e.desc || '') + ' ' + (KIND[e.kind] || e.kind)).toLowerCase();
+        var left = el('div'); left.append(doclink(k, e.call || e.name), el('span', 'kind', KIND[e.kind] || e.kind));
+        row.append(left, el('div', 'desc', NARR.kurz[k] || e.desc || '–'));
+        items.append(row);
+      });
+      d.append(items); groupsEl.append(d);
+    });
+  }
+  function filter(){
+    var term = $('q').value.trim().toLowerCase(), shown = 0;
+    document.querySelectorAll('#groups details.grp').forEach(function(d){
+      var any = 0;
+      d.querySelectorAll('.item').forEach(function(r){ var hit = !term || r.dataset.search.indexOf(term) >= 0; r.hidden = !hit; if (hit) any++; });
+      d.hidden = !any; if (term) d.open = any > 0; shown += any;
+    });
+    $('qcount').textContent = term ? shown + ' Treffer' : '';
+  }
+  $('q').addEventListener('input', filter);
+
+  // ---------- narrative references, fresh box, footer ----------
+  function linkNarrative(){
+    document.querySelectorAll('[data-key]').forEach(function(n){
+      if (n.closest('.viewer') || n.classList.contains('item')) return;   // lookup rows carry data-key too
+      var key = n.dataset.key;
+      if (!inv.entries[key]) {
+        n.classList.add('gone');
+        n.after(el('span', 'gone-label', 'nicht mehr vorhanden'));
+        return;
+      }
+      makeLink(n, entryAction(key), inv.entries[key].text === 'none' ? 'Im Nachschlagen zeigen' : 'Wortlaut öffnen');
+      if (n.hasAttribute('data-copy') && callOf(key)) n.after(copyButton(callOf(key)));
+    });
+  }
+  function renderFresh(){
+    var f = $('fresh'); f.textContent = '';
+    var p = el('p'); p.append(document.createTextNode('Erzeugt am ' + day(inv.generated) + ' · Fingerabdruck '), el('code', null, inv.fingerprint.slice(7, 19)),
+      document.createTextNode(' · aktualisieren mit '), el('code', null, inv.refresh_hint || 'skill-map build'));
+    f.append(p);
+    if (inv.usage.unmatched.length) {
+      f.append(el('p', 'src', 'In den Protokollen, aber hier ohne Eintrag: ' + inv.usage.unmatched.slice(0, 12).map(function(u){ return u.name + ' (' + u.count + ')'; }).join(', ')));
+    }
+  }
+  function renderFooter(){
+    $('foot').textContent = 'Gelesen aus: ' + inv.places.map(function(p){ return p.path; }).filter(Boolean).join(', ')
+      + ' und den Session-Protokollen. Den vollen Text zeigt der Bereich „Nachschlagen“.';
+  }
+
+  function dataError(message){
+    ['lanes', 'groups', 'tables', 'fresh'].forEach(function(id){ var n = $(id); n.textContent = ''; n.append(el('p', 'muted', message)); });
+  }
+  function load(id, file){
+    var embedded = readJSON(id);
+    if (embedded) return Promise.resolve(embedded);
+    return fetch(file).then(function(r){ if (!r.ok) throw new Error(String(r.status)); return r.json(); });
+  }
+  load('inventory-data', 'inventory.json').then(function(d){
+    if (!d || d.schema !== 1) { dataError('Die Daten haben eine unbekannte Version (' + (d && d.schema) + '); diese Seite kann sie nicht anzeigen.'); return; }
+    inv = d;
+    renderHeader(); renderLanes(); renderGroups(); renderTables(); linkNarrative(); renderFresh(); renderFooter();
+    return load('wortlaut-data', 'wortlaut.json').then(function(w){ texts = w; }, function(){ textsFailed = true; })
+      .then(function(){ if (current) fillViewer(); });
+  }, function(){
+    dataError('Die Daten konnten nicht geladen werden. Fehlt inventory.json neben der Seite?');
+  });
+})();
+</script>
+</body>
+</html>
