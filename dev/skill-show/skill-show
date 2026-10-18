@@ -139,59 +139,80 @@ file_meta() {
 # ---------- collecting ----------
 # A record is one line, fields separated by \037:
 #   rank invocation kind group name dirname file label kios description heading
-# rank orders the matches of one name, lower wins; group is a key of GROUP_WORDS.
+# rank orders the matches of one name, lower wins; group is a key of GROUP_WORDS;
+# label is the command subfolder, or "disabled" for a switched-off plugin; heading
+# replaces the group words in the header (plugin name, version, marketplace).
 declare -A GROUP_WORDS=(
   [managed]="managed" [personal-skill]="personal" [project-skill]="project"
   [nested]="nested" [extra]="extra dir"
   [personal-command]="personal" [project-command]="project"
+  [claude-ai-skill]="claude.ai skill" [plugin]="plugin" [claude-ai-plugin]="claude.ai plugin"
 )
 # The only place that decides precedence (README "Precedence"). All skills come
 # before all commands: "the skill wins" is the only documented rule between the
 # two kinds. Nested and extra dir skills add their position to the base rank.
+# Prefixed names (800 and up) never compete with bare ones.
 declare -A RANK=(
   [managed]=100 [personal-skill]=200 [project-skill]=300 [nested]=400 [extra]=500
   [personal-command]=600 [project-command]=700
+  [claude-ai-skill]=800 [plugin]=900 [claude-ai-plugin]=1000
 )
 # Level of a group: a command on a higher level than the active skill is the one
 # case the docs leave open, so the header marks it.
 declare -A LEVEL=(
   [managed]=1 [personal-skill]=2 [personal-command]=2
   [project-skill]=3 [nested]=3 [extra]=3 [project-command]=3
+  [claude-ai-skill]=4 [plugin]=4 [claude-ai-plugin]=4
 )
 
 SKILL_FILES=(); COMMAND_FILES=()
+declare -A FILE_GROUP=() FILE_RANK=() FILE_PREFIX=() FILE_LABEL=() FILE_HEAD=()
+
 safe_path() { # safe_path <path>: false, with a note, for a path that would break a record
   case "$1" in
     *$'\n'*|*"$US"*) note "skipped a file whose name has a newline or \\037: $(printf '%q' "$1")"; return 1 ;;
   esac
 }
-declare -A FILE_GROUP=() FILE_RANK=() FILE_SUB=()
 
-add_skills() { # add_skills <group> <rank> <skills folder>
+add_skill_dir() { # add_skill_dir <group> <rank> <skill folder> [prefix heading label]
+  local f="$3/SKILL.md"
+  [ -f "$f" ] || return 0
+  safe_path "$3" || return 0
+  [ -z "${FILE_GROUP[$f]:-}" ] || return 0   # the same folder reached twice
+  SKILL_FILES+=("$f")
+  FILE_GROUP["$f"]=$1; FILE_RANK["$f"]=$2
+  FILE_PREFIX["$f"]=${4:-}; FILE_HEAD["$f"]=${5:-}; FILE_LABEL["$f"]=${6:-}
+}
+
+add_skills() { # add_skills <group> <rank> <skills folder> [prefix heading label]
   local d
   for d in "$3"/*/; do
     d=${d%/}
-    [ -f "$d/SKILL.md" ] || continue
-    safe_path "$d" || continue
     [ "$1" = personal-skill ] && [ "${d##*/}" = synced ] && continue   # claude.ai skills, their own group
-    [ -z "${FILE_GROUP[$d/SKILL.md]:-}" ] || continue                   # the same folder reached twice
-    SKILL_FILES+=("$d/SKILL.md"); FILE_GROUP["$d/SKILL.md"]=$1; FILE_RANK["$d/SKILL.md"]=$2
+    add_skill_dir "$1" "$2" "$d" "${@:4}"
   done
 }
 
-add_commands() { # add_commands <group> <commands folder>; a file in a subfolder runs as /<sub>:<name>
+add_commands() { # add_commands <group> <commands folder> [prefix heading label]
+  # Without a prefix (personal, project), a file in a subfolder runs as /<sub>:<name>;
+  # plugin commands are read from the top level only.
   local f rel
-  for f in "$2"/*.md "$2"/*/*.md; do
+  local -a files=("$2"/*.md)
+  [ -n "${3:-}" ] || files+=("$2"/*/*.md)
+  for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     safe_path "$f" || continue
     rel=${f#"$2"/}
     COMMAND_FILES+=("$f"); FILE_GROUP["$f"]=$1; FILE_RANK["$f"]=${RANK[$1]}
-    if [[ $rel == */* ]]; then FILE_SUB["$f"]=${rel%%/*}; else FILE_SUB["$f"]=""; fi
+    FILE_HEAD["$f"]=${4:-}; FILE_LABEL["$f"]=${5:-}; FILE_PREFIX["$f"]=${3:-}
+    if [ -z "${3:-}" ] && [[ $rel == */* ]]; then
+      FILE_PREFIX["$f"]=${rel%%/*}; FILE_LABEL["$f"]=${rel%%/*}
+    fi
   done
 }
 
-# collect_local: managed, personal, project, nested and extra dir skills; personal and project commands
-collect_local() {
+# gather_local: managed, personal, project, nested and extra dir skills; personal and project commands
+gather_local() {
   local d i in_home=0
   [ "$PROJECT/.claude" -ef "$CLAUDE_HOME" ] && in_home=1   # started in $HOME: the project is the personal level
   add_skills managed "${RANK[managed]}" "$MANAGED_DIR/.claude/skills"
@@ -210,7 +231,113 @@ collect_local() {
   done
   add_commands personal-command "$CLAUDE_HOME/commands"
   [ "$in_home" -eq 1 ] || add_commands project-command "$PROJECT/.claude/commands"
+}
 
+have_jq() { command -v jq >/dev/null 2>&1; }
+json_or_null() { if [ -f "$1" ]; then printf '%s' "$1"; else printf '/dev/null'; fi; }
+
+# gather_plugins: claude.ai skills, installed plugins, claude.ai plugins (all need jq)
+gather_plugins() {
+  if ! have_jq; then
+    note "plugins and claude.ai skills not checked: jq is missing - install it with: sudo dnf install jq"
+    return 0
+  fi
+  local b d n gen listed out key path version scope state head found name
+  local -a roots=()
+  local -A r_group=() r_fallback=() r_head=() r_label=() pj_name=()
+
+  # claude.ai skills (observed, not documented): the folders the bucket's manifest names
+  for b in "$CLAUDE_HOME/skills/synced"/*/; do
+    b=${b%/}
+    # an empty manifest.json parses as nothing: treat it like a missing one
+    if [ -f "$b/manifest.json" ] && listed=$(jq -r '.skills[].name' "$b/manifest.json" 2>/dev/null) && [ -n "$listed" ]; then
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        if ! name_part_ok "$n"; then note "skipped a claude.ai skill with an unusable name in $b/manifest.json: $(printf '%q' "$n")"; continue; fi
+        add_skill_dir claude-ai-skill "${RANK[claude-ai-skill]}" "$b/$n" "$SYNCED_SKILL_PREFIX"
+      done <<<"$listed"
+    else
+      add_skills claude-ai-skill "${RANK[claude-ai-skill]}" "$b" "$SYNCED_SKILL_PREFIX"
+    fi
+  done
+
+  # installed plugins: only installPath counts; the cache also keeps old versions and
+  # temporary clones. enabledPlugins: per plugin, local > project > user settings.
+  local inst="$CLAUDE_HOME/plugins/installed_plugins.json"
+  if [ -f "$inst" ]; then
+    if out=$(jq -r -n --arg s "$US" --slurpfile i "$inst" \
+          --slurpfile u "$(json_or_null "$CLAUDE_HOME/settings.json")" \
+          --slurpfile p "$(json_or_null "$PROJECT/.claude/settings.json")" \
+          --slurpfile l "$(json_or_null "$PROJECT/.claude/settings.local.json")" '
+          (($u[0].enabledPlugins // {}) + ($p[0].enabledPlugins // {}) + ($l[0].enabledPlugins // {})) as $en
+          | $i[0].plugins | to_entries[] | .key as $k | .value[]
+          | [$k, .installPath, (.version // ""), (.scope // "user"),
+             (if $en[$k] == false then "disabled" else "" end)] | join($s)' 2>/dev/null); then
+      while IFS="$US" read -r key path version scope state; do
+        [ -n "$key" ] && [ -d "$path" ] || continue
+        safe_path "$path" || continue
+        head="plugin %NAME% $version (${key#*@})"
+        [ -z "$state" ] || head+=" (disabled)"
+        [ "$scope" = user ] || head+=" (scope: $scope, project unknown)"
+        roots+=("$path"); r_group["$path"]=plugin; r_fallback["$path"]=${key%%@*}
+        r_head["$path"]=$head; r_label["$path"]=$state
+      done <<<"$out"
+    else
+      note "cannot read $inst or the enabledPlugins in the settings - installed plugins not checked"
+    fi
+  fi
+
+  # claude.ai plugins (observed, not documented): <name>~g<generation> from the manifest,
+  # else the folder marked .in_use
+  for b in "$CLAUDE_HOME/plugins/synced"/*/; do
+    b=${b%/}
+    if [ -f "$b/manifest.json" ] && listed=$(jq -r --arg s "$US" '.plugins[] | [.name, (.generation | tostring)] | join($s)' "$b/manifest.json" 2>/dev/null) &&
+       [ -n "$listed" ]; then
+      while IFS="$US" read -r n gen; do
+        [ -n "$n" ] || continue
+        if ! name_part_ok "$n" || ! re_ascii "$gen" '^[0-9]+$'; then
+          note "skipped a claude.ai plugin with an unusable entry in $b/manifest.json: $(printf '%q' "$n")"; continue
+        fi
+        if [ -d "$b/$n~g$gen" ]; then d="$b/$n~g$gen"; head="claude.ai plugin %NAME% (generation $gen)"
+        elif [ -f "$b/$n/.in_use" ]; then d="$b/$n"; head="claude.ai plugin %NAME% (folder marked .in_use)"
+        else note "claude.ai plugin $n: no folder $n~g$gen and none marked .in_use - skipped"; continue
+        fi
+        roots+=("$d"); r_group["$d"]=claude-ai-plugin; r_fallback["$d"]=$n; r_head["$d"]=$head; r_label["$d"]=""
+      done <<<"$listed"
+    else
+      found=0
+      for d in "$b"/*/; do
+        d=${d%/}
+        [ -f "$d/.in_use" ] || continue
+        found=1; n=${d##*/}; n=${n%~g*}
+        roots+=("$d"); r_group["$d"]=claude-ai-plugin; r_fallback["$d"]=$n
+        r_head["$d"]="claude.ai plugin %NAME% (folder marked .in_use)"; r_label["$d"]=""
+      done
+      [ "$found" -eq 1 ] || note "claude.ai plugins in $b: no readable manifest.json and no folder marked .in_use - skipped"
+    fi
+  done
+
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  # The prefix is "name" in .claude-plugin/plugin.json (folder pydantic-ai is /ai:...);
+  # one jq for all of them, the install key or folder name when it has none.
+  local -a pjs=()
+  for d in "${roots[@]}"; do [ -f "$d/.claude-plugin/plugin.json" ] && pjs+=("$d/.claude-plugin/plugin.json"); done
+  if [ "${#pjs[@]}" -gt 0 ]; then
+    while IFS="$US" read -r path name; do
+      pj_name["${path%/.claude-plugin/plugin.json}"]=$name
+    done < <(jq -r --arg s "$US" '[input_filename, (.name // "")] | join($s)' "${pjs[@]}" 2>/dev/null || true)
+  fi
+  for d in "${roots[@]}"; do
+    name=${pj_name[$d]:-}
+    name_part_ok "$name" 2>/dev/null || name=${r_fallback[$d]}
+    head=${r_head[$d]//%NAME%/$name}
+    add_skills "${r_group[$d]}" "${RANK[${r_group[$d]}]}" "$d/skills" "$name" "$head" "${r_label[$d]}"
+    add_commands "${r_group[$d]}" "$d/commands" "$name" "$head" "${r_label[$d]}"
+  done
+}
+
+# emit_records: one record per gathered file
+emit_records() {
   local f file name desc kios dirname inv
   local -A meta=()
   while IFS="$US" read -r file name desc kios; do
@@ -220,22 +347,25 @@ collect_local() {
     IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
     dirname=${f%/SKILL.md}; dirname=${dirname##*/}
     [ -n "$name" ] || name=$dirname
-    printf '%s\n' "${FILE_RANK[$f]}$US/$name${US}skill$US${FILE_GROUP[$f]}$US$name$US$dirname$US$f$US$US$kios$US$desc$US"
+    inv="/$name"; [ -z "${FILE_PREFIX[$f]}" ] || inv="/${FILE_PREFIX[$f]}:$name"
+    printf '%s\n' "${FILE_RANK[$f]}$US$inv${US}skill$US${FILE_GROUP[$f]}$US$name$US$dirname$US$f$US${FILE_LABEL[$f]}$US$kios$US$desc$US${FILE_HEAD[$f]}"
   done
   for f in "${COMMAND_FILES[@]}"; do
     IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
     name=${f##*/}; name=${name%.md}
-    inv="/$name"; [ -z "${FILE_SUB[$f]}" ] || inv="/${FILE_SUB[$f]}:$name"
-    printf '%s\n' "${FILE_RANK[$f]}$US$inv${US}command$US${FILE_GROUP[$f]}$US$name$US$US$f$US${FILE_SUB[$f]}$US$kios$US$desc$US"
+    inv="/$name"; [ -z "${FILE_PREFIX[$f]}" ] || inv="/${FILE_PREFIX[$f]}:$name"
+    printf '%s\n' "${FILE_RANK[$f]}$US$inv${US}command$US${FILE_GROUP[$f]}$US$name$US$US$f$US${FILE_LABEL[$f]}$US$kios$US$desc$US${FILE_HEAD[$f]}"
   done
 }
 
-# lookup <prefix> <bare>: the matching records, best first. A bare name never
-# matches a prefixed invocation (/sub:name, /plugin:name).
+# lookup <prefix> <bare>: the matching records, best first. A bare name looks only
+# at the local places and never matches a prefixed invocation (/sub:name,
+# /plugin:name); a prefixed name also matches a skill by its folder name.
 lookup() {
-  collect_local | awk -F "$US" -v p="$1" -v n="$2" '
+  { gather_local; [ -z "$1" ] || gather_plugins; emit_records; } | awk -F "$US" -v p="$1" -v n="$2" '
     p == "" && $2 !~ /:/ && ($5 == n || $6 == n)
-    p != "" && $2 == "/" p ":" n' | sort -s -t "$US" -k1,1n
+    p != "" && ($2 == "/" p ":" n || ($3 == "skill" && $6 == n && index($2, "/" p ":") == 1))' |
+    sort -s -t "$US" -k1,1n
 }
 
 # ---------- showing ----------
@@ -290,7 +420,7 @@ show_entry() { # show_entry <record> <status>
   local rank inv kind group name dirname file label kios desc heading real
   IFS="$US" read -r rank inv kind group name dirname file label kios desc heading <<<"$1"
   readable "$file"
-  printf '==> %s · %s · %s · %s\n' "$inv" "$kind" "${GROUP_WORDS[$group]}" "$2"
+  printf '==> %s · %s · %s · %s\n' "$inv" "$kind" "${heading:-${GROUP_WORDS[$group]}}" "$2"
   printf '    file:    %s\n' "$file"
   real=$(realpath -- "$file")
   [ "$real" = "$file" ] || printf '    link:    %s\n' "$real"
@@ -305,6 +435,10 @@ show_entry() { # show_entry <record> <status>
 if [ "$HAVE_ARG" -eq 1 ]; then
   mapfile -t MATCHES < <(lookup "$NAME_PREFIX" "$NAME_BARE")
   inv_name=$NAME_BARE; [ -z "$NAME_PREFIX" ] || inv_name="$NAME_PREFIX:$NAME_BARE"
+  if [ "${#MATCHES[@]}" -eq 0 ] && [ -n "$NAME_PREFIX" ] && ! have_jq; then
+    printf 'skill-show: /%s needs jq to look up plugins - install it with: sudo dnf install jq\n' "$inv_name" >&2
+    exit 2
+  fi
   [ "${#MATCHES[@]}" -gt 0 ] || die "no file for /$inv_name."
 
   # status of every match against the active one (the first)
@@ -325,11 +459,21 @@ if [ "$HAVE_ARG" -eq 1 ]; then
     fi
   done
 
+  # Two plugins with the same name, or a plugin and a command subfolder: no rule says which runs.
+  if [ -n "$NAME_PREFIX" ] && [ "${#MATCHES[@]}" -gt 1 ]; then
+    for i in "${!MATCHES[@]}"; do
+      STATUS[i]="match $((i + 1)) of ${#MATCHES[@]}, cannot tell which one Claude Code uses"
+    done
+    OPT_ALL=1
+  fi
+
   if [ "$OPT_PATH" -eq 1 ]; then
     if [ "$OPT_ALL" -eq 1 ]; then printf '%s\n' "${FILES[@]}"; else printf '%s\n' "${FILES[0]}"; fi
     exit 0
   fi
   if [ "$OPT_RAW" -eq 1 ]; then
+    [ "${#FILES[@]}" -eq 1 ] || [ -z "$NAME_PREFIX" ] ||
+      note "/$inv_name has ${#FILES[@]} matches and skill-show cannot tell which one Claude Code uses - printing ${FILES[0]}"
     readable "${FILES[0]}"
     cat -- "${FILES[0]}"; exit 0
   fi

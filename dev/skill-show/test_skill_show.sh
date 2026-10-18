@@ -25,7 +25,7 @@ mkdir -p "$HOME/.config/skill-show"
 SYS="$TMP/sysbin"
 mkdir -p "$SYS"
 for t in bash env cat sed awk sort cut stat realpath readlink basename dirname printf \
-         grep head tail tr wc find git od cmp sha256sum mkdir ln chmod id ls seq paste; do
+         grep head tail tr wc find git od cmp sha256sum mkdir ln chmod id ls seq paste cp; do
   p=$(command -v "$t") || { echo "missing tool for tests: $t"; exit 1; }
   ln -s "$p" "$SYS/$t"
 done
@@ -120,6 +120,63 @@ printf -- '%s\n---\ndescription: one\n---\nbody one\n' "$(marker templates/merke
 # a marker after the first 2000 bytes does not count
 { printf 'filler %.0s' $(seq 1 300); printf '\n%s\n' "$(marker 40-runbooks/x.md)"; } > "$CH/commands/late.md"
 put "$TMP/Mein Vault/40-runbooks/x.md" 'VAULT-SECRET\n'   # space on purpose; must never be printed
+# installed plugins: only installPath counts, never the rest of the cache
+PC="$CH/plugins/cache"
+plugin() { # plugin <root> <plugin.json name or ""> : a plugin folder with its manifest
+  if [ -n "$2" ]; then put "$1/.claude-plugin/plugin.json" "{\"name\": \"$2\", \"version\": \"x\"}\n"
+  else put "$1/.claude-plugin/plugin.json" '{"description": "no name"}\n'; fi
+}
+plugin "$PC/mkt/superpowers/7.0.0" superpowers
+put "$PC/mkt/superpowers/7.0.0/skills/brainstorming/SKILL.md" '---\nname: brainstorming\n---\nNEW brainstorming\n'
+put "$PC/mkt/superpowers/7.0.0/commands/sp-cmd.md" 'plugin command\n'
+plugin "$PC/mkt/superpowers/6.4.1" superpowers
+put "$PC/mkt/superpowers/6.4.1/skills/brainstorming/SKILL.md" '---\nname: brainstorming\n---\nOLD brainstorming\n'
+put "$PC/temp_subdir_1_x.clone/plugins/superpowers/skills/brainstorming/SKILL.md" '---\nname: brainstorming\n---\nTEMP brainstorming\n'
+plugin "$PC/mkt/pydantic-ai/0.1.0" ai
+put "$PC/mkt/pydantic-ai/0.1.0/skills/building-pydantic-ai-agents/SKILL.md" '---\nname: building-pydantic-ai-agents\n---\npydantic body\n'
+put "$PC/mkt/pydantic-ai/0.1.0/skills/collide/SKILL.md" '---\nname: collide\n---\nplugin collide\n'
+put "$CH/commands/ai/collide.md" 'subfolder collide\n'
+plugin "$PC/mkt/offplug/1.0.0" offplug
+put "$PC/mkt/offplug/1.0.0/skills/offskill/SKILL.md" '---\nname: offskill\n---\noff body\n'
+plugin "$PC/mkt/localon/1.0.0" localon
+put "$PC/mkt/localon/1.0.0/skills/onskill/SKILL.md" '---\nname: onskill\n---\non body\n'
+plugin "$PC/mkt/projplug/1.0.0" projplug
+put "$PC/mkt/projplug/1.0.0/skills/pskill/SKILL.md" '---\nname: pskill\n---\nproject scope body\n'
+plugin "$PC/mkt/twin/1.0.0" twin
+put "$PC/mkt/twin/1.0.0/skills/same/SKILL.md" '---\nname: same\n---\nTWIN ONE\n'
+plugin "$PC/other/twin/2.0.0" twin
+put "$PC/other/twin/2.0.0/skills/same/SKILL.md" '---\nname: same\n---\nTWIN TWO\n'
+plugin "$PC/mkt/nameless/1.0.0" ""
+put "$PC/mkt/nameless/1.0.0/skills/nskill/SKILL.md" '---\nname: nskill\n---\nnameless body\n'
+inst() { printf '"%s": [{"scope": "%s", "installPath": "%s", "version": "%s"}]' "$1" "$2" "$3" "$4"; }
+{ printf '{"version": 2, "plugins": {'
+  inst superpowers@mkt user "$PC/mkt/superpowers/7.0.0" 7.0.0; printf ', '
+  inst pydantic-ai@mkt user "$PC/mkt/pydantic-ai/0.1.0" 0.1.0; printf ', '
+  inst offplug@mkt user "$PC/mkt/offplug/1.0.0" 1.0.0; printf ', '
+  inst localon@mkt user "$PC/mkt/localon/1.0.0" 1.0.0; printf ', '
+  inst projplug@mkt project "$PC/mkt/projplug/1.0.0" 1.0.0; printf ', '
+  inst twin@mkt user "$PC/mkt/twin/1.0.0" 1.0.0; printf ', '
+  inst twin@other user "$PC/other/twin/2.0.0" 2.0.0; printf ', '
+  inst nameless@mkt user "$PC/mkt/nameless/1.0.0" 1.0.0
+  printf '}}\n'; } > "$CH/plugins/installed_plugins.json"
+put "$CH/settings.json" '{"enabledPlugins": {"offplug@mkt": false, "localon@mkt": false, "superpowers@mkt": true}}\n'
+put "$TMP/proj/.claude/settings.local.json" '{"enabledPlugins": {"localon@mkt": true}}\n'
+# claude.ai skills (observed layout)
+SS_SYNC="$CH/skills/synced/bucket1"
+put "$SS_SYNC/manifest.json" '{"skills": [{"name": "pdf", "skillId": "pdf"}, {"name": "../escape"}]}\n'
+put "$SS_SYNC/pdf/SKILL.md" '---\nname: pdf\n---\nsynced pdf\n'
+put "$SS_SYNC/notlisted/SKILL.md" '---\nname: notlisted\n---\nnot in the manifest\n'
+put "$SS_SYNC/.bucket-x" '\n'
+put "$CH/skills/synced/escape/SKILL.md" '---\nname: escape\n---\nreached through ../escape\n'
+# claude.ai plugins: the manifest names generation 3; the old folder sits next to it
+PS_SYNC="$CH/plugins/synced/bucket2"
+put "$PS_SYNC/manifest.json" '{"plugins": [{"name": "engineering", "generation": 3}]}\n'
+plugin "$PS_SYNC/engineering" engineering
+put "$PS_SYNC/engineering/skills/code-review/SKILL.md" '---\nname: code-review\n---\nOLD engineering\n'
+plugin "$PS_SYNC/engineering~g3" engineering
+put "$PS_SYNC/engineering~g3/skills/code-review/SKILL.md" '---\nname: code-review\n---\nNEW engineering\n'
+: > "$PS_SYNC/engineering~g3/.in_use"
+
 CONF="$HOME/.config/skill-show/skill-show.conf"
 : > "$CONF"   # exists from the start, so tests can fill and empty it without changing the snapshot
 
@@ -314,6 +371,85 @@ expect_not "a plain command has no source:" "source:" "$OUT"
 run gen4
 expect_has "without SOURCE_ROOTS: raw value and the hint to set it" \
   "    source:  40-runbooks/x.md (kios; set SOURCE_ROOTS in ~/.config/skill-show/skill-show.conf to resolve it)" "$OUT"
+
+# ---------- plugins ----------
+run superpowers:brainstorming
+expect_eq  "plugin skill: exit 0" 0 "$RC"
+expect_has "plugin skill: header names plugin, version, marketplace" \
+  "==> /superpowers:brainstorming · skill · plugin superpowers 7.0.0 (mkt) · active" "$OUT"
+expect_has "plugin skill: the installed version's file" "NEW brainstorming" "$OUT"
+expect_not "plugin skill: never an old cached version" "OLD brainstorming" "$OUT"
+expect_not "plugin skill: never a temporary clone" "TEMP brainstorming" "$OUT"
+run /superpowers:brainstorming --path
+expect_eq  "/plugin:skill --path" "$PC/mkt/superpowers/7.0.0/skills/brainstorming/SKILL.md" "$OUT"
+run superpowers:sp-cmd
+expect_has "plugin command" "==> /superpowers:sp-cmd · command · plugin superpowers 7.0.0 (mkt) · active" "$OUT"
+run ai:building-pydantic-ai-agents
+expect_has "prefix is the plugin.json name" "pydantic body" "$OUT"
+run pydantic-ai:building-pydantic-ai-agents
+expect_eq  "the folder name is not the prefix" 1 "$RC"
+run nameless:nskill
+expect_has "plugin.json without a name: the install key is the prefix" "nameless body" "$OUT"
+run offplug:offskill
+expect_has "disabled plugin: still shown, labelled" "plugin offplug 1.0.0 (mkt) (disabled) · active" "$OUT"
+run localon:onskill
+expect_has "disabled in user settings" "(disabled)" "$OUT"
+in_dir "$TMP/proj" localon:onskill
+expect_not "settings.local.json of the project enables it again" "(disabled)" "$OUT"
+run projplug:pskill
+expect_has "project scope without a known project path: labelled" "(scope: project, project unknown)" "$OUT"
+run twin:same
+expect_eq  "same plugin name from two marketplaces: exit 0" 0 "$RC"
+expect_eq  "same plugin name from two marketplaces: both shown" 2 "$(grep -c '^──── begin ────$' "$TMP/out")"
+expect_has "same plugin name from two marketplaces: says it cannot tell" "cannot tell which one Claude Code uses" "$OUT"
+run twin:same --raw
+expect_has "ambiguous with --raw: says on stderr which match it printed" "cannot tell which one Claude Code uses" "$ERR"
+run ai:collide
+expect_eq  "subfolder command and plugin skill with one prefix: both shown" 2 "$(grep -c '^──── begin ────$' "$TMP/out")"
+expect_has "subfolder command and plugin skill: says it cannot tell" "cannot tell which one Claude Code uses" "$OUT"
+run brainstorming
+expect_eq  "a bare name never falls through to a plugin" 1 "$RC"
+expect_eq  "a bare name never falls through to a plugin: stdout empty" "" "$OUT"
+
+# ---------- claude.ai skills and plugins ----------
+run anthropic-skills:pdf
+expect_has "claude.ai skill" "==> /anthropic-skills:pdf · skill · claude.ai skill · active" "$OUT"
+expect_has "claude.ai skill: its file" "synced pdf" "$OUT"
+run anthropic-skills:notlisted
+expect_eq  "claude.ai skill not in the manifest: not found" 1 "$RC"
+run anthropic-skills:escape
+expect_eq  "a manifest name with a path never leaves the bucket" 1 "$RC"
+run engineering:code-review
+expect_has "claude.ai plugin: header names the generation" \
+  "==> /engineering:code-review · skill · claude.ai plugin engineering (generation 3) · active" "$OUT"
+expect_has "claude.ai plugin: the generation the manifest names" "NEW engineering" "$OUT"
+cp "$PS_SYNC/manifest.json" "$TMP/manifest.bak"; : > "$PS_SYNC/manifest.json"
+run engineering:code-review
+expect_has "claude.ai plugin without a readable manifest: the .in_use folder" "NEW engineering" "$OUT"
+printf 'not json' > "$PS_SYNC/manifest.json"; "$RM" "$PS_SYNC/engineering~g3/.in_use"
+run engineering:code-review
+expect_eq  "claude.ai plugin with neither: not found" 1 "$RC"
+expect_has "claude.ai plugin with neither: a note on stderr" ".in_use" "$ERR"
+: > "$PS_SYNC/engineering~g3/.in_use"; cat "$TMP/manifest.bak" > "$PS_SYNC/manifest.json"
+
+# ---------- without jq, and with a broken installed_plugins.json ----------
+PATH="$STUBS:$SYS" "$SS" alpha > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "no jq: a personal skill still works" 0 "$RC"
+PATH="$STUBS:$SYS" "$SS" superpowers:brainstorming > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "no jq: plugin:skill exits 2" 2 "$RC"
+expect_has "no jq: the message names the install command" "sudo dnf install jq" "$(cat "$TMP/err")"
+PATH="$STUBS:$SYS" "$SS" sub:nested-cmd > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "no jq: a subfolder command still shows" 0 "$RC"
+expect_has "no jq: and says plugins were not checked" "jq is missing" "$(cat "$TMP/err")"
+cp "$CH/plugins/installed_plugins.json" "$TMP/inst.bak"; printf '{broken' > "$CH/plugins/installed_plugins.json"
+run superpowers:brainstorming
+expect_eq  "broken installed_plugins.json: plugin not found" 1 "$RC"
+expect_has "broken installed_plugins.json: a note names the file" "installed_plugins.json" "$ERR"
+run engineering:code-review
+expect_eq  "broken installed_plugins.json: claude.ai plugins still work" 0 "$RC"
+run alpha
+expect_eq  "broken installed_plugins.json: personal skills still work" 0 "$RC"
+cat "$TMP/inst.bak" > "$CH/plugins/installed_plugins.json"
 
 # ---------- records cannot be spoofed ----------
 for n in 3 4 evil inject fake nl; do
