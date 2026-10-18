@@ -36,7 +36,7 @@ usage:
   skill-show <name>            show the file Claude Code uses for /<name>, then list shadowed ones
   skill-show <name> --all      show the content of every match, in precedence order
   skill-show <name> --path     print only the path of the active match (with --all: every match)
-  skill-show <name> --raw      print only the content, no header or end line
+  skill-show <name> --raw      print only the content of the active match, no header or end line
   skill-show <name> --pretty   content through bat (colour only; text unchanged)
   skill-show                   list every name (picker with fzf when run in a terminal)
   skill-show --list            always the plain list
@@ -61,6 +61,7 @@ CONF="$HOME/.config/skill-show/skill-show.conf"
 
 # ---------- places ----------
 CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+MANAGED_DIR="${SKILL_SHOW_MANAGED_DIR:-/etc/claude-code}"   # Linux; the env variable exists for tests
 US=$'\037'   # field separator of the records below
 
 # ---------- name ----------
@@ -94,7 +95,7 @@ while [ $# -gt 0 ]; do
     --project)
       [ $# -ge 2 ] || usage_error "--project needs a folder"
       [ -d "$2" ] || usage_error "--project: no such folder: $2"
-      PROJECT=$(cd "$2" && pwd); shift ;;
+      PROJECT=$(cd "$2" && pwd -P); shift ;;
     --) shift
         [ $# -le 1 ] || usage_error "only one name at a time"
         [ $# -eq 0 ] || { ARG=$1; HAVE_ARG=1; }
@@ -105,7 +106,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$PROJECT" ] || PROJECT=$(git rev-parse --show-toplevel 2>/dev/null) || PROJECT=$PWD
+[ -n "$PROJECT" ] || PROJECT=$(git rev-parse --show-toplevel 2>/dev/null) || PROJECT=$(pwd -P)
 
 [ "$HAVE_ARG" -eq 0 ] || parse_name "$ARG"
 
@@ -113,11 +114,13 @@ done
 # file_meta <file>...: "<file>\037<name>\037<description>\037<kios source>" per file.
 # One awk for all files. name and description come from the front matter (first
 # block only, line 1 must be "---"); the kios marker is searched in the first
-# 2000 bytes, as kios itself does. An empty file prints no line.
+# 2000 bytes, as kios itself does. An empty file prints no line. \037, CR and tab
+# in a value become spaces, so front matter cannot shift the fields of a record.
 file_meta() {
   [ $# -gt 0 ] || return 0
   LC_ALL=C awk '
-    function val(k,  v) { v = $0; sub("^" k ":[ \t]*", "", v); gsub(/^["\x27]|["\x27]$/, "", v); return v }
+    function clean(v) { gsub(/[\037\r\t]/, " ", v); return v }   # a value must not break a record
+    function val(k,  v) { v = $0; sub("^" k ":[ \t]*", "", v); gsub(/^["\x27]|["\x27]$/, "", v); return clean(v) }
     function flush() { if (cur != "") printf "%s\037%s\037%s\037%s\n", cur, name, desc, kios; cur = "" }
     FNR == 1 { flush(); cur = FILENAME; name = desc = kios = ""; bytes = 0; fm = 0 }
     { sub(/\r$/, "") }
@@ -126,7 +129,7 @@ file_meta() {
     fm && name == "" && /^name:/        { name = val("name") }
     fm && desc == "" && /^description:/ { desc = val("description") }
     bytes < 2000 && kios == "" && (i = index($0, "kios:generated | Quelle: ")) {
-      v = substr($0, i + 25); j = index(v, " |"); kios = (j ? substr(v, 1, j - 1) : v)
+      v = substr($0, i + 25); j = index(v, " |"); kios = clean(j ? substr(v, 1, j - 1) : v)
     }
     { bytes += length($0) + 1 }
     !fm && bytes >= 2000 { flush(); nextfile }
@@ -136,62 +139,103 @@ file_meta() {
 # ---------- collecting ----------
 # A record is one line, fields separated by \037:
 #   rank invocation kind group name dirname file label kios description heading
-# rank orders the matches of one name (lower wins); group is an id from GROUP_WORDS.
+# rank orders the matches of one name, lower wins; group is a key of GROUP_WORDS.
 declare -A GROUP_WORDS=(
-  [personal-skill]="personal"   [project-skill]="project"
+  [managed]="managed" [personal-skill]="personal" [project-skill]="project"
+  [nested]="nested" [extra]="extra dir"
   [personal-command]="personal" [project-command]="project"
 )
+# The only place that decides precedence (README "Precedence"). All skills come
+# before all commands: "the skill wins" is the only documented rule between the
+# two kinds. Nested and extra dir skills add their position to the base rank.
 declare -A RANK=(
-  [personal-skill]=2 [project-skill]=3
-  [personal-command]=6 [project-command]=7
+  [managed]=100 [personal-skill]=200 [project-skill]=300 [nested]=400 [extra]=500
+  [personal-command]=600 [project-command]=700
+)
+# Level of a group: a command on a higher level than the active skill is the one
+# case the docs leave open, so the header marks it.
+declare -A LEVEL=(
+  [managed]=1 [personal-skill]=2 [personal-command]=2
+  [project-skill]=3 [nested]=3 [extra]=3 [project-command]=3
 )
 
-# collect_local: personal and project skills and commands
-collect_local() {
-  local -a skills=() commands=() groups=()
-  local base group d f
-  local -A meta=() owner=()
-  for group in personal-skill project-skill; do
-    if [ "$group" = personal-skill ]; then base="$CLAUDE_HOME/skills"; else base="$PROJECT/.claude/skills"; fi
-    [ "$group" = project-skill ] && [ "$PROJECT/.claude" -ef "$CLAUDE_HOME" ] && continue
-    for d in "$base"/*/; do
-      d=${d%/}
-      [ -f "$d/SKILL.md" ] || continue
-      [ "$group" = personal-skill ] && [ "${d##*/}" = synced ] && continue
-      skills+=("$d/SKILL.md"); owner["$d/SKILL.md"]=$group
-    done
-  done
-  for group in personal-command project-command; do
-    if [ "$group" = personal-command ]; then base="$CLAUDE_HOME/commands"; else base="$PROJECT/.claude/commands"; fi
-    [ "$group" = project-command ] && [ "$PROJECT/.claude" -ef "$CLAUDE_HOME" ] && continue
-    for f in "$base"/*.md; do
-      [ -f "$f" ] || continue
-      commands+=("$f"); owner["$f"]=$group
-    done
-  done
-  local file name desc kios
-  while IFS="$US" read -r file name desc kios; do
-    meta["$file"]="$name$US$desc$US$kios"
-  done < <(file_meta "${skills[@]}" "${commands[@]}" 2>/dev/null)
-  local dirname
-  for f in "${skills[@]}"; do
-    IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
-    dirname=${f%/SKILL.md}; dirname=${dirname##*/}
-    [ -n "$name" ] || name=$dirname
-    group=${owner[$f]}
-    printf '%s\n' "${RANK[$group]}$US/$name${US}skill$US$group$US$name$US$dirname$US$f$US$US$kios$US$desc$US"
-  done
-  for f in "${commands[@]}"; do
-    IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
-    name=${f##*/}; name=${name%.md}
-    group=${owner[$f]}
-    printf '%s\n' "${RANK[$group]}$US/$name${US}command$US$group$US$name$US$US$f$US$US$kios$US$desc$US"
+SKILL_FILES=(); COMMAND_FILES=()
+safe_path() { # safe_path <path>: false, with a note, for a path that would break a record
+  case "$1" in
+    *$'\n'*|*"$US"*) note "skipped a file whose name has a newline or \\037: $(printf '%q' "$1")"; return 1 ;;
+  esac
+}
+declare -A FILE_GROUP=() FILE_RANK=() FILE_SUB=()
+
+add_skills() { # add_skills <group> <rank> <skills folder>
+  local d
+  for d in "$3"/*/; do
+    d=${d%/}
+    [ -f "$d/SKILL.md" ] || continue
+    safe_path "$d" || continue
+    [ "$1" = personal-skill ] && [ "${d##*/}" = synced ] && continue   # claude.ai skills, their own group
+    [ -z "${FILE_GROUP[$d/SKILL.md]:-}" ] || continue                   # the same folder reached twice
+    SKILL_FILES+=("$d/SKILL.md"); FILE_GROUP["$d/SKILL.md"]=$1; FILE_RANK["$d/SKILL.md"]=$2
   done
 }
 
-# lookup <bare name>: the matching records, best first
+add_commands() { # add_commands <group> <commands folder>; a file in a subfolder runs as /<sub>:<name>
+  local f rel
+  for f in "$2"/*.md "$2"/*/*.md; do
+    [ -f "$f" ] || continue
+    safe_path "$f" || continue
+    rel=${f#"$2"/}
+    COMMAND_FILES+=("$f"); FILE_GROUP["$f"]=$1; FILE_RANK["$f"]=${RANK[$1]}
+    if [[ $rel == */* ]]; then FILE_SUB["$f"]=${rel%%/*}; else FILE_SUB["$f"]=""; fi
+  done
+}
+
+# collect_local: managed, personal, project, nested and extra dir skills; personal and project commands
+collect_local() {
+  local d i in_home=0
+  [ "$PROJECT/.claude" -ef "$CLAUDE_HOME" ] && in_home=1   # started in $HOME: the project is the personal level
+  add_skills managed "${RANK[managed]}" "$MANAGED_DIR/.claude/skills"
+  add_skills personal-skill "${RANK[personal-skill]}" "$CLAUDE_HOME/skills"
+  [ "$in_home" -eq 1 ] || add_skills project-skill "${RANK[project-skill]}" "$PROJECT/.claude/skills"
+  d=$(pwd -P); i=0
+  if [[ $d == "$PROJECT"/* ]]; then   # nested: from here up to, not including, the project root
+    while [ "$d" != "$PROJECT" ]; do
+      add_skills nested "$(( RANK[nested] + i ))" "$d/.claude/skills"
+      i=$((i + 1)); d=${d%/*}
+    done
+  fi
+  i=0
+  for d in "${EXTRA_DIRS[@]}"; do
+    add_skills extra "$(( RANK[extra] + i ))" "$d/.claude/skills"; i=$((i + 1))
+  done
+  add_commands personal-command "$CLAUDE_HOME/commands"
+  [ "$in_home" -eq 1 ] || add_commands project-command "$PROJECT/.claude/commands"
+
+  local f file name desc kios dirname inv
+  local -A meta=()
+  while IFS="$US" read -r file name desc kios; do
+    meta["$file"]="$name$US$desc$US$kios"
+  done < <(file_meta "${SKILL_FILES[@]}" "${COMMAND_FILES[@]}" 2>/dev/null)
+  for f in "${SKILL_FILES[@]}"; do
+    IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
+    dirname=${f%/SKILL.md}; dirname=${dirname##*/}
+    [ -n "$name" ] || name=$dirname
+    printf '%s\n' "${FILE_RANK[$f]}$US/$name${US}skill$US${FILE_GROUP[$f]}$US$name$US$dirname$US$f$US$US$kios$US$desc$US"
+  done
+  for f in "${COMMAND_FILES[@]}"; do
+    IFS="$US" read -r name desc kios <<<"${meta[$f]:-}"
+    name=${f##*/}; name=${name%.md}
+    inv="/$name"; [ -z "${FILE_SUB[$f]}" ] || inv="/${FILE_SUB[$f]}:$name"
+    printf '%s\n' "${FILE_RANK[$f]}$US$inv${US}command$US${FILE_GROUP[$f]}$US$name$US$US$f$US${FILE_SUB[$f]}$US$kios$US$desc$US"
+  done
+}
+
+# lookup <prefix> <bare>: the matching records, best first. A bare name never
+# matches a prefixed invocation (/sub:name, /plugin:name).
 lookup() {
-  collect_local | awk -F "$US" -v n="$1" '$5 == n || $6 == n' | sort -s -t "$US" -k1,1n
+  collect_local | awk -F "$US" -v p="$1" -v n="$2" '
+    p == "" && $2 !~ /:/ && ($5 == n || $6 == n)
+    p != "" && $2 == "/" p ":" n' | sort -s -t "$US" -k1,1n
 }
 
 # ---------- showing ----------
@@ -211,7 +255,11 @@ more_files() { # more_files <skill dir>: the other files, full paths, sorted, at
 
 print_content() { # print_content <file>: the file unchanged, then the end line
   local f=$1
-  cat -- "$f"
+  if [ "$OPT_PRETTY" -eq 1 ]; then
+    bat --language=markdown --style=plain --paging=never --tabs=0 --wrap=never -- "$f"   # colour only: no tab expansion, no wrapping
+  else
+    cat -- "$f"
+  fi
   if [ -s "$f" ] && [ "$(tail -c1 -- "$f" | wc -l)" -eq 0 ]; then
     printf '\n──── end of %s (no newline at end of file) ────\n' "$f"
   else
@@ -235,13 +283,49 @@ show_entry() { # show_entry <record> <status>
 
 # ---------- main ----------
 if [ "$HAVE_ARG" -eq 1 ]; then
-  mapfile -t MATCHES < <(lookup "$NAME_BARE")
-  [ "${#MATCHES[@]}" -gt 0 ] || die "no file for /$NAME_BARE."
-  IFS="$US" read -r _ _ _ _ _ _ ACTIVE_FILE _ <<<"${MATCHES[0]}"
-  if [ "$OPT_PATH" -eq 1 ]; then printf '%s\n' "$ACTIVE_FILE"; exit 0; fi
-  if [ "$OPT_RAW" -eq 1 ]; then
-    readable "$ACTIVE_FILE"
-    cat -- "$ACTIVE_FILE"; exit 0
+  mapfile -t MATCHES < <(lookup "$NAME_PREFIX" "$NAME_BARE")
+  inv_name=$NAME_BARE; [ -z "$NAME_PREFIX" ] || inv_name="$NAME_PREFIX:$NAME_BARE"
+  [ "${#MATCHES[@]}" -gt 0 ] || die "no file for /$inv_name."
+
+  # status of every match against the active one (the first)
+  IFS="$US" read -r _ _ a_kind a_group _ <<<"${MATCHES[0]}"
+  STATUS=(); FILES=()
+  for i in "${!MATCHES[@]}"; do
+    IFS="$US" read -r _ _ kind group _ _ file _ <<<"${MATCHES[$i]}"
+    FILES+=("$file")
+    if [ "$i" -eq 0 ]; then
+      STATUS+=(active)
+    elif [ "$group" = nested ] && [ "$a_group" = project-skill ]; then
+      STATUS+=("also loaded")   # docs: a nested skill and the project skill both stay available
+    else
+      STATUS+=("shadowed by ${GROUP_WORDS[$a_group]} $a_kind")
+      if [ "$a_kind" = skill ] && [ "$kind" = command ] && [ "${LEVEL[$group]}" -lt "${LEVEL[$a_group]}" ]; then
+        STATUS[0]="active (by the precedence in the README)"
+      fi
+    fi
+  done
+
+  if [ "$OPT_PATH" -eq 1 ]; then
+    if [ "$OPT_ALL" -eq 1 ]; then printf '%s\n' "${FILES[@]}"; else printf '%s\n' "${FILES[0]}"; fi
+    exit 0
   fi
-  show_entry "${MATCHES[0]}" active
+  if [ "$OPT_RAW" -eq 1 ]; then
+    readable "${FILES[0]}"
+    cat -- "${FILES[0]}"; exit 0
+  fi
+  if [ "$OPT_PRETTY" -eq 1 ] && ! command -v bat >/dev/null 2>&1; then
+    note "--pretty needs bat (sudo dnf install bat) - showing plain text"
+    OPT_PRETTY=0
+  fi
+  if [ "$OPT_ALL" -eq 1 ]; then
+    for i in "${!MATCHES[@]}"; do show_entry "${MATCHES[$i]}" "${STATUS[$i]}"; done
+  else
+    show_entry "${MATCHES[0]}" "${STATUS[0]}"
+    for i in "${!MATCHES[@]}"; do
+      [ "$i" -gt 0 ] || continue
+      IFS="$US" read -r _ inv kind group _ _ file _ <<<"${MATCHES[$i]}"
+      label="shadowed"; [ "${STATUS[$i]}" != "also loaded" ] || label="also loaded"
+      printf '    %s: %s · %s · %s · %s\n' "$label" "$inv" "$kind" "${GROUP_WORDS[$group]}" "$file"
+    done
+  fi
 fi

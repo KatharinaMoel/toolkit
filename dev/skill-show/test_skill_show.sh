@@ -25,7 +25,7 @@ mkdir -p "$HOME/.config/skill-show"
 SYS="$TMP/sysbin"
 mkdir -p "$SYS"
 for t in bash env cat sed awk sort cut stat realpath readlink basename dirname printf \
-         grep head tail tr wc find git od cmp sha256sum mkdir ln chmod id ls seq; do
+         grep head tail tr wc find git od cmp sha256sum mkdir ln chmod id ls seq paste; do
   p=$(command -v "$t") || { echo "missing tool for tests: $t"; exit 1; }
   ln -s "$p" "$SYS/$t"
 done
@@ -41,6 +41,9 @@ mkdir -p "$STUBS"
 for t in fzf bat curl wget claude; do
   printf '#!%s\nprintf "%%s\\n" "$@" >> "%s/%s.log"\n' "$(command -v bash)" "$TMP" "$t" > "$STUBS/$t"
 done
+# bat also prints the file it was given last, like the real one does without colour.
+# shellcheck disable=SC2016  # unexpanded on purpose: it is the stub's code
+printf 'for last; do :; done\ncat -- "$last"\n' >> "$STUBS/bat"
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$JQBIN:$SYS"
 cd "$TMP" || exit 1   # no git repo around
@@ -94,6 +97,22 @@ printf 'no final newline' > "$CH/commands/nonl.md"
 put "$CH/commands/locked.md"  'unreadable\n'
 put "$TMP/proj/.claude/skills/projonly/SKILL.md" '---\nname: projonly\n---\nproject skill\n'
 put "$TMP/proj/.claude/commands/projcmd.md"      'project command\n'
+put "$TMP/proj/.claude/skills/alpha/SKILL.md"    '---\nname: alpha\n---\nproject alpha\n'
+put "$TMP/proj/.claude/skills/crossy/SKILL.md"   '---\nname: crossy\n---\nproject skill crossy\n'
+put "$CH/commands/crossy.md"                     'personal command crossy\n'
+put "$TMP/proj/pkg/.claude/skills/nest/SKILL.md"     '---\nname: nest\n---\nnested skill\n'
+put "$TMP/proj/pkg/.claude/skills/projonly/SKILL.md" '---\nname: projonly\n---\nnested projonly\n'
+put "$CH/commands/sub/nested-cmd.md"             'command in a subfolder\n'
+put "$SKILL_SHOW_MANAGED_DIR/.claude/skills/mgd/SKILL.md" '---\nname: mgd\n---\nmanaged skill\n'
+put "$TMP/extra/.claude/skills/xtra/SKILL.md"    '---\nname: xtra\n---\nextra dir skill\n'
+# Front matter and file names that try to break the \037/newline records:
+# a name: with \037 would shift the file field to $TMP/secret.txt.
+printf 'TOPSECRET\n' > "$TMP/secret.txt"
+printf -- '---\nname: evil\0371\0372\0373\0374\037%s\ndescription: d\037e\r\n---\ninject body\n' "$TMP/secret.txt" \
+  > "$(mkdir -p "$CH/skills/inject" && printf '%s' "$CH/skills/inject/SKILL.md")"
+put "$CH/commands/nl"$'\n'"fake.md" 'newline in the file name\n'
+CONF="$HOME/.config/skill-show/skill-show.conf"
+: > "$CONF"   # exists from the start, so tests can fill and empty it without changing the snapshot
 
 BEFORE=$(snapshot)
 
@@ -204,6 +223,90 @@ run projcmd --project "$TMP/proj"
 expect_has "--project finds a project command from outside" "==> /projcmd · command · project · active" "$OUT"
 run projcmd
 expect_eq  "outside the project, its command is not found" 1 "$RC"
+
+# ---------- precedence and shadowed matches ----------
+in_dir() { # in_dir <dir> <args...>: run skill-show from <dir>; sets RC, OUT, ERR
+  (cd "$1" && shift && "$SS" "$@" > "$TMP/out" 2> "$TMP/err"); RC=$?
+  OUT=$(cat "$TMP/out"); ERR=$(cat "$TMP/err")
+}
+in_dir "$TMP/proj" alpha
+expect_has "alpha in the project: personal skill active" "==> /alpha · skill · personal · active" "$OUT"
+expect_has "alpha in the project: project skill shadowed" "    shadowed: /alpha · skill · project · $TMP/proj/.claude/skills/alpha/SKILL.md" "$OUT"
+expect_has "alpha in the project: personal command shadowed" "    shadowed: /alpha · command · personal · $CH/commands/alpha.md" "$OUT"
+expect_eq  "shadowed lines follow the end line, best first" \
+  "/alpha · skill · project|/alpha · command · personal" \
+  "$(sed -n '/^──── end of /,$p' "$TMP/out" | grep '^    shadowed: ' | cut -d' ' -f6-10 | paste -sd'|')"
+expect_eq  "only the active file's content is shown" 1 "$(grep -c '^──── begin ────$' "$TMP/out")"
+
+in_dir "$TMP/proj" alpha --all
+expect_eq  "--all shows every match" 3 "$(grep -c '^──── begin ────$' "$TMP/out")"
+expect_has "--all: the shadowed block says so" "==> /alpha · skill · project · shadowed by personal skill" "$OUT"
+in_dir "$TMP/proj" alpha --path --all
+expect_eq  "--path --all: one path per match, in precedence order" \
+  "$CH/skills/alpha/SKILL.md|$TMP/proj/.claude/skills/alpha/SKILL.md|$CH/commands/alpha.md" "$(paste -sd'|' "$TMP/out")"
+in_dir "$TMP/proj" alpha --path
+expect_eq  "--path alone: only the active path" "$CH/skills/alpha/SKILL.md" "$OUT"
+run alpha --project "$TMP/proj"
+expect_has "--project from outside sees the project skill" "    shadowed: /alpha · skill · project" "$OUT"
+
+in_dir "$TMP/proj/pkg" projonly
+expect_has "projonly from pkg: project skill active" "==> /projonly · skill · project · active" "$OUT"
+expect_has "projonly from pkg: nested skill also loaded" "    also loaded: /projonly · skill · nested · $TMP/proj/pkg/.claude/skills/projonly/SKILL.md" "$OUT"
+in_dir "$TMP/proj/pkg" nest
+expect_has "nested skill found from its folder" "==> /nest · skill · nested · active" "$OUT"
+in_dir "$TMP/proj" nest
+expect_eq  "nested skill not found from the project root" 1 "$RC"
+run nest --project "$TMP/proj"
+expect_eq  "no nested search from outside the project" 1 "$RC"
+
+in_dir "$TMP/proj" crossy
+expect_has "personal command vs. project skill: marked as unverified" \
+  "==> /crossy · skill · project · active (by the precedence in the README)" "$OUT"
+expect_has "personal command vs. project skill: command shadowed" "    shadowed: /crossy · command · personal" "$OUT"
+
+run mgd
+expect_has "managed skill found" "==> /mgd · skill · managed · active" "$OUT"
+
+run xtra
+expect_eq  "extra dir skill needs EXTRA_DIRS" 1 "$RC"
+printf 'EXTRA_DIRS=("%s")\n' "$TMP/extra" > "$CONF"
+run xtra
+: > "$CONF"
+expect_has "extra dir skill found with EXTRA_DIRS" "==> /xtra · skill · extra dir · active" "$OUT"
+
+run sub:nested-cmd
+expect_has "command in a subfolder runs as /sub:name" "==> /sub:nested-cmd · command · personal · active" "$OUT"
+run /sub:nested-cmd --path
+expect_eq  "/sub:name with slash, --path" "$CH/commands/sub/nested-cmd.md" "$OUT"
+run nested-cmd
+expect_eq  "a subfolder command is not found by its bare name" 1 "$RC"
+
+# ---------- records cannot be spoofed ----------
+for n in 3 4 evil inject fake nl; do
+  run "$n"
+  expect_not "name '$n': a \\037 in front matter never shows another file" "TOPSECRET" "$OUT"
+done
+run inject --path
+expect_eq  "a \\037 in name: is cleaned, the folder still finds the skill" "$CH/skills/inject/SKILL.md" "$OUT"
+run inject
+expect_has "a \\037 in name: becomes a space, the whole value stays visible" "==> /evil 1 2 3 4 $TMP/secret.txt · skill · personal · active" "$OUT"
+run fake
+expect_eq  "a file name with a newline is skipped" 1 "$RC"
+run plain
+expect_has "a skipped file name is named on stderr, not skipped silently" "skipped a file whose name has a newline" "$ERR"
+
+# ---------- --pretty ----------
+: > "$TMP/bat.log"
+run plain --pretty
+expect_eq  "--pretty: exit 0" 0 "$RC"
+expect_eq  "--pretty: bat gets the style options and the file" \
+  "--language=markdown|--style=plain|--paging=never|--tabs=0|--wrap=never|--|$CH/commands/plain.md" "$(paste -sd'|' "$TMP/bat.log")"
+expect_has "--pretty: header printed by skill-show, not bat" "==> /plain · command · personal · active" "$OUT"
+if cmp -s <(after_begin "$TMP/out") <(expected_block "$CH/commands/plain.md"); then ok "--pretty: text unchanged"; else fail "--pretty: text unchanged" "$OUT"; fi
+PATH="$JQBIN:$SYS" "$SS" --pretty plain > "$TMP/out" 2> "$TMP/err"; RC=$?
+expect_eq  "--pretty without bat: exit 0" 0 "$RC"
+expect_has "--pretty without bat: note on stderr" "bat" "$(cat "$TMP/err")"
+if cmp -s <(after_begin "$TMP/out") <(expected_block "$CH/commands/plain.md"); then ok "--pretty without bat: plain content"; else fail "--pretty without bat: plain content" "$(cat "$TMP/out")"; fi
 
 if [ "$(id -u)" -ne 0 ]; then
   chmod 000 "$CH/commands/locked.md"
