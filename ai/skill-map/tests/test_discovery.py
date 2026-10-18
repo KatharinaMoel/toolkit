@@ -159,3 +159,9 @@ def test_unreadable_file_is_listed_with_a_note(world, home):
         f.chmod(0o644)
     assert "plain" in w.entries
     assert any("plain.md" in n for n in w.notes)
+
+
+def test_a_plugin_without_entries_keeps_its_group(w):
+    g = {x.id: x for x in w.groups}
+    assert g["plugin:emptyplug"].counts == {"skill": 0, "command": 0, "agent": 0}
+    assert g["plugin:emptyplug"].origin["vendor"] == "Hook Maker"

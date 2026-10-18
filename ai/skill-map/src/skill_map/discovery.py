@@ -495,7 +495,7 @@ class _Collector:
         groups = []
         for g in self.groups.values():
             members = [e for e in self.entries.values() if e.group == g.id]
-            if not members:
+            if not members and g.place not in ("plugins", "claude-ai"):   # an empty plugin is still installed
                 continue
             g.counts = {k: sum(1 for e in members if e.kind == k) for k in ("skill", "command", "agent")}
             groups.append(g)

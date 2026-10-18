@@ -55,6 +55,7 @@ def make_world(home: Path, managed: Path) -> dict:
     put(ch / "commands/rb-c.md", "---\ndescription: Vertraulicher Ablauf\n---\n" + MARK.format("40-runbooks/rb-c.md") + "\n")
     put(ch / "commands/gone.md", "---\ndescription: alt\n---\n" + MARK.format("templates/missing.md") + "\n")
     put(ch / "commands/plain.md", "---\ndescription: Ein einfacher Befehl\n---\nplain\n")
+    put(ch / "commands/tricky.md", "---\ndescription: <img src=x onerror=alert(1)>\n---\nends early? </script><b>no</b>\n")
     put(ch / "commands/start.md", "personal start\n")
     put(ch / "commands/alpha.md", "alpha as a command\n")
     put(ch / "commands/sub/subcmd.md", "in a subfolder\n")
@@ -84,6 +85,8 @@ def make_world(home: Path, managed: Path) -> dict:
     pyd = pc / "mkt/pydantic-ai/0.1.0"
     plugin_json(pyd, name="ai", version="0.1.0")
     skill(pyd / "skills/building-agents", "building-agents", "Build agents")
+    empty = pc / "mkt/emptyplug/2.0.0"
+    plugin_json(empty, name="emptyplug", author={"name": "Hook Maker"})
     off = pc / "mkt/offplug/1.0.0"
     plugin_json(off, name="offplug")
     skill(off / "skills/offskill", "offskill")
@@ -95,6 +98,7 @@ def make_world(home: Path, managed: Path) -> dict:
         "reviewkit@mkt": inst(review, "abc123def456", "2026-09-02T10:00:00.000Z"),
         "pydantic-ai@mkt": inst(pyd, "0.1.0", "2026-09-03T10:00:00.000Z"),
         "offplug@mkt": inst(off, "1.0.0", "2026-09-04T10:00:00.000Z"),
+        "emptyplug@mkt": inst(empty, "2.0.0", "2026-09-05T10:00:00.000Z"),
     }}))
     put(ch / "settings.json", json.dumps({
         "enabledPlugins": {"offplug@mkt": False, "superp@mkt": True},
