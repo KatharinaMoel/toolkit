@@ -285,4 +285,5 @@ def test_only_path_like_words_name_a_hook_script(world, home, tmp_path):
     assert part not in json.dumps(inv)
     assert "hook:Notification:my-tool" in inv["entries"]
     assert "hook:Notification:notify-send" not in inv["entries"]
-    assert any("Notification hook" in line and "not listed" in line for line in lines)
+    inline = [e for k, e in inv["entries"].items() if k.startswith("hook:Notification:") and e["path"] is None]
+    assert inline and all(e["name"] == "eingebetteter Befehl" for e in inline)

@@ -443,12 +443,16 @@ class _Collector:
 
     def sources(self) -> None:
         roots = ([self.cfg.vault] if self.cfg.vault else []) + list(self.cfg.source_roots)
-        if not roots:
+        prefixes = self.cfg.source_prefixes
+        if not roots and not prefixes:
             return          # nothing configured: unknown, not missing
         for e in self.entries.values():
             if not e.source_note:
                 continue
-            hit = next((r / e.source_note for r in roots if (r / e.source_note).is_file()), None)
+            note = e.source_note
+            candidates = [folder / note[len(p):] for p, folder in prefixes.items() if note.startswith(p)]
+            candidates += [r / note for r in roots]
+            hit = next((c for c in candidates if c.is_file()), None)
             if hit is None:
                 e.flags.add("source-missing")
             else:
@@ -457,6 +461,7 @@ class _Collector:
     def hooks(self) -> None:
         files = [claude_home() / "settings.json"] + [p.path / ".claude" / "settings.json" for p in self.cfg.projects]
         self.place_paths["hooks"] = tilde(files[0])
+        inline: dict[str, int] = {}
         for sf in files:
             if not sf.is_file():
                 continue
@@ -473,11 +478,17 @@ class _Collector:
                         if not isinstance(h, dict) or h.get("type") != "command" or not isinstance(h.get("command"), str):
                             continue
                         word = _hook_script(h["command"])
-                        if word is None:    # cannot tell safely which word names the script: skip
-                            self.notes.append(f"a {event} hook in {tilde(sf)} is not listed: its command could not be read safely")
+                        desc = h.get("statusMessage") if isinstance(h.get("statusMessage"), str) else ""
+                        if word is None:    # no clear script: listed, but never with its command text
+                            n = inline.get(event, 0) + 1
+                            inline[event] = n
+                            key = f"hook:{event}:inline" + (f"-{n}" if n > 1 else "")
+                            self.add(Entry(key, "eingebetteter Befehl", event, "hook", "hooks", "hooks",
+                                           desc or "Shell-Befehl direkt in den Einstellungen", None,
+                                           extra={"matcher": block.get("matcher") or ""}))
+                            self.group("hooks", self.place_title("hooks"), "hooks")
                             continue
                         path = expand(word)
-                        desc = h.get("statusMessage") if isinstance(h.get("statusMessage"), str) else ""
                         self.add(Entry(f"hook:{event}:{path.name}", path.name, event, "hook", "hooks", "hooks", desc,
                                        path, extra={"matcher": block.get("matcher") or ""}))
                         self.group("hooks", self.place_title("hooks"), "hooks")
