@@ -69,6 +69,8 @@ def test_first_rule_wins(home):
     b"---\nclassification: [secret]\n---\n",                   # one-element list
     b"---\nclassification: confidential\n---\n",               # not on the allowlist
     b"---\ntitle: x\nclassification: secret\n",                 # front matter never closed
+    b"---\rclassification: secret\r---\r",                      # CR-only line ends
+    "---\u2028classification: secret\u2028---\u2028".encode(),   # Unicode line separator
 ])
 def test_classification_fails_closed(home, head):
     f = write(home / "c.md", head + b"text\n")

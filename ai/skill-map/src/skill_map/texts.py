@@ -25,13 +25,16 @@ class TextResult:
 # Fail closed: any classification line in the head of a file whose value is not
 # explicitly public or internal withholds the text (BOM, case, comments, lists and
 # front matter that never closes cannot let a sensitive text through).
-_CLASSIFICATION = re.compile(r"^\s*classification\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_CLASSIFICATION = re.compile(r"\s*classification\s*:\s*(.*)", re.IGNORECASE)
 SHOWABLE_CLASSES = ("public", "internal")
 
 
 def _classified(data: bytes) -> bool:
     head = data[:4096].decode("utf-8", "replace")
-    for m in _CLASSIFICATION.finditer(head):
+    for line in head.splitlines():          # every line break counts: \n, \r, \u2028, ...
+        m = _CLASSIFICATION.match(line.lstrip("\ufeff"))
+        if not m:
+            continue
         value = m.group(1).split("#", 1)[0].strip().strip("[]").strip().strip("\"'").strip().lower()
         if value not in SHOWABLE_CLASSES:
             return True
