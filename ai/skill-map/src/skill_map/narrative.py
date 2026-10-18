@@ -58,8 +58,13 @@ def missing_keys(n: Narrative, entries: set[str], places: set[str]) -> list[str]
 
 
 def script_json(data) -> str:
-    """JSON that can sit inside <script>: "</" can never end the block early."""
-    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    """JSON that can sit inside <script>: no < > & at all, so no text can end the block
+    or switch the HTML parser into a script state (<!-- with <script> in a text)."""
+    text = json.dumps(data, ensure_ascii=False)
+    for ch, esc in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"),
+                    ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        text = text.replace(ch, esc)
+    return text
 
 
 def render_page(template: str, title: str, n: Narrative, embedded: tuple[dict, dict] | None) -> str:

@@ -191,3 +191,65 @@ def test_unreadable_source_note_counts_as_classified(world, home, tmp_path):
         note.chmod(0o644)
     assert "RBA-DESC" not in json.dumps([inv, wl])
     assert inv["entries"]["rb-a"]["text"] == "withheld"
+
+
+# ---------- final review ----------
+def test_hook_command_with_an_inline_secret_never_leaks(world, home, tmp_path):
+    # Made-up values, assembled at run time so the secret scanner of the hook stays quiet.
+    token, var1, var2 = "-".join(["fake", "token", "value"]), "MY" + "_TOKEN", "MY" + "_KEY"
+    s = home / ".claude/settings.json"
+    data = json.loads(s.read_text())
+    data["hooks"]["Notification"] = [{"hooks": [
+        {"type": "command", "command": f"{var1}={token} ~/.claude/hooks/notify.sh"},
+        {"type": "command", "command": f"env {var2}={token}2 python3 ~/.claude/hooks/ping.py --loud"}]}]
+    s.write_text(json.dumps(data))
+    inv, wl, _ = run_build(tmp_path)
+    page = (tmp_path / "out/skill-map.html").read_text(encoding="utf-8")
+    for secret in (token, var1, var2):
+        assert secret not in json.dumps(inv) and secret not in page
+    assert "hook:Notification:notify.sh" in inv["entries"] and "hook:Notification:ping.py" in inv["entries"]
+
+
+def test_embedded_json_cannot_open_a_double_escaped_script(world, home, tmp_path):
+    (home / ".claude/commands/htmlhelp.md").write_text("Start a comment with <!-- and code with a <script> tag.\n")
+    run_build(tmp_path)
+    page = (tmp_path / "out/skill-map.html").read_text(encoding="utf-8")
+    import re as _re
+    block = _re.search(r'id="wortlaut-data">(.*?)</script>', page, _re.S).group(1)
+    assert "<" not in block and ">" not in block
+    assert json.loads(block)["entries"]["htmlhelp"]["text"].startswith("Start a comment with <!--")
+
+
+def test_hiding_a_generated_command_unlinks_its_runbook(world, conf, tmp_path):
+    from world import CONFIG
+    conf(CONFIG.replace('withhold_text = ["zeit"]', 'withhold_text = ["zeit"]\nhide = ["rb-a"]'))
+    inv, _, _ = run_build(tmp_path)
+    rb = inv["entries"]["runbook:rb-a"]
+    assert rb["runbook"]["command_entry"] is None and "no-command" in rb["flags"]
+
+
+def test_shadowed_keys_never_overwrite_each_other(world, home, tmp_path):
+    from world import skill
+    skill(home / ".claude/skills/deploy", "deploy")
+    skill(home / "proj/.claude/skills/deploy", "deploy")
+    (home / "proj/.claude/commands/deploy.md").write_text("project command\n")
+    inv, _, _ = run_build(tmp_path)
+    deploy = sorted(k for k in inv["entries"] if k.split("@")[0] == "deploy")
+    assert len(deploy) == 3
+    assert {inv["entries"][k]["kind"] + "/" + inv["entries"][k]["place"] for k in deploy} == {
+        "skill/personal-skills", "skill/project:1", "command/project:1"}
+
+
+def test_account_ids_and_emails_never_in_any_field(world, home, tmp_path):
+    s = home / ".claude/settings.json"
+    data = json.loads(s.read_text())
+    data["hooks"]["PreToolUse"] = [{"matcher": f"mcp__{FAKE_ID}__x", "hooks": [
+        {"type": "command", "command": "~/.claude/hooks/m.sh"}]}]
+    s.write_text(json.dumps(data))
+    pj = world["review"] / ".claude-plugin/plugin.json"
+    mail = "people" + "@" + "example.invalid"
+    pj.write_text(json.dumps({"name": "reviewkit", "author": f"Review People <{mail}>"}))
+    inv, _, _ = run_build(tmp_path)
+    dumped = json.dumps(inv)
+    assert FAKE_ID not in dumped and mail not in dumped
+    assert {g["id"]: g for g in inv["groups"]}["plugin:reviewkit"]["origin"]["vendor"] == "Review People"

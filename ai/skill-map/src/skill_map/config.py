@@ -31,7 +31,7 @@ class Config:
     narrative: Path = field(default_factory=lambda: config_dir() / "erzaehlung.html")
     artifact_url: str | None = None
     title: str = "Skill-Landkarte"
-    refresh_hint: str = "skill-map build"                    # how to refresh, named in the hook line and on the page
+    refresh_hint: str = "skill-map build && skill-map mark-published"                    # how to refresh, named in the hook line and on the page
 
 
 def default_path() -> Path:

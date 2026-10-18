@@ -87,7 +87,7 @@ def test_diff_without_publish_says_everything_is_new(world, capsys):
 
 # ---------- check ----------
 def test_check_states(world, home, capsys):
-    assert check(capsys) == "Skill-Landkarte: noch nie veröffentlicht – skill-map build"
+    assert check(capsys) == "Skill-Landkarte: noch nie veröffentlicht – skill-map build && skill-map mark-published"
     publish(capsys)
     assert check(capsys) == ""
     for n in ("a1", "a2", "a3", "a4"):
@@ -96,16 +96,16 @@ def test_check_states(world, home, capsys):
     inst = home / ".claude/plugins/installed_plugins.json"
     inst.write_text(inst.read_text().replace('"version": "7.0.0"', '"version": "7.1.0"'))
     assert check(capsys) == ("Skill-Landkarte veraltet (neu: a1, a2, a3 +1; entfernt: plain; "
-                             "geändert: superp 7.0.0→7.1.0) – skill-map build")
+                             "geändert: superp 7.0.0→7.1.0) – skill-map build && skill-map mark-published")
 
 
 def test_check_reports_changed_texts_on_their_own_quieter_line(world, home, capsys):
     publish(capsys)
     (home / ".claude/commands/k-start.md").write_text("changed text\n")
     (home / ".claude/skills/alpha/SKILL.md").write_text("---\nname: alpha\n---\nchanged\n")
-    assert check(capsys) == "Skill-Landkarte: 2 Texte geändert – skill-map build"
+    assert check(capsys) == "Skill-Landkarte: 2 Texte geändert – skill-map build && skill-map mark-published"
     (home / ".claude/commands/new.md").write_text("x\n")
-    assert check(capsys) == "Skill-Landkarte veraltet (neu: new), 2 Texte geändert – skill-map build"
+    assert check(capsys) == "Skill-Landkarte veraltet (neu: new), 2 Texte geändert – skill-map build && skill-map mark-published"
 
 
 def test_check_uses_title_and_refresh_hint(world, home, conf, capsys):
@@ -161,3 +161,19 @@ def test_nothing_outside_the_state_folder_changes(world, home, capsys):
     main(["diff", "--texts"]); main(["check"]); main(["fingerprint"])
     capsys.readouterr()
     assert snapshot() == before
+
+
+def test_diff_texts_also_prints_new_hand_written_metadata(world, home, capsys):
+    publish(capsys)
+    (home / "vault/40-runbooks/new-rb.md").write_text(
+        "---\ntitle: TITEL-ZUM-LESEN\ncommand: new-rb\nstatus: entwurf\ntags: [runbook, TAG-ZUM-LESEN]\n---\n")
+    assert main(["build"]) == 0
+    capsys.readouterr()
+    assert main(["diff", "--texts"]) == 0
+    out = capsys.readouterr().out
+    assert "TITEL-ZUM-LESEN" in out and "TAG-ZUM-LESEN" in out
+
+
+def test_default_hint_names_the_step_that_silences_the_line(world, capsys):
+    msg = check(capsys)
+    assert "skill-map mark-published" in msg

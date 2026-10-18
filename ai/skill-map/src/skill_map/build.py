@@ -56,6 +56,17 @@ def _clean(text):
     return UUID_RE.sub("<konto>", text) if isinstance(text, str) else text
 
 
+def _scrub(value):
+    """Account ids out of every string in an output structure (keys stay)."""
+    if isinstance(value, str):
+        return UUID_RE.sub("<konto>", value)
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items()}
+    return value
+
+
 def _write_json(path: Path, data, log: Callable[[str], None], why: str) -> None:
     log(f"writing {tilde(path)}  ({why})")
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
@@ -108,7 +119,7 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
                 else:
                     item["flags"] = sorted(e.flags | {"withheld"})
                     texts[key] = {"withheld": r.withheld}
-        entries[key] = item
+        entries[key] = _scrub(item)
     for key, item in entries.items():          # a runbook shows the usage of its command
         rb = item["runbook"]
         if item["kind"] == "runbook" and isinstance(rb, dict) and rb.get("command_entry") in entries:
@@ -128,10 +139,10 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
     inventory = {
         "schema": 1, "generated": now, "title": cfg.title, "refresh_hint": cfg.refresh_hint, "fingerprint": fp,
         "usage": {"since": usage.since, "sessions": usage.sessions, "method": USAGE_METHOD,
-                  "unmatched": usage.unmatched},
-        "places": [vars(p) for p in world.places],
-        "groups": [{"id": g.id, "title": g.title, "place": g.place, "origin": g.origin, "counts": g.counts}
-                   for g in world.groups],
+                  "unmatched": _scrub(usage.unmatched)},
+        "places": _scrub([vars(p) for p in world.places]),
+        "groups": _scrub([{"id": g.id, "title": g.title, "place": g.place, "origin": g.origin, "counts": g.counts}
+                          for g in world.groups]),
         "entries": entries,
         "narrative": {"missing_keys": missing},
     }

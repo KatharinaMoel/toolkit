@@ -420,7 +420,9 @@ a.legend-link:hover,a.legend-link:focus-visible{outline:2px solid currentColor;o
   }
 
   // ---------- cheat sheet ----------
+  var COUNTED = {skill: 1, command: 1, agent: 1, runbook: 1, builtin: 1};   // the logs say nothing about hooks and tools
   function useCell(e){
+    if (!COUNTED[e.kind]) return el('td', 'use zero', '–');
     var td = el('td', 'use' + (e.usage.count ? '' : ' zero'));
     td.textContent = e.usage.count ? e.usage.count + ' · ' + short(e.usage.last) : '0';
     return td;
@@ -536,7 +538,7 @@ a.legend-link:hover,a.legend-link:focus-visible{outline:2px solid currentColor;o
   // ---------- narrative references, fresh box, footer ----------
   function linkNarrative(){
     document.querySelectorAll('[data-key]').forEach(function(n){
-      if (n.closest('.viewer')) return;
+      if (n.closest('.viewer') || n.classList.contains('item')) return;   // lookup rows carry data-key too
       var key = n.dataset.key;
       if (!inv.entries[key]) {
         n.classList.add('gone');

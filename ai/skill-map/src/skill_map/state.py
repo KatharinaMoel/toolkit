@@ -108,6 +108,15 @@ def diff(texts: bool, log: Callable[[str], None], out: Callable[[str], None]) ->
         out(f"  {k}: {reason}")
     if texts:
         for k in added + list(changed):
+            e = new[k]                       # hand-written metadata goes online as data: read it too
+            rb = e.get("runbook") if isinstance(e.get("runbook"), dict) else {}
+            meta = [f"  desc: {e['desc']}"] if e.get("desc") else []
+            if rb.get("tags"):
+                meta.append(f"  tags: {', '.join(rb['tags'])}")
+            if meta:
+                out(f"==> {k} · metadata (published in inventory.json)")
+                for line in meta:
+                    out(line)
             t = new_txt["entries"].get(k, {})
             if new[k].get("text") == "shown" and "text" in t:
                 _print_text(k, new[k], t["text"], out)

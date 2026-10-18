@@ -115,6 +115,10 @@ not over usage or texts. `skill-map check` compares it with the one stored by
   entries changed;
 - nothing when all is equal; `… Prüfung fehlgeschlagen (<reason>)` on any error.
 
+The default `refresh_hint` is `skill-map build && skill-map mark-published`: the
+line goes quiet once a build is marked as published (or as looked at, if you only
+open the page locally).
+
 It reads no logs, never reads stdin and always exits 0. Measured on the author's
 machine on 2026-10-18: 0.13 s.
 

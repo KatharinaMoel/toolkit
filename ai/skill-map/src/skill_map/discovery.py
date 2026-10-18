@@ -86,6 +86,7 @@ LANES = [
     ("managed", "Verwaltet (Organisation)", "muted", "von der Organisation vorgegeben"),
 ]
 PROJECT_SCOPE = "für alle im Repo · nur in diesem Projekt"
+ENV_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 INTERPRETERS = {"python", "python3", "bash", "sh", "node", "zsh", "uv", "uvx", "npx"}
 
 
@@ -174,9 +175,12 @@ class _Collector:
             built.append((base, rank, Entry(base, name, "/" + base, kind, place, place, desc, path,
                                             source_note=kios_source(data))))
         for _, _, e in sorted(built, key=lambda t: (t[0], t[1])):
-            if e.key in self.entries:
+            if e.key in self.entries:         # the first in precedence keeps the bare key
                 e.flags.add("shadowed")
-                e.key = f"{e.key}@{e.place}"
+                base, n = f"{e.key}@{e.place}", 2
+                e.key = base
+                while e.key in self.entries:  # a project skill and command of the same name
+                    e.key, n = f"{base}#{n}", n + 1
             self.entries[e.key] = e
             self.group(e.place, self.place_title(e.place), e.place)
 
@@ -235,7 +239,10 @@ class _Collector:
     def vendor(meta: dict) -> str | None:
         a = meta.get("author")
         name = a.get("name") if isinstance(a, dict) else a      # never author.email
-        return name if isinstance(name, str) and name else None
+        if not isinstance(name, str):
+            return None
+        name = re.sub(r"\S+@\S+", "", re.sub(r"\s*[<(][^>)]*[>)]", "", name)).strip()   # "Jane <jane@x>"
+        return name or None
 
     @staticmethod
     def url(value) -> str | None:
@@ -433,12 +440,15 @@ class _Collector:
                     for h in block.get("hooks") or []:
                         if not isinstance(h, dict) or h.get("type") != "command" or not isinstance(h.get("command"), str):
                             continue
+                        # Skip env and NAME=value words: a token set inline must never become a key.
                         words = h["command"].split()
-                        if not words:
+                        while words and (words[0] == "env" or ENV_WORD.match(words[0])):
+                            words = words[1:]
+                        if words and Path(words[0]).name in INTERPRETERS and len(words) > 1:
+                            words = words[1:]
+                        if not words or "=" in words[0]:
                             continue
                         word = words[0]
-                        if Path(word).name in INTERPRETERS and len(words) > 1:
-                            word = words[1]
                         path = expand(word)
                         desc = h.get("statusMessage") if isinstance(h.get("statusMessage"), str) else ""
                         self.add(Entry(f"hook:{event}:{path.name}", path.name, event, "hook", "hooks", "hooks", desc,
@@ -479,6 +489,12 @@ class _Collector:
     def world(self) -> World:
         for k in [k for k in self.entries if any(fnmatch.fnmatchcase(k, p) for p in self.cfg.hide)]:
             del self.entries[k]
+        for e in self.entries.values():       # links to hidden entries are gone too
+            if isinstance(e.runbook, dict) and e.runbook.get("command_entry") not in (None, *self.entries):
+                e.runbook = dict(e.runbook, command_entry=None)
+                e.flags.add("no-command")
+            elif isinstance(e.runbook, str) and e.runbook not in self.entries:
+                e.runbook = None
         used = {e.place for e in self.entries.values()}
         order = [lane[0] for lane in LANES]
         projects = sorted((p for p in used if p.startswith("project:")), key=lambda p: int(p.split(":")[1]))
