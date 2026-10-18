@@ -8,10 +8,12 @@ from typing import Callable
 
 from .config import Config
 from .discovery import World, discover
+from .narrative import missing_keys, read_narrative, render_page
 from .paths import UUID_RE, claude_home, tilde
 from .texts import is_classified, text_for, withheld_text
 from .usage import count_usage
 
+TEMPLATE = Path(__file__).resolve().parents[2] / "page" / "template.html"
 TEXT_KINDS = ("skill", "command", "agent")       # kinds whose file text the page can show
 USAGE_METHOD = ("Slash-Befehle aus <command-name> in Nutzernachrichten, Skills aus Skill-Aufrufen, "
                 "Agenten aus Agent- und Task-Aufrufen; nur Haupt-Sessions, keine Subagenten-Logs; "
@@ -103,6 +105,16 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
         if item["kind"] == "runbook" and isinstance(rb, dict) and rb.get("command_entry") in entries:
             item["usage"] = dict(entries[rb["command_entry"]]["usage"])
 
+    log(f"reading {tilde(cfg.narrative)}  (your own texts for the page, if the file exists)")
+    narrative = read_narrative(cfg.narrative)
+    for note in narrative.notes:
+        log(note)
+    missing = missing_keys(narrative, set(entries), {p.id for p in world.places})
+    if missing:
+        n = len(missing)
+        what = "1 reference to a missing entry" if n == 1 else f"{n} references to missing entries"
+        log(f"narrative: {what}: {', '.join(missing)}")
+
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     inventory = {
         "schema": 1, "generated": now, "title": cfg.title, "fingerprint": fp,
@@ -112,10 +124,16 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
         "groups": [{"id": g.id, "title": g.title, "place": g.place, "origin": g.origin, "counts": g.counts}
                    for g in world.groups],
         "entries": entries,
-        "narrative": {"missing_keys": []},
+        "narrative": {"missing_keys": missing},
     }
     wortlaut = {"schema": 1, "generated": now, "entries": texts}
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "inventory.json", inventory, log, "the data the page shows")
     _write_json(out / "wortlaut.json", wortlaut, log, "the texts, unchanged or withheld")
+    template = TEMPLATE.read_text(encoding="utf-8")
+    log(f"writing {tilde(out / 'index.html')}  (the page; it loads the two files next to it)")
+    (out / "index.html").write_text(render_page(template, cfg.title, narrative, None), encoding="utf-8")
+    log(f"writing {tilde(out / 'skill-map.html')}  (the same page with the data inside; opens from disk)")
+    (out / "skill-map.html").write_text(render_page(template, cfg.title, narrative, (inventory, wortlaut)),
+                                        encoding="utf-8")
     return out

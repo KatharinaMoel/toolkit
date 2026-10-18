@@ -78,10 +78,10 @@ LANES = [
     ("vault-runbooks", "Runbooks im Vault", "vault", "nur für dich · Quelle der Wahrheit"),
     ("personal-commands", "Persönliche Commands", "vault", "nur für dich · in jedem Projekt"),
     ("plugins", "Installierte Plugins", "plugin", "nur für dich · Aufruf mit Präfix plugin:"),
-    ("claude-ai", "Von claude.ai synchronisiert", "synced", "aus deinem claude.ai-Konto · Aufruf mit Präfix"),
+    ("claude-ai", "Von claude.ai synchronisiert", "synced", "kommt aus deinem claude.ai-Konto · Aufruf mit Präfix"),
     ("personal-skills", "Eigene Skills", "vault", "nur für dich · in jedem Projekt"),
-    ("toolkit", "toolkit", "cli", "Werkzeuge im Terminal"),
-    ("hooks", "Hooks", "muted", "laufen automatisch bei Ereignissen"),
+    ("toolkit", "toolkit", "cli", "Terminal-Werkzeuge, ohne Claude nutzbar"),
+    ("hooks", "Hooks", "muted", "laufen automatisch"),
     ("builtins", "Eingebaut in Claude Code", "muted", "keine Datei · Text steckt im Programm"),
     ("managed", "Verwaltet (Organisation)", "muted", "von der Organisation vorgegeben"),
 ]
