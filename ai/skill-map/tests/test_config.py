@@ -84,3 +84,7 @@ def test_tilde_replaces_home_and_account_ids(home):
     pair = "00000000-1111-4222-8333-444444444444_55555555-6666-4777-8888-999999999999"
     assert tilde(home / ".claude" / "skills" / "synced" / pair / "pdf") == "~/.claude/skills/synced/<konto>/pdf"
     assert tilde("/opt/a") == "/opt/a"
+
+
+def test_tilde_replaces_account_ids_in_capitals(home):
+    assert tilde("/x/00000000-AAAA-4222-8333-444444444444/y") == "/x/<konto>/y"

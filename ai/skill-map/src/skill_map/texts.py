@@ -1,11 +1,11 @@
 """Which texts can be shown 1:1, and which are withheld with a reason. Texts are
 never altered: a text that cannot be shown unchanged is withheld instead."""
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
-from .frontmatter import front_matter
 from .paths import UUID_RE, tilde
 
 DEFAULT_REASON = "enthält persönliche Angaben"
@@ -22,8 +22,20 @@ class TextResult:
     sha256: str             # of the file bytes, also for withheld texts
 
 
+# Fail closed: any classification line in the head of a file whose value is not
+# explicitly public or internal withholds the text (BOM, case, comments, lists and
+# front matter that never closes cannot let a sensitive text through).
+_CLASSIFICATION = re.compile(r"^\s*classification\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+SHOWABLE_CLASSES = ("public", "internal")
+
+
 def _classified(data: bytes) -> bool:
-    return front_matter(data).get("classification") in ("sensitive", "secret")
+    head = data[:4096].decode("utf-8", "replace")
+    for m in _CLASSIFICATION.finditer(head):
+        value = m.group(1).split("#", 1)[0].strip().strip("[]").strip().strip("\"'").strip().lower()
+        if value not in SHOWABLE_CLASSES:
+            return True
+    return False
 
 
 def _withheld_text(reason: str, path: Path) -> str:

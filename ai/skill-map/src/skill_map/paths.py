@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 # An account id, or a pair of them joined by "_" (folder names under synced/).
-UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27}(_[0-9a-f]{8}-[0-9a-f-]{27})?")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27}(_[0-9a-f]{8}-[0-9a-f-]{27})?", re.IGNORECASE)
 
 
 def home() -> Path:

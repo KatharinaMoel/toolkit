@@ -1,5 +1,7 @@
 import hashlib
 
+import pytest
+
 from skill_map.config import Config
 from skill_map.texts import text_for
 
@@ -58,3 +60,29 @@ def test_first_rule_wins(home):
     f = write(home / "both.md", b"---\nclassification: secret\n---\ncaf\xe9\n")
     r = text_for("both", f, Config(withhold_text={"both": None}), None)
     assert "enthält persönliche Angaben" in r.withheld
+
+
+
+@pytest.mark.parametrize("head", [
+    b"\xef\xbb\xbf---\nclassification: sensitive\n---\n",      # BOM before the front matter
+    b"---\nclassification: Sensitive  # private\n---\n",       # case and inline comment
+    b"---\nclassification: [secret]\n---\n",                   # one-element list
+    b"---\nclassification: confidential\n---\n",               # not on the allowlist
+    b"---\ntitle: x\nclassification: secret\n",                 # front matter never closed
+])
+def test_classification_fails_closed(home, head):
+    f = write(home / "c.md", head + b"text\n")
+    r = text_for("c", f, Config(), None)
+    assert r.status == "withheld" and "als vertraulich eingestuft" in r.withheld
+
+
+@pytest.mark.parametrize("value", [b"public", b"internal", b"Internal"])
+def test_allowlisted_classification_is_shown(home, value):
+    f = write(home / "c.md", b"---\nclassification: " + value + b"\n---\ntext\n")
+    assert text_for("c", f, Config(), None).status == "shown"
+
+
+def test_account_id_in_capitals_is_withheld(home):
+    f = write(home / "U.md", b"id AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE\n")
+    r = text_for("u", f, Config(), None)
+    assert r.status == "withheld" and "enthält eine Konto-ID" in r.withheld
