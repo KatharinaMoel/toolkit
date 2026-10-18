@@ -10,14 +10,14 @@ often ask a model to read it — which filters the very text you wanted to see.
 written, nothing goes over the network.
 
 ```
-$ skill-show /teamwork-tasks
-==> /teamwork-tasks · command · personal · active
-    file:    /home/me/.claude/commands/teamwork-tasks.md
-    source:  /home/me/notes/40-runbooks/teamwork-tasks.md (kios sync: edit the source, not this file)
-    > cat '/home/me/.claude/commands/teamwork-tasks.md'
+$ skill-show /open-topics
+==> /open-topics · command · personal · active
+    file:    /home/me/.claude/commands/open-topics.md
+    source:  /home/me/notes/40-runbooks/open-topics.md (kios sync: edit the source, not this file)
+    > cat '/home/me/.claude/commands/open-topics.md'
 ──── begin ────
 …the file, unchanged…
-──── end of /home/me/.claude/commands/teamwork-tasks.md ────
+──── end of /home/me/.claude/commands/open-topics.md ────
 ```
 
 ## Inside Claude Code
