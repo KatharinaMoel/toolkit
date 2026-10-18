@@ -269,3 +269,20 @@ def test_hook_commands_are_parsed_like_a_shell_and_fail_closed(world, home, tmp_
     page = (tmp_path / "out/skill-map.html").read_text(encoding="utf-8")
     assert part not in json.dumps(inv) and part not in page and "more" not in json.dumps(list(inv["entries"]))
     assert "hook:Notification:q.sh" in inv["entries"] and "hook:Notification:e.sh" in inv["entries"]
+
+
+def test_only_path_like_words_name_a_hook_script(world, home, tmp_path):
+    part = "-".join(["fake", "option", "value"])
+    s = home / ".claude/settings.json"
+    data = json.loads(s.read_text())
+    data["hooks"]["Notification"] = [{"hooks": [
+        {"type": "command", "command": f"node -e {part} ~/.claude/hooks/n.js"},
+        {"type": "command", "command": f"env -u {part} ~/.claude/hooks/u.sh"},
+        {"type": "command", "command": "notify-send hello"},
+        {"type": "command", "command": "/usr/local/bin/my-tool check"}]}]
+    s.write_text(json.dumps(data))
+    inv, _, lines = run_build(tmp_path)
+    assert part not in json.dumps(inv)
+    assert "hook:Notification:my-tool" in inv["entries"]
+    assert "hook:Notification:notify-send" not in inv["entries"]
+    assert any("Notification hook" in line and "not listed" in line for line in lines)

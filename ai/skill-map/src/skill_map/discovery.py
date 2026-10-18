@@ -92,24 +92,32 @@ INTERPRETERS = {"python", "python3", "bash", "sh", "node", "zsh", "uv", "uvx", "
 
 
 SAFE_WORD = re.compile(r"[\w./~+-]+")
+SCRIPT_ENDINGS = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl")
+ENV_FLAGS = {"-i", "--ignore-environment", "-0", "--null"}   # env options that take no value
+
+
+def _looks_like_script(word: str) -> bool:
+    return bool(SAFE_WORD.fullmatch(word)) and ("/" in word or word.startswith("~") or word.endswith(SCRIPT_ENDINGS))
 
 
 def _hook_script(command: str) -> str | None:
     """The word of a hook command that names its script, or None. Parsed like a shell;
-    env (with its options) and NAME=value words are skipped, so a token set inline never
-    becomes a key. Fails closed: a word that does not look like a path is refused."""
+    env, its value-less options and NAME=value words are skipped, so a token set inline
+    never becomes a key. Fails closed: only a word with a path part or a script ending
+    counts; any other option or a bare command name means the hook is not listed."""
     try:
         words = shlex.split(command, posix=True)
     except ValueError:
         return None
-    while words and (Path(words[0]).name == "env" or ENV_WORD.match(words[0])
-                     or words[0].startswith("-")):          # env, its options, NAME=value
+    if words and Path(words[0]).name == "env":
+        words = words[1:]
+        while words and (words[0] in ENV_FLAGS or ENV_WORD.match(words[0])):
+            words = words[1:]
+    while words and ENV_WORD.match(words[0]):
         words = words[1:]
     if words and Path(words[0]).name in INTERPRETERS and len(words) > 1:
-        words = words[1:]
-        while words and words[0].startswith("-"):     # python3 -u script.py
-            words = words[1:]
-    if not words or not SAFE_WORD.fullmatch(words[0]):
+        words = words[1:]                      # an interpreter option (-c, -e, ...) is not skipped
+    if not words or not _looks_like_script(words[0]):
         return None
     return words[0]
 
