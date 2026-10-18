@@ -8,8 +8,8 @@ from typing import Callable
 
 from .config import Config
 from .discovery import World, discover
-from .paths import claude_home, tilde
-from .texts import withheld_text, text_for
+from .paths import UUID_RE, claude_home, tilde
+from .texts import is_classified, text_for, withheld_text
 from .usage import count_usage
 
 TEXT_KINDS = ("skill", "command", "agent")       # kinds whose file text the page can show
@@ -23,6 +23,26 @@ def fingerprint(world: World) -> tuple[str, list[list[str]]]:
     rows = sorted([e.key, e.kind, e.place, e.version] for e in world.entries.values())
     data = "\n".join("\t".join(r) for r in rows).encode("utf-8")
     return "sha256:" + hashlib.sha256(data).hexdigest(), rows
+
+
+def _head(path: Path | None) -> bytes:
+    if path is None:
+        return b""
+    try:
+        with path.open("rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""
+
+
+def _classified(e) -> bool:
+    """The entry's own file or its kios source note is classified (fails closed)."""
+    return is_classified(_head(e.path)) or is_classified(_head(e.source_path))
+
+
+def _clean(text):
+    """Free text from front matter: account ids replaced, as in paths."""
+    return UUID_RE.sub("<konto>", text) if isinstance(text, str) else text
 
 
 def _write_json(path: Path, data, log: Callable[[str], None], why: str) -> None:
@@ -48,15 +68,24 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
     entries, texts = {}, {}
     for key, e in world.entries.items():
         count, last = usage.counts.get(key, (0, None))
+        classified = _classified(e)
+        desc, runbook = _clean(e.desc), e.runbook
+        if isinstance(runbook, dict):
+            runbook = dict(runbook, tags=[_clean(t) for t in runbook.get("tags") or []])
+        if classified:          # nothing written by hand in a classified file leaves it
+            desc = ""
+            if isinstance(runbook, dict):
+                runbook = dict(runbook, tags=[], area=None)
         item = {"name": e.name, "call": e.call, "kind": e.kind, "group": e.group, "place": e.place,
-                "desc": e.desc, "path": tilde(e.path) if e.path else None, "runbook": e.runbook,
+                "desc": desc, "path": tilde(e.path) if e.path else None, "runbook": runbook,
                 "source_note": e.source_note, "usage": {"count": count, "last": last},
                 "text": "none", "text_sha256": None, "flags": sorted(e.flags)}
         if e.kind == "hook":
             item["matcher"] = e.extra.get("matcher", "")
         if e.kind in TEXT_KINDS and e.path is not None:
             try:
-                r = text_for(key, e.path, cfg, e.source_path)
+                r = text_for(key, e.path, cfg, e.source_path,
+                             source_unknown=e.source_note is not None and e.source_path is None)
             except OSError:
                 item["text"] = "withheld"
                 item["flags"] = sorted(e.flags | {"withheld"})

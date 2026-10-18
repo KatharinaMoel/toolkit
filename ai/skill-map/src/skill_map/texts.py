@@ -12,6 +12,7 @@ DEFAULT_REASON = "enthält persönliche Angaben"
 SENSITIVE_REASON = "als vertraulich eingestuft"
 INVALID_UTF8_REASON = "keine gültige UTF-8-Datei, Wortlaut nicht unverändert darstellbar"
 ACCOUNT_ID_REASON = "enthält eine Konto-ID"
+SOURCE_UNKNOWN_REASON = "Quellnotiz nicht auffindbar, Einstufung unbekannt"
 
 
 @dataclass
@@ -29,7 +30,7 @@ _CLASSIFICATION = re.compile(r"\s*classification\s*:\s*(.*)", re.IGNORECASE)
 SHOWABLE_CLASSES = ("public", "internal")
 
 
-def _classified(data: bytes) -> bool:
+def is_classified(data: bytes) -> bool:
     head = data[:4096].decode("utf-8", "replace")
     for line in head.splitlines():          # every line break counts: \n, \r, \u2028, ...
         m = _CLASSIFICATION.match(line.lstrip("\ufeff"))
@@ -45,18 +46,22 @@ def withheld_text(reason: str, path: Path) -> str:
     return f"Der Wortlaut wird hier bewusst nicht gezeigt: {reason}. Volltext lokal: {tilde(path)}"
 
 
-def text_for(key: str, path: Path, cfg: Config, source_note: Path | None) -> TextResult:
+def text_for(key: str, path: Path, cfg: Config, source_note: Path | None,
+             source_unknown: bool = False) -> TextResult:
     """Decide by the rules in this order: config, classification of the file or of the
-    kios source note, valid UTF-8, no account id. The first rule that applies wins."""
+    kios source note, a kios source note that cannot be found (its classification is
+    unknown), valid UTF-8, no account id. The first rule that applies wins."""
     data = path.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
     reason = None
     text = None
     if key in cfg.withhold_text:
         reason = cfg.withhold_text[key] or DEFAULT_REASON
-    elif _classified(data) or (source_note is not None and source_note.is_file()
-                               and _classified(source_note.read_bytes()[:4096])):
+    elif is_classified(data) or (source_note is not None and source_note.is_file()
+                               and is_classified(source_note.read_bytes()[:4096])):
         reason = SENSITIVE_REASON
+    elif source_unknown:
+        reason = SOURCE_UNKNOWN_REASON
     else:
         try:
             text = data.decode("utf-8")

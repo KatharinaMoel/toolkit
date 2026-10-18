@@ -141,3 +141,32 @@ def test_unreadable_file_is_withheld_not_fatal(world, home, tmp_path):
         f.chmod(0o644)
     assert inv["entries"]["plain"]["text"] == "withheld"
     assert "nicht lesbar" in wl["entries"]["plain"]["withheld"]
+
+
+def test_account_id_in_a_description_is_replaced(world, home, tmp_path):
+    (home / ".claude/commands/iddesc.md").write_text(f"---\ndescription: see {FAKE_ID}\n---\nx\n")
+    run_build(tmp_path)
+    inv = (tmp_path / "out/inventory.json").read_text(encoding="utf-8")
+    assert FAKE_ID not in inv and "see <konto>" in inv
+
+
+def test_classified_files_publish_no_description_or_title(world, home, tmp_path):
+    (home / ".claude/commands/secret.md").write_text(
+        "---\ndescription: SECRET-DESC\nclassification: secret\n---\nx\n")
+    (home / "vault/40-runbooks/rb-c.md").write_text(
+        "---\ntitle: GEHEIMER-TITEL\ncommand: rb-c\nstatus: aktiv\nclassification: sensitive\ntags: [geheim-tag]\n---\n")
+    (home / ".claude/commands/rb-c.md").write_text(
+        "---\ndescription: VERTRAULICH-DESC\n---\n<!-- kios:generated | Quelle: 40-runbooks/rb-c.md | x -->\n")
+    inv, wl, _ = run_build(tmp_path)
+    dumped = json.dumps([inv, wl], ensure_ascii=False)
+    for secret in ("SECRET-DESC", "GEHEIMER-TITEL", "geheim-tag", "VERTRAULICH-DESC"):
+        assert secret not in dumped
+    assert inv["entries"]["runbook:rb-c"]["runbook"]["tags"] == []
+
+
+def test_unresolvable_source_note_withholds_the_text(world, home, tmp_path):
+    inv, wl, _ = run_build(tmp_path)
+    assert "source-missing" in inv["entries"]["gone"]["flags"]
+    assert inv["entries"]["gone"]["text"] == "withheld"
+    assert "Einstufung unbekannt" in wl["entries"]["gone"]["withheld"]
+    assert inv["entries"]["k-start"]["text"] == "shown"            # resolved source, not classified
