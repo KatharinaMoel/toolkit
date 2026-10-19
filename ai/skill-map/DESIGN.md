@@ -16,10 +16,10 @@ Marking used in this spec (same as in `ai/skill-show/DESIGN.md`):
 
 Inputs this spec builds on:
 
-- `docs/superpowers/specs/assets/skill-map/prototype-v5.html`: the page as
+- `prototype-v5.html` (kept by the author outside the repo): the page as
   published today (version 5). Its lists, tables and usage numbers are typed in by
   hand; only the full texts come from `wortlaut.json` via `fetch`.
-- `docs/superpowers/specs/assets/skill-map/build_wortlaut.py`: the one-off
+- `build_wortlaut.py` (kept with the prototype): the one-off
   script that produced that `wortlaut.json`.
 - `ai/skill-show/DESIGN.md`: the related tool. Its
   "Where it looks" table and "Precedence" rules are the reference for discovery here.
@@ -994,8 +994,8 @@ user's real build before the first publish.
    `text_sha256` (the hook would then read every skill file, still without logs;
    probably still under 300 ms, not measured)? The spec keeps the user's decision
    until she says otherwise.
-2. **The prototype assets in the repo.** `docs/superpowers/specs/assets/skill-map/`
-   is untracked today. `prototype-v5.html` contains the user's personal narrative and
+2. **The prototype assets in the repo.** They were untracked in a local folder
+   of the repo then. `prototype-v5.html` contains the user's personal narrative and
    usage numbers, and the repo is shared on GitHub. Should the assets be committed
    with this spec, committed after anonymizing, or stay local? The builder needs the
    prototype locally either way; the spec does not depend on the answer.
@@ -1007,8 +1007,8 @@ user's real build before the first publish.
   /landkarte-aktualisieren`. The fingerprint stays without texts; `check`
   additionally compares per-entry text hashes of the shown texts with the
   published ones. Builder: keep `check` under the time target; measure it.
-- **Open question 2:** the prototype assets stay local
-  (`docs/superpowers/specs/assets/` is in `.git/info/exclude`).
+- **Open question 2:** the prototype assets stay local. Since 2026-10-19 they are
+  kept outside the repo, with the author's notes.
 - Personal values (artifact URL, vault path, project names) were removed from this
   spec before its first commit; they belong in the local config.
 
