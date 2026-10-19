@@ -67,7 +67,8 @@ expect_eq() { # name erwartet tatsaechlich
 
 # ---------- wt path ----------
 cd "$REPO" || exit 1
-expect_eq "path . -> Hauptrepo"         "$REPO"            "$("$WT" path . 2>/dev/null)"
+expect_eq "path @ -> Hauptrepo"         "$REPO"            "$("$WT" path @ 2>/dev/null)"
+expect_eq "path . im Hauptrepo -> Hauptrepo" "$REPO"       "$("$WT" path . 2>/dev/null)"
 expect_eq "path <reponame> -> Hauptrepo" "$REPO"           "$("$WT" path demo 2>/dev/null)"
 expect_eq "path main -> Worktree main"  "$BASE/main"       "$("$WT" path main 2>/dev/null)"
 expect_eq "path <slug>"                 "$BASE/feature-x"  "$("$WT" path feature-x 2>/dev/null)"
@@ -75,8 +76,42 @@ expect_eq "path <branch mit />"         "$BASE/feature-x"  "$("$WT" path feature
 expect_eq "path <nr>"                   "$BASE/mr-42"      "$("$WT" path 42 2>/dev/null)"
 expect_eq "path <absoluter Pfad>"       "$BASE/mr-42"      "$("$WT" path "$BASE/mr-42" 2>/dev/null)"
 cd "$BASE/mr-42" || exit 1
-expect_eq "path . aus einem Worktree"   "$REPO"            "$("$WT" path . 2>/dev/null)"
+expect_eq "path . aus einem Worktree"   "$BASE/mr-42"      "$("$WT" path . 2>/dev/null)"
+expect_eq "path @ aus einem Worktree"   "$REPO"            "$("$WT" path @ 2>/dev/null)"
+mkdir -p "$BASE/mr-42/sub" && cd "$BASE/mr-42/sub" || exit 1
+expect_eq "path . aus Worktree-Unterordner" "$BASE/mr-42"  "$("$WT" path . 2>/dev/null)"
+# '.' in einem verlinkten Ordner (LINK_DIRS wie .reviews zeigen in den Hauptordner): der Worktree, nicht das Ziel des Links
+mkdir -p "$REPO/geteilt" && ln -s "$REPO/geteilt" "$BASE/mr-42/geteilt" && cd "$BASE/mr-42/geteilt" || exit 1
+expect_eq "path . in einem Symlink in den Hauptordner -> Worktree" "$BASE/mr-42" "$("$WT" path . 2>/dev/null)"
+cd "$REPO" || exit 1; rm "$BASE/mr-42/geteilt"; rmdir "$REPO/geteilt"
+cd "$REPO" || exit 1
 if "$WT" path gibtsnicht >/dev/null 2>&1; then fail "path unbekannt" "Exit 0"; else ok "path unbekannt -> Fehler"; fi
+
+# Branch-Suche: Worktree an fremdem Ort mit fremdem Ordnernamen (wie von PyCharm angelegt)
+git -C "$REPO" worktree add -q -b feat/fremd "$TMP/elsewhere/pycharm-wt"
+expect_eq "path <branch> findet fremden Ordner" "$TMP/elsewhere/pycharm-wt" "$("$WT" path feat/fremd 2>/dev/null)"
+expect_eq "path <branch> des Hauptordners"      "$REPO"            "$("$WT" path dev 2>/dev/null)"
+git -C "$REPO" worktree add -q -b feature-x "$TMP/elsewhere/branch-feature-x"   # Branch heisst wie der Ordner eines anderen Worktrees
+expect_eq "path <ordner> geht vor gleichnamigem Branch" "$BASE/feature-x" "$("$WT" path feature-x 2>/dev/null)"
+git -C "$REPO" worktree remove "$TMP/elsewhere/branch-feature-x"
+ln -s "$REPO" "$TMP/link-auf-demo"
+expect_eq "path <Symlink auf Hauptordner> -> echter Pfad" "$REPO" "$("$WT" path "$TMP/link-auf-demo" 2>/dev/null)"
+err=$("$WT" path "$TMP/link-auf-demo" 2>&1 >/dev/null)
+git -C "$REPO" switch -q -c symlink-probe
+err=$("$WT" path "$TMP/link-auf-demo" 2>&1 >/dev/null)
+git -C "$REPO" switch -q dev; git -C "$REPO" branch -q -D symlink-probe
+if [[ "$err" == *"symlink-probe"* ]]; then ok "path <Symlink auf Hauptordner> prueft den Branch des Hauptordners"
+else fail "path <Symlink auf Hauptordner> prueft den Branch des Hauptordners" "$err"; fi
+expect_eq "path <absolut, fremder Ort>"          "$TMP/elsewhere/pycharm-wt" "$("$WT" path "$TMP/elsewhere/pycharm-wt" 2>/dev/null)"
+cd "$TMP/elsewhere/pycharm-wt" || exit 1
+expect_eq "path . im fremden Worktree"           "$TMP/elsewhere/pycharm-wt" "$("$WT" path . 2>/dev/null)"
+cd "$REPO" || exit 1
+mkdir -p "$TMP/kein-worktree"
+err=$("$WT" path "$TMP/kein-worktree" 2>&1 >/dev/null); rc=$?
+expect_eq "path <Ordner, kein Worktree> -> Exit 1" "1" "$rc"
+if [[ "$err" == *"kein Worktree"* ]]; then ok "path <Ordner, kein Worktree> nennt den Grund"; else fail "path <Ordner, kein Worktree> nennt den Grund" "$err"; fi
+git -C "$REPO" worktree remove "$TMP/elsewhere/pycharm-wt"
+cd "$BASE/mr-42" || exit 1   # die pick-Tests laufen aus einem Worktree
 
 # ---------- wt pick ----------
 out=$(FZF_PICK=feature-x "$WT" pick 2>"$TMP/pick.err")
@@ -154,16 +189,16 @@ printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
 
 # ---------- Hauptordner nicht auf TARGET_BRANCH ----------
 cd "$REPO" || exit 1
-err=$("$WT" path . 2>&1 >/dev/null)
+err=$("$WT" path @ 2>&1 >/dev/null)
 if [[ "$err" != *"TARGET_BRANCH"* ]]; then ok "Hauptordner auf dev -> keine Warnung"
 else fail "Hauptordner auf dev -> keine Warnung" "$err"; fi
 git -C "$REPO" switch -q -c anderes
-err=$("$WT" path . 2>&1 >/dev/null)
+err=$("$WT" path @ 2>&1 >/dev/null)
 if [[ "$err" == *"anderes"*"dev"* ]]; then ok "Hauptordner auf anderem Branch -> Warnung"
 else fail "Hauptordner auf anderem Branch -> Warnung" "$err"; fi
 git -C "$REPO" switch -q dev
 printf 'IDE_CMD="fake-ide"\nTARGET_BRANCH="gibtsnicht"\n' > "$HOME/.config/wt/demo.conf"
-err=$("$WT" path . 2>&1 >/dev/null)
+err=$("$WT" path @ 2>&1 >/dev/null)
 if [[ "$err" != *"TARGET_BRANCH"* ]]; then ok "TARGET_BRANCH lokal unbekannt -> keine Warnung"
 else fail "TARGET_BRANCH lokal unbekannt -> keine Warnung" "$err"; fi
 printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
@@ -171,6 +206,40 @@ printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
 # ---------- wt drop ----------
 cd "$REPO" || exit 1
 if "$WT" drop . >/dev/null 2>&1; then fail "drop ." "Exit 0"; else ok "drop . -> verweigert"; fi
+if "$WT" drop @ >/dev/null 2>&1; then fail "drop @" "Exit 0"; else ok "drop @ -> verweigert"; fi
+cd "$BASE/mr-42" || exit 1
+err=$("$WT" drop . 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$BASE/mr-42" ] && [[ "$err" == *"herauswechseln"* ]]; then ok "drop . aus einem Worktree -> verweigert"
+else fail "drop . aus einem Worktree -> verweigert" "rc=$rc $err"; fi
+cd "$REPO" || exit 1
+# Branch des Hauptordners: die Branch-Suche trifft den Hauptordner - nie entfernen, keine Links loeschen
+mkdir -p "$TMP/media-ziel"; ln -s "$TMP/media-ziel" "$REPO/media"
+printf 'IDE_CMD="fake-ide"\nLINK_DIRS=(media)\n' > "$HOME/.config/wt/demo.conf"
+err=$("$WT" drop dev 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -L "$REPO/media" ] && [[ "$err" == *"Hauptordner"* ]]; then ok "drop <branch des Hauptordners> -> verweigert, Links unversehrt"
+else fail "drop <branch des Hauptordners> -> verweigert, Links unversehrt" "rc=$rc $err"; fi
+printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"; rm "$REPO/media"
+# Ordner unter der eigenen Shell, per Branch angesprochen
+git -C "$REPO" worktree add -q -b feat/hier "$TMP/elsewhere/hier"
+mkdir -p "$TMP/elsewhere/hier/sub" && cd "$TMP/elsewhere/hier/sub" || exit 1
+err=$("$WT" drop feat/hier 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$TMP/elsewhere/hier" ] && [[ "$err" == *"herauswechseln"* ]]; then ok "drop <branch des eigenen Worktrees> -> verweigert"
+else fail "drop <branch des eigenen Worktrees> -> verweigert" "rc=$rc $err"; fi
+cd "$REPO" || exit 1
+"$WT" drop feat/hier >/dev/null 2>&1; rc=$?
+expect_eq "drop <branch, fremder Ort> von aussen -> Exit 0" "0" "$rc"
+# Ordnername mit Apostroph (z.B. von PyCharm angelegt): landet nie ungeschuetzt in einem Befehl
+git -C "$REPO" worktree add -q -b feat/q "$TMP/kat's/y"
+expect_eq "path <branch, Pfad mit '>" "$TMP/kat's/y" "$("$WT" path feat/q 2>/dev/null)"
+err=$("$WT" drop feat/q 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$TMP/kat's/y" ]; then ok "drop <branch, Pfad mit '> entfernt den Worktree"
+else fail "drop <branch, Pfad mit '> entfernt den Worktree" "rc=$rc $err"; fi
+# Ordner geloescht, Worktree noch eingetragen (prunable)
+git -C "$REPO" worktree add -q -b feat/weg "$TMP/elsewhere/weg"; rm -rf "$TMP/elsewhere/weg"
+err=$("$WT" drop feat/weg 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [[ "$err" == *"worktree prune"* ]]; then ok "drop <branch, Ordner geloescht> -> Hinweis auf git worktree prune"
+else fail "drop <branch, Ordner geloescht> -> Hinweis auf git worktree prune" "rc=$rc $err"; fi
+git -C "$REPO" worktree prune
 if "$WT" drop demo >/dev/null 2>&1; then fail "drop <reponame>" "Exit 0"; else ok "drop <reponame> -> verweigert"; fi
 if [ -d "$REPO/.git" ]; then ok "Hauptrepo unversehrt"; else fail "Hauptrepo unversehrt" "fehlt"; fi
 mkdir -p "$BASE/feature-x/.idea" && : > "$BASE/feature-x/.idea/workspace.xml"
@@ -390,6 +459,11 @@ for x in 7 mr-7 mia-mr-7; do
   expect_eq "prefix: path $x" "$PXB/mia-mr-7" "$("$WT" path "$x" 2>/dev/null)"
 done
 
+expect_eq "prefix: path mia -> Hauptrepo" "$PX" "$("$WT" path mia 2>/dev/null)"
+git -C "$REMOTE_BARE" update-ref refs/heads/mia refs/heads/dev
+err=$("$WT" new --branch mia 2>&1 >/dev/null); rc=$?
+expect_eq "prefix: new --branch mia (= Repo-Kuerzel) -> Exit 1" "1" "$rc"
+if [ ! -e "$PXB/mia-mia" ]; then ok "prefix: new --branch mia legt keinen Ordner an"; else fail "prefix: new --branch mia legt keinen Ordner an" "$err"; fi
 expect_eq "prefix: path 5 -> Ordner ohne Repo-Kuerzel" "$PXB/mr-5" "$("$WT" path 5 2>/dev/null)"
 err=$("$WT" path 5 2>&1 >/dev/null)
 if [[ "$err" == *"worktree move"*"/mr-5"*"/mia-mr-5"* ]]; then ok "prefix: Ordner ohne Repo-Kuerzel -> Umbenennungsbefehl"
@@ -470,7 +544,12 @@ else fail "prefix: WT_PREFIX aus der Umgebung wird ignoriert" "rc=$rc $err"; fi
 mkdir -p "$TMP/docker-stub" "$PX/media"
 cat > "$TMP/docker-stub/docker" <<'EOF'
 #!/usr/bin/env bash
+# Stub: Aufruf merken; die DB-Liste kommt aus $DB_EXISTING, createdb scheitert mit $DOCKER_FAIL_CREATEDB
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$*" in
+  *pg_database*) [ -z "${DOCKER_FAIL_PSQL:-}" ] || exit 1; for d in ${DB_EXISTING:-}; do printf '%s\n' "$d"; done ;;
+  *createdb*)    [ -z "${DOCKER_FAIL_CREATEDB:-}" ] || exit 1 ;;
+esac
 EOF
 chmod +x "$TMP/docker-stub/docker"
 export DOCKER_LOG="$TMP/docker.log"
@@ -483,9 +562,122 @@ PATH="$TMP/docker-stub:$PATH" "$WT" drop mia-123 --db >/dev/null 2>&1; rc=$?
 expect_eq "drop mia-123 --db (Branch-Worktree) -> Exit 0" "0" "$rc"
 if [ ! -e "$PXB/mia-mia-123" ] && ! grep -q 'review_123' "$DOCKER_LOG"; then ok "drop mia-123 --db loescht nicht die DB-Kopie von MR 123"
 else fail "drop mia-123 --db loescht nicht die DB-Kopie von MR 123" "$(cat "$DOCKER_LOG") | $(ls "$PXB")"; fi
-PATH="$TMP/docker-stub:$PATH" "$WT" drop mia-mr-123 --db >/dev/null 2>&1
+DB_EXISTING=review_123 PATH="$TMP/docker-stub:$PATH" "$WT" drop mia-mr-123 --db >/dev/null 2>&1
 if grep -q 'dropdb.*review_123' "$DOCKER_LOG"; then ok "drop mia-mr-123 --db loescht review_123 (Positivkontrolle)"
 else fail "drop mia-mr-123 --db loescht review_123 (Positivkontrolle)" "$(cat "$DOCKER_LOG")"; fi
+
+# ---------- wt setup: bestehenden Worktree nachtraeglich einrichten ----------
+dk() { PATH="$TMP/docker-stub:$PATH" "$WT" "$@"; }   # wt mit Docker-Stub
+printf '%s\n' '.env' >> "$PX/.git/info/exclude"   # wie im echten Projekt gitignoriert
+printf 'haupt\n' > "$PX/.env"
+cat > "$HOME/.config/wt/pxrepo.conf" <<'EOF'
+WT_PREFIX="mia"
+COPY_FILES=(".env")
+LINK_DIRS=(media)
+DB_CONTAINER="stubdb"
+DB_TEMPLATE="stamm_db"
+DB_COPY_PREFIX="review_"
+SETTINGS_SHIM_PATH="app/settings_review.py"
+SETTINGS_SHIM_IMPORT="app.settings_docker"
+EOF
+SP="$TMP/px/mein feature"   # fremder Ort, Leerzeichen im Pfad (wie ein PyCharm-Ordner)
+git -C "$PX" worktree add -q -b feat/setup "$SP"
+mkdir -p "$SP/app"
+err=$(dk setup feat/setup 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$SP/.env" 2>/dev/null)" = "haupt" ] && [ -L "$SP/media" ]; then ok "setup <branch, Pfad mit Leerzeichen> kopiert .env und verlinkt media"
+else fail "setup <branch, Pfad mit Leerzeichen> kopiert .env und verlinkt media" "rc=$rc $err"; fi
+printf 'eigen\n' > "$SP/.env"
+err=$(dk setup feat/setup 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [[ "$err" == *"schon vorhanden"* ]] && [[ "$err" != *"> cp "* ]] && [[ "$err" != *"> ln "* ]]; then ok "setup zweimal -> nur 'schon vorhanden', kein cp/ln"
+else fail "setup zweimal -> nur 'schon vorhanden', kein cp/ln" "rc=$rc $err"; fi
+expect_eq "setup ueberschreibt eine vorhandene .env nie" "eigen" "$(cat "$SP/.env")"
+cd "$SP/app" || exit 1
+dk setup . >/dev/null 2>&1; rc=$?
+expect_eq "setup . aus einem Unterordner -> Exit 0" "0" "$rc"
+cd "$PX" || exit 1
+err=$(dk setup @ 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"Quelle"* ]]; then ok "setup @ -> verweigert (Hauptordner ist die Quelle)"; else fail "setup @ -> verweigert (Hauptordner ist die Quelle)" "rc=$rc $err"; fi
+
+git -C "$PX" worktree add -q -b feat/x "$PXB/mia-feat-x"
+: > "$DOCKER_LOG"
+err=$(dk setup mia-feat-x --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'createdb -U postgres -T stamm_db review_feat_x' "$DOCKER_LOG" \
+   && grep -q "NAME'\] = 'review_feat_x'" "$PXB/mia-feat-x/app/settings_review.py"; then ok "setup <ordner> --db -> Kopie review_feat_x und Shim"
+else fail "setup <ordner> --db -> Kopie review_feat_x und Shim" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING=review_feat_x dk setup mia-feat-x --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q createdb "$DOCKER_LOG" && [[ "$err" == *"schon vorhanden"* ]]; then ok "setup --db zweimal -> DB und Shim schon vorhanden"
+else fail "setup --db zweimal -> DB und Shim schon vorhanden" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
+git -C "$PX" worktree add -q -b feat_x "$PXB/mia-feat_x"   # ergibt denselben DB-Namen wie mia-feat-x
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING=review_feat_x dk setup mia-feat_x --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && ! grep -q createdb "$DOCKER_LOG" && [ ! -e "$PXB/mia-feat_x/app/settings_review.py" ]; then ok "setup --db: fremde DB gleichen Namens -> Abbruch, nie mitbenutzen"
+else fail "setup --db: fremde DB gleichen Namens -> Abbruch, nie mitbenutzen" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
+LONG="mia-$(printf 'x%.0s' $(seq 1 60))"
+git -C "$PX" worktree add -q -b feat/lang "$PXB/$LONG"
+err=$(dk setup "$LONG" --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"63"* ]]; then ok "setup --db: DB-Name ueber 63 Bytes -> Abbruch"; else fail "setup --db: DB-Name ueber 63 Bytes -> Abbruch" "rc=$rc $err"; fi
+: > "$DOCKER_LOG"
+err=$(DOCKER_FAIL_CREATEDB=1 dk setup mia-feat_x --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"Server auf der Haupt-DB"* ]]; then ok "createdb scheitert -> Hinweis auf Server an der Haupt-DB"
+else fail "createdb scheitert -> Hinweis auf Server an der Haupt-DB" "rc=$rc $err"; fi
+: > "$DOCKER_LOG"
+err=$(dk new --branch feat/c --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'createdb .*review_feat_c' "$DOCKER_LOG"; then ok "new --branch --db -> Kopie review_feat_c"; else fail "new --branch --db -> Kopie review_feat_c" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
+sed -i "s/'review_feat_x'/'review_custom'/" "$PXB/mia-feat-x/app/settings_review.py"
+: > "$DOCKER_LOG"
+DB_EXISTING="review_custom review_feat_x" dk drop mia-feat-x --db --force >/dev/null 2>&1
+if grep -q 'dropdb .*review_custom' "$DOCKER_LOG" && ! grep -q 'dropdb .*review_feat_x' "$DOCKER_LOG"; then ok "drop --db loescht die DB aus dem Shim"
+else fail "drop --db loescht die DB aus dem Shim" "$(cat "$DOCKER_LOG")"; fi
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING=review_feat_x dk drop feat_x --db --force 2>&1 >/dev/null)
+if ! grep -q dropdb "$DOCKER_LOG" && [[ "$err" == *"dropdb"* ]]; then ok "drop --db ohne Shim (Branch-Ordner) -> fremde Kopie gleichen Namens bleibt, Befehl nur als Hinweis"
+else fail "drop --db ohne Shim (Branch-Ordner) -> fremde Kopie gleichen Namens bleibt, Befehl nur als Hinweis" "$(cat "$DOCKER_LOG") $err"; fi
+# Shim zeigt auf die Vorlage (von Hand angepasst oder aus dem Hauptordner kopiert): nie als Kopie behandeln
+git -C "$PX" worktree add -q -b feat/tpl "$PXB/mia-feat-tpl"; mkdir -p "$PXB/mia-feat-tpl/app"
+printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'stamm_db'\n" > "$PXB/mia-feat-tpl/app/settings_review.py"
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING=stamm_db dk setup mia-feat-tpl --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"stamm_db"*"keine DB-Kopie"* ]]; then ok "setup --db: Shim zeigt auf DB_TEMPLATE -> Abbruch"; else fail "setup --db: Shim zeigt auf DB_TEMPLATE -> Abbruch" "rc=$rc $err"; fi
+err=$(DB_EXISTING=stamm_db dk drop mia-feat-tpl --db --force 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && ! grep -q dropdb "$DOCKER_LOG" && [ -d "$PXB/mia-feat-tpl" ]; then ok "drop --db: Shim zeigt auf DB_TEMPLATE -> Abbruch vor allem, Haupt-DB bleibt"
+else fail "drop --db: Shim zeigt auf DB_TEMPLATE -> Abbruch vor allem, Haupt-DB bleibt" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
+printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'andere_db'\n" > "$PXB/mia-feat-tpl/app/settings_review.py"
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING=andere_db dk drop mia-feat-tpl --db --force 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && ! grep -q dropdb "$DOCKER_LOG"; then ok "drop --db: Shim-Name ohne DB_COPY_PREFIX -> Abbruch"; else fail "drop --db: Shim-Name ohne DB_COPY_PREFIX -> Abbruch" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
+git -C "$PX" worktree remove --force "$PXB/mia-feat-tpl"
+# Container nicht erreichbar: vor dem Entfernen pruefen, sonst geht der DB-Name mit dem Shim verloren
+git -C "$PX" worktree add -q -b feat/down "$PXB/mia-feat-down"
+dk setup mia-feat-down --db >/dev/null 2>&1
+err=$(DOCKER_FAIL_PSQL=1 dk drop mia-feat-down --db --force 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [ -d "$PXB/mia-feat-down" ]; then ok "drop --db: Container nicht erreichbar -> Abbruch, Worktree bleibt"; else fail "drop --db: Container nicht erreichbar -> Abbruch, Worktree bleibt" "rc=$rc $err"; fi
+git -C "$PX" worktree remove --force "$PXB/mia-feat-down"
+# Shim als haengender Symlink: nie hindurchschreiben
+git -C "$PX" worktree add -q -b feat/sym "$PXB/mia-feat-sym"; mkdir -p "$PXB/mia-feat-sym/app"
+mkdir -p "$TMP/ausserhalb"; ln -s "$TMP/ausserhalb/shim.py" "$PXB/mia-feat-sym/app/settings_review.py"
+dk setup mia-feat-sym --db >/dev/null 2>&1
+if [ ! -e "$TMP/ausserhalb/shim.py" ]; then ok "setup --db schreibt nicht durch einen haengenden Symlink"; else fail "setup --db schreibt nicht durch einen haengenden Symlink" "Datei ausserhalb angelegt"; fi
+git -C "$PX" worktree remove --force "$PXB/mia-feat-sym"
+# new --db: DB-Probleme vor dem Anlegen erkennen, nicht danach
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING=review_feat_b dk new --branch feat/b --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [ ! -e "$PXB/mia-feat-b" ] && ! grep -q createdb "$DOCKER_LOG"; then ok "new --branch --db: DB-Name schon vergeben -> Abbruch vor dem Anlegen"
+else fail "new --branch --db: DB-Name schon vergeben -> Abbruch vor dem Anlegen" "rc=$rc $(ls "$PXB") $err"; fi
+# Abschlusshinweis von wt new: RUN_HINT nur mit DB-Kopie, sonst wt run (RUN_HINT nennt den Shim)
+printf 'RUN_HINT="python manage.py runserver 127.0.0.1:{port} --settings=app.settings_review"\n' >> "$HOME/.config/wt/pxrepo.conf"
+err=$(dk new --mr 123 2>&1 >/dev/null)
+if [[ "$err" == *"wt run 123"* ]] && [[ "$err" != *"--settings=app.settings_review"* ]]; then ok "new --mr ohne --db -> Hinweis wt run, kein RUN_HINT mit fehlendem Shim"
+else fail "new --mr ohne --db -> Hinweis wt run, kein RUN_HINT mit fehlendem Shim" "$err"; fi
+dk drop 123 --force >/dev/null 2>&1
+err=$(dk new --mr 123 --db 2>&1 >/dev/null)
+if [[ "$err" == *"runserver 127.0.0.1:8123 --settings=app.settings_review"* ]]; then ok "new --mr --db -> RUN_HINT mit Port"
+else fail "new --mr --db -> RUN_HINT mit Port" "$err"; fi
+DB_EXISTING=review_123 dk drop 123 --db --force >/dev/null 2>&1
+err=$("$WT" link 42 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"wt setup"* ]]; then ok "link -> Wegweiser auf wt setup"; else fail "link -> Wegweiser auf wt setup" "rc=$rc $err"; fi
+for w in "$SP" "$PXB/$LONG" "$PXB/mia-feat-c"; do git -C "$PX" worktree remove --force "$w"; done
+printf 'WT_PREFIX="mia"\nDB_CONTAINER="stubdb"\nLINK_DIRS=(media)\n' > "$HOME/.config/wt/pxrepo.conf"
 
 # run: der Port kommt aus dem gefundenen Ordner - 'mia-123' (Branch-Worktree) ist kein MR
 mkdir -p "$TMP/python-stub"
@@ -498,9 +690,103 @@ printf 'x' > "$PX/manage.py"
 git -C "$PX" worktree add -q -b mia-77 "$PXB/mia-mia-77"
 git -C "$PX" worktree add -q --detach "$PXB/mia-mr-77"
 printf 'x' > "$PXB/mia-mia-77/manage.py"; printf 'x' > "$PXB/mia-mr-77/manage.py"
-err=$(PATH="$TMP/python-stub:$PATH" "$WT" run mia-77 runserver 2>&1 >/dev/null); rc=$?
-if [ "$rc" -eq 1 ] && [[ "$err" == *"kein Port ableitbar"* ]]; then ok "run mia-77 (Branch-Worktree) leitet keinen MR-Port ab"
-else fail "run mia-77 (Branch-Worktree) leitet keinen MR-Port ab" "rc=$rc $err"; fi
+pyrun() { : > "$PY_LOG"; PATH="$TMP/python-stub:$PATH" "$WT" run "$@"; } # stdout/stderr wie wt run, Argumente von manage.py in $PY_LOG
+NAMEPORT=$((9000 + $(printf '%s' mia-mia-77 | cksum | cut -d' ' -f1) % 1000))
+err=$(pyrun mia-77 runserver 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && grep -Eq "127\.0\.0\.1:$NAMEPORT( |$)" "$PY_LOG"; then ok "run mia-77 (Branch-Worktree) -> fester Port $NAMEPORT aus dem Ordnernamen"
+else fail "run mia-77 (Branch-Worktree) -> fester Port $NAMEPORT aus dem Ordnernamen" "rc=$rc $(cat "$PY_LOG") $err"; fi
+if [[ "$err" == *"Port $NAMEPORT"*"mia-mia-77"*"--mr"* ]]; then ok "run nennt die Herkunft des Ports und --mr"; else fail "run nennt die Herkunft des Ports und --mr" "$err"; fi
+pyrun mia-77 runserver >/dev/null 2>&1; first=$(cat "$PY_LOG")
+pyrun mia-77 runserver >/dev/null 2>&1
+expect_eq "run mia-77: Port bei jedem Start gleich" "$first" "$(cat "$PY_LOG")"
+pyrun mia-77 --mr 813 runserver >/dev/null 2>&1
+if grep -q '127.0.0.1:8813' "$PY_LOG" && ! grep -q -- '--mr' "$PY_LOG"; then ok "run --mr 813 -> Port 8813, --mr geht nicht an manage.py"
+else fail "run --mr 813 -> Port 8813, --mr geht nicht an manage.py" "$(cat "$PY_LOG")"; fi
+pyrun mia-77 --port 9999 --mr 813 runserver >/dev/null 2>&1
+if grep -q '127.0.0.1:9999' "$PY_LOG"; then ok "run: --port geht vor --mr"; else fail "run: --port geht vor --mr" "$(cat "$PY_LOG")"; fi
+pyrun @ runserver >/dev/null 2>&1
+if grep -q '127.0.0.1:8000' "$PY_LOG"; then ok "run @ -> Port 8000 (Hauptordner)"; else fail "run @ -> Port 8000 (Hauptordner)" "$(cat "$PY_LOG")"; fi
+err=$(pyrun mia-77 --mr 0813 runserver 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && grep -q '127.0.0.1:8813' "$PY_LOG"; then ok "run --mr 0813 (fuehrende Null) -> Port 8813"; else fail "run --mr 0813 (fuehrende Null) -> Port 8813" "rc=$rc $(cat "$PY_LOG") $err"; fi
+err=$(pyrun 77 --mr 813 runserver 2>&1 >/dev/null)
+if grep -q '127.0.0.1:8077' "$PY_LOG" && [[ "$err" == *"--mr"*"ignoriert"* ]]; then ok "run 77 --mr 813 -> Ordner gewinnt (8077), --mr als ignoriert gemeldet"
+else fail "run 77 --mr 813 -> Ordner gewinnt (8077), --mr als ignoriert gemeldet" "$(cat "$PY_LOG") $err"; fi
+printf '#!/usr/bin/env bash\nprintf "LISTEN 0 4096 127.0.0.1:%s 0.0.0.0:*\\n" "%s"\n' "$NAMEPORT" "$NAMEPORT" > "$TMP/ss-stub/ss"
+err=$(PATH="$TMP/ss-stub:$PATH" pyrun mia-77 runserver 8001 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'runserver 8001' "$PY_LOG" && [[ "$err" != *"Port $NAMEPORT"* ]]; then ok "run mit eigener Adresse -> kein berechneter Port, keine Belegt-Pruefung darauf"
+else fail "run mit eigener Adresse -> kein berechneter Port, keine Belegt-Pruefung darauf" "rc=$rc $(cat "$PY_LOG") $err"; fi
+
+# --mr ohne Nummer: MR zum ausgecheckten Branch suchen (glab/gh als Stub)
+mkdir -p "$TMP/forge-stub"
+cat > "$TMP/forge-stub/glab" <<'EOF'
+#!/usr/bin/env bash
+printf 'glab %s\n' "$*" >> "$FORGE_LOG"
+[ -n "${GLAB_OUT:-}" ] || exit 1
+printf '%s\n' "$GLAB_OUT"
+EOF
+cat > "$TMP/forge-stub/gh" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >> "$FORGE_LOG"
+printf '%s\n' "${GH_OUT:-}"
+EOF
+chmod +x "$TMP/forge-stub/glab" "$TMP/forge-stub/gh"; export FORGE_LOG="$TMP/forge.log"
+fgrun() { : > "$FORGE_LOG"; PATH="$TMP/forge-stub:$PATH" pyrun "$@"; }
+err=$(GLAB_OUT=815 fgrun mia-77 --mr runserver 2>&1 >/dev/null)
+if grep -q '127.0.0.1:8815' "$PY_LOG" && grep -q -- "mr list --source-branch mia-77 -F json --jq .\[0\].iid" "$FORGE_LOG"; then ok "run --mr (gitlab) findet MR 815 zum Branch -> Port 8815"
+else fail "run --mr (gitlab) findet MR 815 zum Branch -> Port 8815" "$(cat "$PY_LOG") | $(cat "$FORGE_LOG") | $err"; fi
+err=$(GLAB_OUT="" fgrun mia-77 --mr runserver 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && grep -Eq "127\.0\.0\.1:$NAMEPORT( |$)" "$PY_LOG" && [[ "$err" == *"kein offener MR"* ]]; then ok "run --mr: glab scheitert -> Hinweis, fester Port"
+else fail "run --mr: glab scheitert -> Hinweis, fester Port" "rc=$rc $(cat "$PY_LOG") $err"; fi
+err=$(GLAB_OUT=null fgrun mia-77 --mr runserver 2>&1 >/dev/null)
+if grep -Eq "127\.0\.0\.1:$NAMEPORT( |$)" "$PY_LOG" && [[ "$err" == *"kein offener MR"* ]]; then ok "run --mr: kein MR (null) -> fester Port"
+else fail "run --mr: kein MR (null) -> fester Port" "$(cat "$PY_LOG") $err"; fi
+NOFORGE="$TMP/noforge-bin"; mkdir -p "$NOFORGE"   # PATH ohne glab und gh - das echte glab darf hier nie laufen
+IFS=: read -ra pathdirs <<<"$PATH"
+for d in "${pathdirs[@]}"; do for f in "$d"/*; do
+  n=${f##*/}; case "$n" in glab|gh) continue ;; esac
+  [ -x "$f" ] && [ ! -e "$NOFORGE/$n" ] && ln -s "$f" "$NOFORGE/$n"
+done; done
+err=$(PATH="$TMP/python-stub:$NOFORGE" "$WT" run mia-77 --mr runserver 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [[ "$err" == *"glab"*"nicht gefunden"* ]] && grep -Eq "127\.0\.0\.1:$NAMEPORT( |$)" "$PY_LOG"; then ok "run --mr ohne glab -> Hinweis, laeuft weiter"
+else fail "run --mr ohne glab -> Hinweis, laeuft weiter" "rc=$rc $err"; fi
+git -C "$PX" worktree add -q --detach "$TMP/px/irgendwo-detached"; printf 'x' > "$TMP/px/irgendwo-detached/manage.py"
+DETPORT=$((9000 + $(printf '%s' irgendwo-detached | cksum | cut -d' ' -f1) % 1000))
+err=$(GLAB_OUT=815 fgrun "$TMP/px/irgendwo-detached" --mr runserver 2>&1 >/dev/null)
+if grep -Eq "127\.0\.0\.1:$DETPORT( |$)" "$PY_LOG" && [[ "$err" == *"kein Branch"* ]] && [ ! -s "$FORGE_LOG" ]; then ok "run --mr im detached Worktree -> kein Branch, fester Port, keine Abfrage"
+else fail "run --mr im detached Worktree -> kein Branch, fester Port, keine Abfrage" "$(cat "$PY_LOG") | $(cat "$FORGE_LOG") | $err"; fi
+git -C "$PX" worktree remove "$TMP/px/irgendwo-detached" --force
+printf 'WT_PREFIX="mia"\nDB_CONTAINER="stubdb"\nLINK_DIRS=(media)\nFORGE="github"\n' > "$HOME/.config/wt/pxrepo.conf"
+GH_OUT=816 fgrun mia-77 --mr runserver >/dev/null 2>&1
+if grep -q '127.0.0.1:8816' "$PY_LOG" && grep -q -- "pr list --head mia-77 --json number --jq .\[0\].number" "$FORGE_LOG"; then ok "run --mr (github) findet PR 816 -> Port 8816"
+else fail "run --mr (github) findet PR 816 -> Port 8816" "$(cat "$PY_LOG") | $(cat "$FORGE_LOG")"; fi
+GH_OUT=816 fgrun mia-77 migrate --mr >/dev/null 2>&1
+if [ ! -s "$FORGE_LOG" ]; then ok "run migrate --mr -> keine MR-Abfrage (nur runserver braucht einen Port)"; else fail "run migrate --mr -> keine MR-Abfrage (nur runserver braucht einen Port)" "$(cat "$FORGE_LOG")"; fi
+
+# Settings: mit SETTINGS_SHIM_PATH entscheidet der Shim im Worktree, sonst gilt RUN_SETTINGS wie immer
+printf 'WT_PREFIX="mia"\nRUN_SETTINGS="app.settings_review"\n' > "$HOME/.config/wt/pxrepo.conf"
+pyrun mia-77 shell >/dev/null 2>&1
+if grep -q -- '--settings=app.settings_review' "$PY_LOG"; then ok "run ohne SETTINGS_SHIM_PATH haengt RUN_SETTINGS an (unveraendert)"
+else fail "run ohne SETTINGS_SHIM_PATH haengt RUN_SETTINGS an (unveraendert)" "$(cat "$PY_LOG")"; fi
+printf 'WT_PREFIX="mia"\nRUN_SETTINGS="app.settings_review"\nSETTINGS_SHIM_PATH="app/settings_review.py"\nSETTINGS_SHIM_IMPORT="app.settings_docker"\nDB_TEMPLATE="stamm_db"\n' > "$HOME/.config/wt/pxrepo.conf"
+err=$(pyrun mia-77 shell 2>&1 >/dev/null)
+if grep -q -- '--settings=app.settings_docker' "$PY_LOG" && [[ "$err" == *"Haupt-DB"*"stamm_db"* ]]; then ok "run ohne Shim -> SETTINGS_SHIM_IMPORT (Haupt-DB) mit Hinweis"
+else fail "run ohne Shim -> SETTINGS_SHIM_IMPORT (Haupt-DB) mit Hinweis" "$(cat "$PY_LOG") $err"; fi
+mkdir -p "$PXB/mia-mia-77/app"; printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'review_mia_77'\n" > "$PXB/mia-mia-77/app/settings_review.py"
+err=$(pyrun mia-77 shell 2>&1 >/dev/null)
+if grep -q -- '--settings=app.settings_review' "$PY_LOG" && [[ "$err" == *"review_mia_77"* ]]; then ok "run mit Shim -> RUN_SETTINGS, nennt die DB-Kopie"
+else fail "run mit Shim -> RUN_SETTINGS, nennt die DB-Kopie" "$(cat "$PY_LOG") $err"; fi
+rm -r "$PXB/mia-mia-77/app"
+err=$(pyrun @ migrate 2>&1 >/dev/null)
+if [[ "$err" == *"migrate"*"Haupt-DB"*"stamm_db"* ]] && [[ "$err" != *"wt setup"* ]] && grep -q '^manage.py migrate' "$PY_LOG"; then ok "run @ migrate ohne Shim -> deutlicher Haupt-DB-Hinweis, laeuft"
+else fail "run @ migrate ohne Shim -> deutlicher Haupt-DB-Hinweis, laeuft" "$(cat "$PY_LOG") $err"; fi
+pyrun mia-77 shell --settings=eigene >/dev/null 2>&1
+if grep -q -- '--settings=eigene' "$PY_LOG" && ! grep -q 'settings_docker' "$PY_LOG"; then ok "run: eigenes --settings bleibt unangetastet"
+else fail "run: eigenes --settings bleibt unangetastet" "$(cat "$PY_LOG")"; fi
+mkdir -p "$PXB/mia-mia-77/tief/innen" && cd "$PXB/mia-mia-77/tief/innen" || exit 1
+pyrun . shell >/dev/null 2>&1
+if grep -q '^manage.py shell' "$PY_LOG"; then ok "run . aus einem Unterordner laeuft im Worktree"; else fail "run . aus einem Unterordner laeuft im Worktree" "$(cat "$PY_LOG")"; fi
+cd "$PX" || exit 1
+printf 'WT_PREFIX="mia"\nDB_CONTAINER="stubdb"\nLINK_DIRS=(media)\n' > "$HOME/.config/wt/pxrepo.conf"
 : > "$PY_LOG"
 PATH="$TMP/python-stub:$PATH" "$WT" run 77 runserver >/dev/null 2>&1
 if grep -q '127.0.0.1:8077' "$PY_LOG"; then ok "run 77 nimmt Port 8077 aus dem Ordner mia-mr-77"
@@ -519,10 +805,10 @@ if [[ "$err" == *"Port 8005"* ]]; then ok "prefix mr: drop 5 findet MR 5 im Ordn
 
 # ---------- Zeichenregeln ----------
 cd "$PX" || exit 1
-err=$("$WT" link "a'b" 2>&1 >/dev/null); rc=$?
-expect_eq "link mit ungueltigem Namen -> Exit 1" "1" "$rc"
-if [ ! -e "$PXB/a'b" ] && [ ! -e "$PXB/media" ]; then ok "link mit ungueltigem Namen legt nichts im Sammelordner an"
-else fail "link mit ungueltigem Namen legt nichts im Sammelordner an" "$(ls -A "$PXB")"; fi
+err=$("$WT" setup "a'b" 2>&1 >/dev/null); rc=$?
+expect_eq "setup mit ungueltigem Namen -> Exit 1" "1" "$rc"
+if [ ! -e "$PXB/a'b" ] && [ ! -e "$PXB/media" ]; then ok "setup mit ungueltigem Namen legt nichts im Sammelordner an"
+else fail "setup mit ungueltigem Namen legt nichts im Sammelordner an" "$(ls -A "$PXB")"; fi
 cd "$REPO" || exit 1
 err=$("$WT" path .. 2>&1 >/dev/null); rc=$?
 expect_eq "path .. -> Exit 1" "1" "$rc"

@@ -51,23 +51,33 @@ wt - Worktrees mit erklaerten Schritten
                               --db legt eine Template-Kopie der Projekt-DB an;
                               GitLab oder GitHub (--pr <nr> ist dasselbe) - FORGE
                               kommt aus der Konfig oder der Remote-URL
-  wt new --branch <name>      Arbeits-Worktree von einem (Remote-)Branch
-  wt drop <nr|kuerzel> [--db] Worktree entfernen; --db loescht die DB-Kopie
-  wt run <nr> [args]          manage.py im Worktree mit Review-Settings und Port
+  wt new --branch <name> [--db]
+                              Arbeits-Worktree von einem (Remote-)Branch
+  wt drop <ziel> [--db]       Worktree entfernen (nicht . und nicht @); --db loescht
+                              seine DB-Kopie (Name aus dem Settings-Shim; ohne Shim nur bei MR-Ordnern)
+  wt run <ziel> [args]        manage.py im Worktree mit passenden Settings und Port
                               (ohne Args: runserver); 'wt help run' zeigt Beispiele
-  wt link <nr|kuerzel>        LINK_DIRS (z.B. media) nachtraeglich einbinden
+  wt setup <ziel> [--db]      bestehenden Worktree nachtraeglich einrichten wie 'wt new':
+                              COPY_FILES kopieren, LINK_DIRS verlinken, requirements
+                              pruefen, mit --db DB-Kopie + Settings-Shim; ueberschreibt nie
   wt list                     Worktrees und vorhandene Review-DB-Kopien
-  wt path <nr|kuerzel|.>      nur den Pfad ausgeben (fuer Skripte/Agenten);
-                              '.' oder der Ordnername ist der Hauptordner
+  wt path <ziel>              nur den Pfad ausgeben (fuer Skripte/Agenten)
   wt pick                     Auswahlliste (fzf): Hauptrepo + alle Worktrees,
                               gibt den gewaehlten Pfad aus
-  wt ide [<nr|kuerzel|.>]  in der IDE oeffnen (IDE_CMD, Default pycharm);
+  wt ide [<ziel>]             in der IDE oeffnen (IDE_CMD, Default pycharm);
                               ohne Argument: Auswahlliste
-  wt cd [--ide] [<nr|kuerzel|.>]
+  wt cd [--ide] [<ziel>]
                               wechseln (ohne Argument: Auswahlliste), --ide oeffnet
                               zusaetzlich die IDE - braucht die Shell-Integration
                               (wt.zsh), ein Skript kann das Verzeichnis nicht wechseln
   wt new ... --ide            neuen Worktree danach in der IDE oeffnen
+
+<ziel>: .  der Worktree, in dem du stehst (auch aus einem Unterordner)
+        @  der Hauptordner - ebenso sein Ordnername oder das Repo-Kuerzel (WT_PREFIX)
+        721, mr-721, mia-mr-721, feat-x   ein Worktree-Ordner
+        feat/x   ein Branch: der Worktree, in dem er ausgecheckt ist (auch ausserhalb
+                 des Sammelordners); der Ordnername geht vor
+        /pfad    ein Worktree dieses Repos
 
 Erklaerungen gehen auf stderr, Ergebnisse auf stdout.
 Repo-Kuerzel vor jedem Worktree-Ordner: WT_PREFIX in der Konfig (abc -> abc-mr-721);
@@ -173,11 +183,39 @@ find_wt() { # $1 = nr|kuerzel|branch|ordnername, $2 = --no-hint -> existierender
   p="$WT_BASE/$(wt_dir "$slug")"
   if [ -d "$p" ]; then printf '%s\n' "$p"; return 0; fi
   if [ ! -d "$WT_BASE/$slug" ]; then
-    if [ "$p" = "$WT_BASE/$slug" ]; then die "Worktree nicht gefunden: $p"; fi
-    die "Worktree nicht gefunden: $p (auch nicht $WT_BASE/$slug)"
+    # Rueckfall: der Worktree, in dem dieser Branch ausgecheckt ist - egal wo und wie der Ordner heisst
+    p=$(branch_worktree "$1")
+    if [ -n "$p" ]; then printf '%s\n' "$p"; return 0; fi
+    p="$WT_BASE/$(wt_dir "$slug")"
+    if [ "$p" = "$WT_BASE/$slug" ]; then die "Worktree nicht gefunden: $p (auch kein Worktree mit Branch '$1')"; fi
+    die "Worktree nicht gefunden: $p (auch nicht $WT_BASE/$slug, auch kein Worktree mit Branch '$1')"
   fi
   [ "${2:-}" = "--no-hint" ] || legacy_hint "$slug"
   printf '%s\n' "$WT_BASE/$slug"
+}
+
+worktree_records() { # je Worktree 'pfad<TAB>branch' (branch leer bei detached), Hauptbaum zuerst
+  local line path="" branch=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }"; branch="" ;;
+      "branch "*)   branch="${line#branch refs/heads/}" ;;
+      "")           [ -z "$path" ] || printf '%s\t%s\n' "$path" "$branch"; path="" ;;
+    esac
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain; echo)
+}
+
+branch_worktree() { # $1 = branch -> Pfad des Worktrees, in dem er ausgecheckt ist, sonst leer (Git checkt einen Branch nie doppelt aus)
+  worktree_records | awk -F'\t' -v b="$1" '$2 == b { print $1; exit }'
+}
+
+is_worktree() { # $1 = ordner -> wahr, wenn er ein Worktree dieses Repos ist (Hauptbaum eingeschlossen)
+  local real path _b
+  real=$(realpath -e -- "$1" 2>/dev/null) || return 1
+  while IFS=$'\t' read -r path _b; do
+    [ "$(realpath -e -- "$path" 2>/dev/null)" = "$real" ] && return 0
+  done < <(worktree_records)
+  return 1
 }
 
 legacy_hint() { # $1 = ordnername; Umbenennungsbefehl zeigen, nie ausfuehren
@@ -213,11 +251,13 @@ refuse_legacy_twin() { # $1 = slug; neben einem Ordner ohne Repo-Kuerzel keinen 
   > git -C $(q "$REPO_ROOT") worktree move $(q "$old") $(q "$new")"
 }
 
-copy_project_files() { # $1 = worktree-pfad
+copy_project_files() { # $1 = worktree-pfad; was im Worktree schon liegt, bleibt unangetastet
   local f
   for f in "${COPY_FILES[@]}"; do
-    if [ -f "$REPO_ROOT/$f" ]; then
-      run "cp '$REPO_ROOT/$f' '$1/$f'" \
+    if [ -e "$1/$f" ] || [ -L "$1/$f" ]; then
+      note "'$f' ist im Worktree schon vorhanden - nicht ueberschrieben."
+    elif [ -f "$REPO_ROOT/$f" ]; then
+      run "cp $(q "$REPO_ROOT/$f") $(q "$1/$f")" \
           "gitignorte Datei '$f' in den Worktree kopieren (Inhalt wird nie angezeigt)"
     else
       note "Hinweis: '$f' existiert im Hauptrepo nicht - uebersprungen."
@@ -234,10 +274,10 @@ link_project_dirs() { # $1 = worktree-pfad; gitignorierte Ordner aus dem Hauptba
       note "'$d' ist im Worktree schon vorhanden - nichts zu tun."
     else
       if ! grep -qxF "$d" "$exclude" 2>/dev/null; then
-        run "echo '$d' >> '$exclude'" \
+        run "echo $(q "$d") >> $(q "$exclude")" \
             "'$d' in .git/info/exclude eintragen (die .gitignore kennt nur Ordner mit Schraegstrich, ein Symlink waere sonst 'untracked')"
       fi
-      run "ln -s '$REPO_ROOT/$d' '$1/$d'" \
+      run "ln -s $(q "$REPO_ROOT/$d") $(q "$1/$d")" \
           "'$d' per Symlink aus dem Hauptbaum einbinden (keine Kopie; Aenderungen darin treffen den Hauptbaum)"
     fi
   done
@@ -247,7 +287,7 @@ unlink_project_dirs() { # $1 = worktree-pfad; entfernt nur die Links, nie das Zi
   local d
   for d in ${LINK_DIRS[@]+"${LINK_DIRS[@]}"}; do
     if [ -L "$1/$d" ]; then
-      run "rm '$1/$d'" "Symlink '$d' entfernen (nur der Link, das Ziel im Hauptbaum bleibt)"
+      run "rm $(q "$1/$d")" "Symlink '$d' entfernen (nur der Link, das Ziel im Hauptbaum bleibt)"
     fi
   done
 }
@@ -258,7 +298,7 @@ venv_check() { # $1 = ref des neuen Worktrees; nur fuer Projekte mit requirement
     note "Zielbranch unbekannt ($REMOTE/HEAD fehlt, TARGET_BRANCH leer) -> requirements-Vergleich entfaellt."
     return 0
   fi
-  run "git -C '$REPO_ROOT' fetch -q $(q "$REMOTE") $(q "$TARGET_BRANCH")" \
+  run "git -C $(q "$REPO_ROOT") fetch -q $(q "$REMOTE") $(q "$TARGET_BRANCH")" \
       "Zielbranch aktualisieren, damit der requirements-Vergleich stimmt" \
     || { note "Zielbranch '$TARGET_BRANCH' auf '$REMOTE' nicht gefunden -> requirements-Vergleich entfaellt (TARGET_BRANCH in der Konfig pruefen)."; return 0; }
   if ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/remotes/$REMOTE/$TARGET_BRANCH" >/dev/null; then
@@ -280,19 +320,86 @@ venv_check() { # $1 = ref des neuen Worktrees; nur fuer Projekte mit requirement
 
 db_create() { # $1 = kopie-name
   [ -n "$DB_CONTAINER" ] || die "--db verlangt DB_CONTAINER/DB_TEMPLATE in der Konfig"
-  run "docker exec $DB_CONTAINER createdb -U $DB_USER -T $DB_TEMPLATE '$1'" \
+  run "docker exec $DB_CONTAINER createdb -U $DB_USER -T $DB_TEMPLATE $(q "$1")" \
       "DB-Kopie '$1' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)" \
-    || die "createdb fehlgeschlagen - meist halten offene Verbindungen die Template-DB fest (Server/psql beenden, erneut versuchen)"
+    || die "createdb fehlgeschlagen - meist halten offene Verbindungen die Vorlage '$DB_TEMPLATE' fest:
+  ! laeuft ein Server auf der Haupt-DB ('wt run' ohne DB-Kopie, './manage.sh runserver --local_custom docker') oder ein psql?
+  ! beenden, dann erneut versuchen"
+}
+
+db_name() { # $1 = worktree-pfad -> Name der DB-Kopie: <prefix><nr> fuer MR-Ordner, sonst <prefix><ordnername ohne Repo-Kuerzel>
+  local name nr slug n
+  name=$(basename "$1")
+  nr=$(mr_number "$name")
+  if [ -n "$nr" ]; then
+    n="${DB_COPY_PREFIX}${nr}"
+  else
+    slug="$name"
+    if [ -n "${WT_PREFIX:-}" ]; then slug="${slug#"$WT_PREFIX"-}"; fi
+    # Postgres-freundlich: nur Kleinbuchstaben, Ziffern und _ (aus dem Ordnernamen, damit er nach 'git switch' gleich bleibt)
+    slug=$(printf '%s' "$slug" | LC_ALL=C tr -c 'A-Za-z0-9' '_' | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    n="${DB_COPY_PREFIX}${slug}"
+  fi
+  [ "${#n}" -le 63 ] || die "DB-Name '$n' ist laenger als 63 Bytes - Postgres wuerde ihn still kuerzen; Ordner kuerzer benennen"
+  printf '%s\n' "$n"
+}
+
+db_exists() { # $1 = db-name -> wahr, wenn es die Datenbank im Container gibt
+  local names
+  names=$(run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database\"" \
+              "vorhandene Datenbanken abfragen") || die "Datenbanken in '$DB_CONTAINER' nicht abfragbar - laeuft der Container?"
+  printf '%s\n' "$names" | grep -qxF -- "$1"
+}
+
+is_copy_name() { # $1 = db-name -> wahr nur fuer eine DB-Kopie: nie die Vorlage, und mit DB_COPY_PREFIX, wenn einer gesetzt ist
+  [ "$1" != "$DB_TEMPLATE" ] || return 1
+  [ -z "$DB_COPY_PREFIX" ] || [[ "$1" == "$DB_COPY_PREFIX"* ]]
+}
+
+not_a_copy() { # $1 = db-name aus dem Shim -> Abbruch mit Erklaerung
+  die "der Settings-Shim zeigt auf '$1' - das ist keine DB-Kopie (die Vorlage '$DB_TEMPLATE' oder ohne Praefix '$DB_COPY_PREFIX'); wt fasst sie nicht an
+  ! $SETTINGS_SHIM_PATH im Worktree pruefen"
+}
+
+setup_db() { # $1 = worktree-pfad; DB-Kopie und Shim, beides nur, wenn noch nicht da
+  [ -n "$DB_CONTAINER" ] || die "--db verlangt DB_CONTAINER/DB_TEMPLATE in der Konfig"
+  local own dbname
+  own=$(shim_db "$1")              # der Shim im Worktree sagt, welche DB ihm gehoert
+  if [ -n "$own" ]; then
+    is_copy_name "$own" || not_a_copy "$own"
+    dbname="$own"
+  else
+    dbname=$(db_name "$1") || exit 1
+  fi
+  if db_exists "$dbname"; then
+    [ -n "$own" ] || die "eine DB '$dbname' gibt es schon, aber kein Shim in diesem Worktree zeigt darauf - sie gehoert wohl einem anderen Worktree
+  ! nicht mitbenutzen: Ordner umbenennen oder die alte Kopie pruefen ('wt list')"
+    note "DB-Kopie '$dbname' ist schon vorhanden - nichts zu tun."
+  else
+    db_create "$dbname"
+  fi
+  settings_shim "$1" "$dbname"
+}
+
+setup_steps() { # $1 = worktree-pfad, $2 = ref fuer den requirements-Vergleich, $3 = 1 fuer DB-Kopie
+  copy_project_files "$1"
+  link_project_dirs "$1"
+  venv_check "$2"
+  if [ "$3" -eq 1 ]; then setup_db "$1"; fi
 }
 
 settings_shim() { # $1 = worktree-pfad, $2 = kopie-name
   [ -n "$SETTINGS_SHIM_PATH" ] || return 0
   local exclude="$REPO_ROOT/.git/info/exclude"
   if ! grep -qxF "$SETTINGS_SHIM_PATH" "$exclude" 2>/dev/null; then
-    run "echo '$SETTINGS_SHIM_PATH' >> '$exclude'" \
+    run "echo $(q "$SETTINGS_SHIM_PATH") >> $(q "$exclude")" \
         "Shim in .git/info/exclude eintragen (lokal ignoriert, gilt fuer alle Worktrees, blockiert 'worktree remove' nicht)"
   fi
   local target="$1/$SETTINGS_SHIM_PATH"
+  if [ -e "$target" ] || [ -L "$target" ]; then note "Settings-Shim $SETTINGS_SHIM_PATH ist schon vorhanden - nicht ueberschrieben."; return 0; fi
+  if [ ! -d "$(dirname "$target")" ]; then
+    run "mkdir -p $(q "$(dirname "$target")")" "Ordner fuer den Shim anlegen"
+  fi
   note "Settings-Shim erzeugen: $SETTINGS_SHIM_PATH (gitignored; fixe 3-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)"
   printf '  > cat > %s\n' "$target" >&2
   cat > "$target" <<EOF
@@ -328,15 +435,24 @@ cmd_new() {
   > wt new --mr ${kuerzel#mr-}
   ! sonst einen anderen Branchnamen waehlen"; fi
     if [ -n "${WT_PREFIX:-}" ]; then
+      if [ "$kuerzel" = "$WT_PREFIX" ]; then die "Branch '$branch' ergibt den Slug '$kuerzel' = Repo-Kuerzel - 'wt path $kuerzel' meint den Hauptordner
+  ! anderen Branchnamen waehlen"; fi
       case "$kuerzel" in "$WT_PREFIX"-*) die "Branch '$branch' ergibt den Slug '$kuerzel', der mit dem Repo-Kuerzel '$WT_PREFIX-' beginnt - 'wt path $kuerzel' koennte ihn nicht vom Ordner des Branchs '${kuerzel#"$WT_PREFIX"-}' unterscheiden
   ! anderen Branchnamen waehlen" ;; esac
     fi
   fi
   wtpath="$WT_BASE/$(wt_dir "$kuerzel")"
   refuse_legacy_twin "$kuerzel"
+  if [ "$with_db" -eq 1 ]; then   # DB-Probleme vor dem Anlegen erkennen - danach waere der Worktree schon da
+    [ -n "$DB_CONTAINER" ] || die "--db verlangt DB_CONTAINER/DB_TEMPLATE in der Konfig"
+    local pre_db
+    pre_db=$(db_name "$wtpath") || exit 1
+    if db_exists "$pre_db"; then die "eine DB '$pre_db' gibt es schon - sie gehoert wohl einem anderen Worktree; nicht mitbenutzen
+  ! alte Kopie pruefen ('wt list') oder einen anderen Branchnamen waehlen"; fi
+  fi
 
   if [ -z "$TARGET_BRANCH" ]; then   # <REMOTE>/HEAD fehlt (z.B. Repo per 'git remote add' statt clone) - einmalig vom Remote erfragen
-    run "git -C '$REPO_ROOT' remote set-head $(q "$REMOTE") --auto" \
+    run "git -C $(q "$REPO_ROOT") remote set-head $(q "$REMOTE") --auto" \
         "Default-Branch des Remotes erfragen und als $REMOTE/HEAD merken (TARGET_BRANCH ist nicht gesetzt)" \
       || note "Default-Branch nicht ermittelbar (vorher 'git fetch $REMOTE' noetig?) - weiter ohne Zielbranch."
     resolve_target_branch
@@ -346,50 +462,42 @@ cmd_new() {
     detect_forge
     ref="refs/mr/$mr"
     port=$((PORT_BASE + mr % 1000))
-    run "git -C '$REPO_ROOT' fetch $(q "$REMOTE") $(q "$(mr_refspec "$mr")")" \
+    run "git -C $(q "$REPO_ROOT") fetch $(q "$REMOTE") $(q "$(mr_refspec "$mr")")" \
         "$(mr_word)-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)"
-    run "git -C '$REPO_ROOT' worktree add --detach '$wtpath' '$ref'" \
+    run "git -C $(q "$REPO_ROOT") worktree add --detach $(q "$wtpath") $(q "$ref")" \
         "Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision"
   else
     if git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$branch"; then
       ref="$branch"
-      run "git -C '$REPO_ROOT' worktree add '$wtpath' $(q "$branch")" \
+      run "git -C $(q "$REPO_ROOT") worktree add $(q "$wtpath") $(q "$branch")" \
           "Worktree auf existierendem lokalen Branch anlegen (schlaegt fehl, wenn er woanders ausgecheckt ist)"
     else
       ref="$REMOTE/$branch"
-      run "git -C '$REPO_ROOT' fetch -q $(q "$REMOTE") $(q "$branch")" \
+      run "git -C $(q "$REPO_ROOT") fetch -q $(q "$REMOTE") $(q "$branch")" \
           "Branch vom Remote holen, lokal gibt es ihn noch nicht"
-      run "git -C '$REPO_ROOT' worktree add --track -b $(q "$branch") '$wtpath' $(q "$REMOTE/$branch")" \
+      run "git -C $(q "$REPO_ROOT") worktree add --track -b $(q "$branch") $(q "$wtpath") $(q "$REMOTE/$branch")" \
           "Worktree anlegen und lokalen Tracking-Branch dazu erzeugen"
     fi
   fi
 
-  copy_project_files "$wtpath"
-  link_project_dirs "$wtpath"
-  venv_check "$ref"
-
-  if [ "$with_db" -eq 1 ]; then
-    [ -n "$mr" ] || die "--db gibt es (v1) nur zusammen mit --mr"
-    local dbname="${DB_COPY_PREFIX}${mr}"
-    db_create "$dbname"
-    settings_shim "$wtpath" "$dbname"
-  fi
+  setup_steps "$wtpath" "$ref" "$with_db"
 
   prefix_reminder "$(basename "$wtpath")"
   note "Fertig. Naechste Schritte von Hand:"
   # Mit Shell-Integration (WT_SHELL=1) uebernimmt die Funktion den cd selbst.
   [ -z "${WT_SHELL:-}" ] && printf '  cd %s\n' "$wtpath" >&2
-  if [ -n "$port" ] && [ -n "$RUN_HINT" ]; then
-    local hint="${RUN_HINT//\{port\}/$port}"
-    [ -n "$mr" ] && hint="${hint//\{db\}/${DB_COPY_PREFIX}${mr}}"
+  if [ -n "$port" ] && [ -n "$RUN_HINT" ] && { [ "$with_db" -eq 1 ] || [ -z "$SETTINGS_SHIM_PATH" ]; }; then
+    local hint="${RUN_HINT//\{port\}/$port}"   # RUN_HINT nennt die Shim-Settings - ohne DB-Kopie gaebe es sie nicht
+    hint="${hint//\{db\}/$(db_name "$wtpath")}"
     printf '  %s\n' "$hint" >&2
-  elif [ -n "$port" ]; then
-    printf '  Serverport-Vorschlag: %s\n' "$port" >&2
   fi
+  printf '  wt run %s   (Server starten; wt run %s migrate fuer manage.py-Befehle)\n' "${mr:-$branch}" "${mr:-$branch}" >&2
   if [ "$with_ide" -eq 1 ]; then open_ide "$wtpath"; fi
 }
 
-is_main_repo_arg() { [ "$1" = "." ] || [ "$1" = "$REPO_NAME" ]; } # '.' oder Ordnername = Hauptordner
+is_main_repo_arg() { # '@', Ordnername oder Repo-Kuerzel = Hauptordner ('.' ist der Worktree, in dem man steht)
+  [ "$1" = "@" ] || [ "$1" = "$REPO_NAME" ] || { [ -n "${WT_PREFIX:-}" ] && [ "$1" = "$WT_PREFIX" ]; }
+}
 
 check_main_branch() { # Hinweis, wenn im Hauptordner nicht TARGET_BRANCH ausgecheckt ist
   [ -n "$TARGET_BRANCH" ] || return 0   # Zielbranch unbekannt -> nichts zu vergleichen
@@ -401,9 +509,11 @@ check_main_branch() { # Hinweis, wenn im Hauptordner nicht TARGET_BRANCH ausgech
   fi
 }
 
-resolve_path() { # $1 = .|reponame|absoluter pfad|nr|kuerzel|branch -> existierender Ordner
+resolve_path() { # $1 = .|@|reponame|kuerzel|absoluter pfad|nr|ordner|branch -> existierender Worktree-Ordner
   local p
-  if is_main_repo_arg "$1"; then
+  if [ "$1" = "." ]; then
+    p=$(here_worktree) || die "'.' meint den Worktree, in dem du stehst - hier ist keiner"
+  elif is_main_repo_arg "$1"; then
     p="$REPO_ROOT"
   else
     case "$1" in
@@ -412,31 +522,45 @@ resolve_path() { # $1 = .|reponame|absoluter pfad|nr|kuerzel|branch -> existiere
     esac
   fi
   [ -d "$p" ] || die "Worktree nicht gefunden: $p"
-  if [ "$p" = "$REPO_ROOT" ]; then check_main_branch; fi
+  is_worktree "$p" || die "$p ist kein Worktree von $REPO_NAME ('git -C $(q "$REPO_ROOT") worktree list' zeigt alle)"
+  p=$(realpath -e -- "$p")   # Symlinks aufloesen: Vergleiche mit dem Hauptordner und cd landen am echten Ort
+  if is_main_path "$p"; then check_main_branch; fi
   printf '%s\n' "$p"
 }
 
+is_main_path() { [ "$(realpath -e -- "$1" 2>/dev/null)" = "$(realpath -e -- "$REPO_ROOT")" ]; } # $1 = ordner -> wahr fuer den Hauptordner
+
+here_worktree() { # -> Worktree, in dem die Shell steht
+  # Nach dem logischen $PWD (laengster passender Worktree-Pfad): in einem verlinkten Ordner wie .reviews
+  # zeigt das physische Verzeichnis in den Hauptordner, gemeint ist aber der Worktree mit dem Link.
+  local path _b best=""
+  while IFS=$'\t' read -r path _b; do
+    case "$PWD/" in "$path"/*) [ "${#path}" -le "${#best}" ] || best="$path" ;; esac
+  done < <(worktree_records)
+  if [ -n "$best" ]; then printf '%s\n' "$best"; return 0; fi
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+is_here() { # $1 = ordner -> wahr, wenn die Shell in diesem Worktree steht (auch in einem Unterordner)
+  local top
+  top=$(here_worktree) || return 1
+  [ "$(realpath -e -- "$top")" = "$(realpath -e -- "$1" 2>/dev/null)" ]
+}
+
 cmd_path() {
-  [ -n "${1:-}" ] || die "path braucht <nr>, <kuerzel> oder . (Hauptordner)"
+  [ -n "${1:-}" ] || die "path braucht ein Ziel: . (hier), @ (Hauptordner), Nummer, Ordner oder Branch"
   resolve_path "$1"
 }
 
 pick_lines() { # Hauptrepo + alle Worktrees als 'name<TAB>branch<TAB>pfad', Hauptrepo zuerst
-  local here line path="" branch="" names=() branches=() paths=() width=1 i name mark
+  local here path branch names=() branches=() paths=() width=1 i name mark
   here=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  while IFS= read -r line; do
-    case "$line" in
-      "worktree "*) path="${line#worktree }"; branch="(detached)" ;;
-      "branch "*)   branch="[${line#branch refs/heads/}]" ;;
-      "")
-        if [ -n "$path" ]; then
-          name=$(basename "$path")
-          names+=("$name"); branches+=("$branch"); paths+=("$path")
-          [ "${#name}" -le "$width" ] || width=${#name}
-        fi
-        path="" ;;
-    esac
-  done < <(git -C "$REPO_ROOT" worktree list --porcelain; echo)
+  while IFS=$'\t' read -r path branch; do
+    name=$(basename "$path")
+    names+=("$name"); paths+=("$path")
+    if [ -n "$branch" ]; then branches+=("[$branch]"); else branches+=("(detached)"); fi
+    [ "${#name}" -le "$width" ] || width=${#name}
+  done < <(worktree_records)
   for i in "${!paths[@]}"; do   # git listet den Hauptbaum immer zuerst
     mark=""
     [ "${paths[$i]}" = "$REPO_ROOT" ] && mark="  (Hauptrepo)"
@@ -447,7 +571,7 @@ pick_lines() { # Hauptrepo + alle Worktrees als 'name<TAB>branch<TAB>pfad', Haup
 
 cmd_pick() { # Auswahl per fzf; Erklaerung auf stderr, nur der Pfad auf stdout
   command -v fzf >/dev/null || die "fzf nicht gefunden - installieren (Fedora: sudo dnf install fzf) oder Nummer/Kuerzel angeben"
-  show "git -C '$REPO_ROOT' worktree list --porcelain | fzf" \
+  show "git -C $(q "$REPO_ROOT") worktree list --porcelain | fzf" \
        "Hauptrepo und Worktrees zur Auswahl zeigen (Tippen filtert, Enter waehlt, Esc bricht ab)"
   local sel
   sel=$(pick_lines | fzf --delimiter=$'\t' --with-nth=1,2 --height=40% --reverse --prompt='wt> ') || exit 1
@@ -462,7 +586,7 @@ need_ide() {
 }
 
 open_ide() { # $1 = pfad
-  run "setsid -f $IDE_CMD '$1' >/dev/null 2>&1" \
+  run "setsid -f $IDE_CMD $(q "$1") >/dev/null 2>&1" \
       "$(basename "$1") in der IDE oeffnen, vom Terminal abgekoppelt (neues oder selbes Fenster regelt PyCharm: 'Open project in')"
 }
 
@@ -473,65 +597,158 @@ cmd_ide() {
   open_ide "$p"
 }
 
-cmd_link() { # nachtraeglich die LINK_DIRS in einen bestehenden Worktree einbinden
-  [ -n "${1:-}" ] || die "link braucht <nr> oder <kuerzel>"
-  [ "${#LINK_DIRS[@]}" -gt 0 ] || die "keine LINK_DIRS in der Konfig"
-  local wtpath
-  wtpath=$(cmd_path "$1")
-  link_project_dirs "$wtpath"
+cmd_setup() { # bestehenden Worktree nachtraeglich einrichten - dieselben Schritte wie 'wt new', nie ueberschreibend
+  local target="" with_db=0 wtpath
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --db) with_db=1; shift ;;
+      -*)   die "unbekannte Option fuer setup: $1" ;;
+      *)    [ -z "$target" ] || die "setup nimmt genau ein Ziel"; target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "setup braucht ein Ziel: . (hier), Nummer, Ordner oder Branch"
+  wtpath=$(resolve_path "$target")
+  if is_main_path "$wtpath"; then die "der Hauptordner ist die Quelle fuer Dateien, Links und DB-Vorlage - eingerichtet werden nur Worktrees"; fi
+  setup_steps "$wtpath" "$(git -C "$wtpath" rev-parse HEAD)" "$with_db"
+  note "Fertig: $(basename "$wtpath") ist eingerichtet. Starten: wt run $(q "$target") (manage.py-Befehle: wt run $(q "$target") migrate)"
 }
 
 usage_run() {
   cat <<'EOF'
-wt run <nr|kuerzel> [manage.py-Argumente] [--port N]
+wt run <ziel> [manage.py-Argumente] [--port N] [--mr [nr]]
 
-  Fuehrt manage.py im Worktree aus - mit den Review-Settings aus der Konfig
-  (RUN_SETTINGS) und dem Port 8000 + (nr mod 1000). Funktioniert im Hauptbaum
-  und in jedem Worktree des Repos, ohne vorher 'wt cd'. Interpreter: das
-  gerade aktive venv ('python'); ohne aktives venv RUN_PYTHON aus der Konfig
+  Fuehrt manage.py im Worktree aus, ohne vorher 'wt cd'. <ziel> wie ueberall:
+  . (hier), @ (Hauptordner), Nummer, Ordner oder Branch.
+
+  Port fuer runserver, der erste passende gewinnt:
+    --port N                      dieser Port
+    Hauptordner                   PORT_BASE (8000)
+    Ordner mr-<nr>                PORT_BASE + (nr mod 1000)
+    --mr <nr>                     PORT_BASE + (nr mod 1000), ohne Netz
+    --mr                          offenen MR/PR zum Branch suchen (glab/gh);
+                                  ohne Treffer weiter mit:
+    sonst                         fest aus dem Ordnernamen, 9000-9999
+
+  Settings: RUN_SETTINGS aus der Konfig. Ist SETTINGS_SHIM_PATH gesetzt,
+  entscheidet der Shim im Worktree: vorhanden -> RUN_SETTINGS (DB-Kopie),
+  sonst SETTINGS_SHIM_IMPORT (Haupt-DB, mit Hinweis). Ein eigenes --settings
+  bleibt unangetastet.
+  Interpreter: das aktive venv ('python'); ohne venv RUN_PYTHON aus der Konfig
   (z.B. das venv des Hauptbaums), sonst 'python' aus dem System.
 
-  wt run 721                    runserver auf 127.0.0.1:<port>
+  wt run .                      runserver im Worktree, in dem du stehst
+  wt run . --mr                 dasselbe mit dem Port des MR zum Branch
   wt run 721 --port 9000        runserver auf anderem Port
-  wt run 721 migrate            beliebiger manage.py-Befehl, gleiche Settings
-  wt run 721 shell
-  wt run 721 showmigrations
+  wt run . migrate              beliebiger manage.py-Befehl, gleiche Settings
+  wt run . makemigrations
+  wt run @ shell                im Hauptordner
+  wt run feat/x showmigrations  im Worktree des Branchs feat/x
 
-  Nicht angehaengt wird --settings, wenn du selbst eines angibst.
   'runserver' ohne Adresse bekommt automatisch 127.0.0.1:<port>.
 EOF
+}
+
+name_port() { # $1 = ordnername -> fester Port 9000-9999, ohne Netz und bei jedem Start gleich
+  local sum
+  sum=$(printf '%s' "$1" | cksum | cut -d' ' -f1)
+  printf '%s\n' $((9000 + sum % 1000))
+}
+
+lookup_mr() { # $1 = worktree-pfad -> Nummer des offenen MR/PR zum ausgecheckten Branch, sonst leer; nie fatal
+  local branch tool out
+  branch=$(git -C "$1" branch --show-current 2>/dev/null) || branch=""
+  if [ -z "$branch" ]; then note "--mr: im Worktree ist kein Branch ausgecheckt (detached) - MR-Suche entfaellt"; return 0; fi
+  re_ascii "$branch" '^[A-Za-z0-9._/-]+$' || { note "--mr: Branchname mit ungewoehnlichen Zeichen - MR-Suche entfaellt"; return 0; }
+  detect_forge
+  case "$FORGE" in github) tool=gh ;; *) tool=glab ;; esac
+  if ! command -v "$tool" >/dev/null; then note "--mr: '$tool' nicht gefunden - MR-Suche entfaellt (Nummer direkt angeben: --mr <nr>)"; return 0; fi
+  case "$FORGE" in
+    github) out=$(run "cd $(q "$REPO_ROOT") && gh pr list --head $(q "$branch") --json number --jq '.[0].number'" \
+                      "offenen PR zum Branch '$branch' suchen (braucht Netz und gh-Login)") || out="" ;;
+    *)      out=$(run "cd $(q "$REPO_ROOT") && glab mr list --source-branch $(q "$branch") -F json --jq '.[0].iid'" \
+                      "offenen MR zum Branch '$branch' suchen (braucht Netz und glab-Login)") || out="" ;;
+  esac
+  if re_ascii "$out" '^[0-9]+$'; then printf '%s\n' "$out"
+  else note "--mr: kein offener MR zu '$branch' gefunden (oder $tool nicht erreichbar)"
+  fi
+  return 0
+}
+
+shim_db() { # $1 = worktree-pfad -> DB-Name aus dem Settings-Shim, sonst leer
+  [ -n "$SETTINGS_SHIM_PATH" ] && [ -f "$1/$SETTINGS_SHIM_PATH" ] || return 0
+  sed -n "s/^DATABASES\['default'\]\['NAME'\] = '\(.*\)'\$/\1/p" "$1/$SETTINGS_SHIM_PATH" | head -n1
 }
 
 cmd_run() {
   case "${1:-}" in ""|-h|--help) usage_run; return 0 ;; esac
   local nr="$1" wtpath; shift
   wtpath=$(cmd_path "$nr")
-  local port="" args=() a
-  local mrnr
-  mrnr=$(mr_number "$(basename "$wtpath")")
-  [ -z "$mrnr" ] || port=$((PORT_BASE + mrnr % 1000))
+  local port="" port_src="" args=() a mr_flag=0 mr_arg="" has_addr=0
+  local mrnr name
+  name=$(basename "$wtpath")
   while [ $# -gt 0 ]; do
     case "$1" in
-      --port) [ -n "${2:-}" ] || die "--port braucht eine Zahl"; port="$2"; shift 2 ;;
+      --port) [ -n "${2:-}" ] || die "--port braucht eine Zahl"; port="$2"; port_src="aus --port"; shift 2 ;;
+      --mr|--pr)
+        mr_flag=1; shift
+        if [ $# -gt 0 ] && re_ascii "$1" '^[0-9]+$'; then mr_arg=$((10#$1)); shift; fi ;;   # 10#: '0813' ist 813, nicht oktal
       *)      args+=("$1"); shift ;;
     esac
   done
   [ "${#args[@]}" -gt 0 ] || args=(runserver)
 
   if [ "${args[0]}" = "runserver" ]; then
-    [ -n "$port" ] || die "kein Port ableitbar - bitte --port angeben"
-    local has_addr=0
     for a in "${args[@]:1}"; do [[ "$a" =~ ^([0-9.]+:)?[0-9]+$ ]] && has_addr=1; done
-    [ "$has_addr" -eq 1 ] || args+=("127.0.0.1:$port")
+  fi
+  if [ "${args[0]}" = "runserver" ] && [ "$has_addr" -eq 0 ]; then   # eine eigene Adresse braucht keinen Port von wt
+    if [ -z "$port" ]; then
+      mrnr=$(mr_number "$name")
+      if is_main_path "$wtpath"; then
+        port=$PORT_BASE; port_src="Hauptordner"
+      elif [ -n "$mrnr" ]; then
+        port=$((PORT_BASE + 10#$mrnr % 1000)); port_src="MR $mrnr aus dem Ordnernamen"
+      elif [ -n "$mr_arg" ]; then
+        port=$((PORT_BASE + mr_arg % 1000)); port_src="MR $mr_arg aus --mr"; mr_flag=0
+      else
+        if [ "$mr_flag" -eq 1 ]; then mrnr=$(lookup_mr "$wtpath"); mr_flag=0; fi
+        if [ -n "$mrnr" ]; then
+          port=$((PORT_BASE + 10#$mrnr % 1000)); port_src="MR $mrnr, per --mr gefunden"
+        else
+          port=$(name_port "$name"); port_src="fest aus dem Ordnernamen '$name'; mit --mr <nr> der MR-Port"
+        fi
+      fi
+    fi
+    note "Port $port ($port_src)"
+    if [ "$mr_flag" -eq 1 ]; then note "--mr ${mr_arg:+$mr_arg }wird ignoriert - Port: $port_src"; fi
+    args+=("127.0.0.1:$port")
     if ss -tln 2>/dev/null | grep -q ":$port "; then
       die "auf Port $port lauscht schon ein Server - erst beenden oder --port waehlen"
     fi
   fi
 
-  local has_settings=0
+  local has_settings=0 settings="$RUN_SETTINGS" copy main_db=""
+  [ -z "$DB_TEMPLATE" ] || main_db=" '$DB_TEMPLATE'"
   for a in "${args[@]}"; do [[ "$a" == --settings* ]] && has_settings=1; done
-  if [ -n "$RUN_SETTINGS" ] && [ "$has_settings" -eq 0 ]; then
-    args+=("--settings=$RUN_SETTINGS")
+  if [ "$has_settings" -eq 0 ] && [ -n "$SETTINGS_SHIM_PATH" ]; then
+    # Der Shim im Worktree entscheidet: da -> DB-Kopie, sonst die Haupt-DB ueber die Settings, die der Shim importieren wuerde
+    if [ -f "$wtpath/$SETTINGS_SHIM_PATH" ]; then
+      copy=$(shim_db "$wtpath")
+      note "Datenbank: DB-Kopie '${copy:-?}' ($SETTINGS_SHIM_PATH im Worktree)"
+    else
+      settings="$SETTINGS_SHIM_IMPORT"
+      if is_main_path "$wtpath"; then
+        note "Datenbank: Haupt-DB$main_db (Hauptordner)"
+      else
+        note "Datenbank: Haupt-DB$main_db (kein $SETTINGS_SHIM_PATH im Worktree; eigene Kopie: wt setup <ziel> --db)"
+      fi
+      printf '    Solange ein Server auf der Haupt-DB laeuft, scheitert das Anlegen einer DB-Kopie (sie ist die Vorlage).\n' >&2
+      if [ "${args[0]}" = "migrate" ]; then
+        note "ACHTUNG: migrate veraendert die Haupt-DB$main_db - fuer alle Branches und als Vorlage jeder neuen DB-Kopie."
+      fi
+    fi
+  fi
+  if [ -n "$settings" ] && [ "$has_settings" -eq 0 ]; then
+    args+=("--settings=$settings")
   fi
   local py="python" src
   if [ -n "${VIRTUAL_ENV:-}" ]; then
@@ -552,7 +769,7 @@ cmd_run() {
 
   local quoted
   quoted=$(printf ' %q' "${args[@]}")
-  run "cd '$wtpath' && '$py' $RUN_MANAGE$quoted" \
+  run "cd $(q "$wtpath") && $(q "$py") $RUN_MANAGE$quoted" \
       "manage.py im Worktree $(basename "$wtpath") ausfuehren (Ctrl+C beendet den Server)"
 }
 
@@ -567,8 +784,15 @@ cmd_drop() {
   done
   [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
   if is_main_repo_arg "$kuerzel"; then die "der Hauptordner wird nie entfernt - nur Worktrees"; fi
+  local here_msg="der Ordner unter der eigenen Shell wird nicht geloescht - erst herauswechseln (wt cd @), dann 'wt drop <name>'"
+  if [ "$kuerzel" = "." ]; then die "$here_msg"; fi
   local nr wtpath
-  wtpath=$(find_wt "$kuerzel" --no-hint)
+  wtpath=$(find_wt "$kuerzel" --no-hint) || exit 1
+  # Der aufgeloeste Ordner zaehlt, nicht die Eingabe: ein Branch kann im Hauptordner oder hier ausgecheckt sein
+  [ -d "$wtpath" ] || die "den Ordner $wtpath gibt es nicht mehr, Git fuehrt ihn aber noch als Worktree - aufraeumen:
+  > git -C $(q "$REPO_ROOT") worktree prune"
+  if is_main_path "$wtpath"; then die "'$kuerzel' ist im Hauptordner ausgecheckt - der Hauptordner wird nie entfernt, nur Worktrees"; fi
+  if is_here "$wtpath"; then die "$here_msg"; fi
   kuerzel=$(basename "$wtpath")
   nr=$(mr_number "$kuerzel")   # aus dem gefundenen Ordner, nicht aus der Eingabe: 'mia-123' kann ein Branch-Ordner sein, nicht MR 123
 
@@ -579,22 +803,43 @@ cmd_drop() {
     fi
   fi
 
+  # DB vor dem Entfernen klaeren: der Shim im Worktree sagt, welche Kopie ihm gehoert, und geht mit dem Ordner verloren
+  local dbname="" derived
+  if [ "$with_db" -eq 1 ] && [ -z "$DB_CONTAINER" ]; then
+    note "--db: kein DB_CONTAINER in der Konfig - keine DB-Kopie zu loeschen."
+  elif [ "$with_db" -eq 1 ]; then
+    dbname=$(shim_db "$wtpath")
+    if [ -n "$dbname" ]; then
+      is_copy_name "$dbname" || not_a_copy "$dbname"
+    elif [ -n "$nr" ]; then
+      dbname="${DB_COPY_PREFIX}${nr}"
+    else
+      derived=$(db_name "$wtpath" 2>/dev/null) || derived="<kopie>"
+      note "--db: kein Settings-Shim im Worktree - welche DB-Kopie ihm gehoert, ist unklar ('$derived' koennte auch einem anderen Worktree gehoeren); nichts geloescht. Falls doch, von Hand:"
+      printf '  > docker exec %s dropdb -U %s %s\n' "$DB_CONTAINER" "$DB_USER" "$(q "$derived")" >&2
+    fi
+    if [ -n "$dbname" ] && ! db_exists "$dbname"; then
+      note "keine DB-Kopie '$dbname' vorhanden - nichts zu loeschen."
+      dbname=""
+    fi
+  fi
+
   unlink_project_dirs "$wtpath"
 
   local rmflag=""
   [ "$force" -eq 1 ] && rmflag=" --force"
-  run "git -C '$REPO_ROOT' worktree remove$rmflag '$wtpath'" \
+  run "git -C $(q "$REPO_ROOT") worktree remove$rmflag $(q "$wtpath")" \
       "Worktree entfernen (verweigert bei uncommitteten Aenderungen; dann bewusst 'wt drop $kuerzel --force')"
   note "Falls $kuerzel in PyCharm offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner."
 
-  if [ "$with_db" -eq 1 ] && [ -n "$nr" ] && [ -n "$DB_CONTAINER" ]; then
-    run "docker exec $DB_CONTAINER dropdb -U $DB_USER '${DB_COPY_PREFIX}${nr}'" \
+  if [ -n "$dbname" ]; then
+    run "docker exec $DB_CONTAINER dropdb -U $DB_USER $(q "$dbname")" \
         "DB-Kopie wegwerfen - die Stamm-DB war nie betroffen"
   fi
 }
 
 cmd_list() {
-  run "git -C '$REPO_ROOT' worktree list" "alle Worktrees dieses Repos zeigen"
+  run "git -C $(q "$REPO_ROOT") worktree list" "alle Worktrees dieses Repos zeigen"
   if [ -n "$DB_CONTAINER" ]; then
     run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database WHERE datname LIKE '${DB_COPY_PREFIX}%'\"" \
         "vorhandene Review-DB-Kopien zeigen"
@@ -610,7 +855,8 @@ case "${1:-}" in
   pick) shift; cmd_pick "$@" ;;
   ide)  shift; cmd_ide "$@" ;;
   run)  shift; cmd_run "$@" ;;
-  link) shift; cmd_link "$@" ;;
+  setup) shift; cmd_setup "$@" ;;
+  link) die "'wt link' heisst jetzt 'wt setup <ziel>' - richtet Dateien und Links ein, mit --db auch die DB-Kopie" ;;
   help) shift; case "${1:-}" in run) usage_run ;; *) usage ;; esac ;;
   cd)   die "ein Skript kann das Verzeichnis der Shell nicht wechseln - 'wt cd' kommt aus der Shell-Integration: source <toolkit>/dev/wt/wt.zsh in ~/.zshrc (siehe README)" ;;
   -h|--help|"") usage ;;
