@@ -6,7 +6,7 @@ Workflow for the builder: superpowers `writing-plans`, then implementation with 
 Everything the builder needs is below. The builder works without asking the user,
 except at the points marked **needs the user's OK**.
 
-Marking used in this spec (same as in `2026-10-18-skill-show-design.md`):
+Marking used in this spec (same as in `ai/skill-show/DESIGN.md`):
 
 - **User decided**: the user chose this. Do not change it without asking.
 - **Spec author decided**: chosen while writing the spec, with a reason. The builder
@@ -21,7 +21,7 @@ Inputs this spec builds on:
   hand; only the full texts come from `wortlaut.json` via `fetch`.
 - `docs/superpowers/specs/assets/skill-map/build_wortlaut.py`: the one-off
   script that produced that `wortlaut.json`.
-- `docs/superpowers/specs/2026-10-18-skill-show-design.md`: the related tool. Its
+- `ai/skill-show/DESIGN.md`: the related tool. Its
   "Where it looks" table and "Precedence" rules are the reference for discovery here.
 - The published page: a private claude.ai Artifact; its URL is the config key
   `artifact_url` (local, never in the repo).

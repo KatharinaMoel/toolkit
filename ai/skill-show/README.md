@@ -197,4 +197,4 @@ called and that no file under `HOME` or the project changes. Two variables exist
 for the tests only: `SKILL_SHOW_MANAGED_DIR` (instead of `/etc/claude-code`) and
 `SKILL_SHOW_FORCE_TTY=1` (act as if on a terminal, to test the picker).
 
-The design is `docs/superpowers/specs/2026-10-18-skill-show-design.md`.
+The design is [DESIGN.md](DESIGN.md).

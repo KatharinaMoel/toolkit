@@ -7,7 +7,7 @@
 #
 # Read-only: writes nothing, no network, never calls claude.
 # Generic engine; personal paths come from ~/.config/skill-show/skill-show.conf.
-# The design is docs/superpowers/specs/2026-10-18-skill-show-design.md.
+# The design is ai/skill-show/DESIGN.md.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"

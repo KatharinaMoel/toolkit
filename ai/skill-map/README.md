@@ -176,4 +176,4 @@ variable `SKILL_MAP_MANAGED_DIR` exists for the tests only (instead of
 `/etc/claude-code`). The page itself is checked by hand: a fixture build served
 locally, in light and dark mode and at 375 px width.
 
-The design is `docs/superpowers/specs/2026-10-18-skill-map-design.md`.
+The design is [DESIGN.md](DESIGN.md).
