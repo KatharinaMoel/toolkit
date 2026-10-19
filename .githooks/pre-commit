@@ -7,7 +7,10 @@
 # Checks the STAGED content (not the working copy):
 #   1. every added/copied/modified/renamed file goes through `kios scan --stdin`
 #      (secret scanner of the author's vault tooling; set KIOS_BIN if it is not in PATH)
-#   2. the shell scripts that CI also checks go through `bash -n` and `shellcheck`
+#   2. the shell scripts that CI also checks go through `bash -n` and `shellcheck`,
+#      in CI's ShellCheck version via podman or docker when one is installed
+#      (${TOOLKIT_SHELLCHECK_IMAGE:-docker.io/koalaman/shellcheck:v0.9.0}; set it
+#      empty to use the local shellcheck only)
 #   3. every such file is checked against your own private patterns (home folder,
 #      private project names, ...), one fixed string per line in
 #      ${TOOLKIT_PRIVATE_PATTERNS:-~/.config/toolkit/private-patterns}; empty lines
@@ -36,6 +39,31 @@ if ! command -v "$KIOS" >/dev/null 2>&1; then
   echo "pre-commit: kios not found (PATH=$PATH). Commit stopped - set KIOS_BIN or use --no-verify." >&2
   exit 1
 fi
+
+# ubuntu-latest installs ShellCheck 0.9.0 via apt; a newer local version misses
+# findings that turn CI red (SC2015 on `[ a ] && [ b ] || continue` in 0.9.0, not in 0.11.0).
+SHELLCHECK_IMAGE="${TOOLKIT_SHELLCHECK_IMAGE-docker.io/koalaman/shellcheck:v0.9.0}"
+RUNTIME=""
+if [ -n "$SHELLCHECK_IMAGE" ]; then
+  for cand in podman docker; do
+    command -v "$cand" >/dev/null 2>&1 && { RUNTIME=$cand; break; }
+  done
+fi
+
+lint_staged() { # lint_staged <file>: findings on stderr, exit 0 when clean
+  local rc
+  if [ -n "$RUNTIME" ]; then
+    git show ":$1" | "$RUNTIME" run --rm -i "$SHELLCHECK_IMAGE" - >&2
+    rc=${PIPESTATUS[1]}
+    [ "$rc" -lt 125 ] && return "$rc"   # 125 and up: the runtime failed (no image offline, ...), not ShellCheck
+    echo "pre-commit: $RUNTIME could not run $SHELLCHECK_IMAGE (exit $rc) - using the local shellcheck for $1" >&2
+  fi
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    echo "pre-commit: shellcheck not in PATH - skipped for $1 (CI still checks it)" >&2
+    return 0
+  fi
+  git show ":$1" | shellcheck - >&2
+}
 
 PATTERNS_FILE="${TOOLKIT_PRIVATE_PATTERNS:-$HOME/.config/toolkit/private-patterns}"
 PATTERNS=""
@@ -71,13 +99,9 @@ while IFS= read -r -d '' file; do
       echo "pre-commit: bash -n failed on $file" >&2
       fail=1
     fi
-    if command -v shellcheck >/dev/null 2>&1; then
-      if ! git show ":$file" | shellcheck - >&2; then
-        echo "pre-commit: shellcheck failed on $file" >&2
-        fail=1
-      fi
-    else
-      echo "pre-commit: shellcheck not in PATH - skipped for $file (CI still checks it)" >&2
+    if ! lint_staged "$file"; then
+      echo "pre-commit: shellcheck failed on $file" >&2
+      fail=1
     fi
   fi
 done < <(git diff --cached --name-only -z --diff-filter=ACMR)

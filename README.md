@@ -52,7 +52,12 @@ git config core.hooksPath .githooks   # once per clone; worktrees share it
   file stays local, so the patterns themselves are never published. Without it the
   check is skipped.
 - **Shell checks:** `bash -n` and `shellcheck` on the staged versions of the scripts
-  that CI checks; keep the list in the hook in sync with `ci.yml`.
+  that CI checks; keep the list in the hook in sync with `ci.yml`. ShellCheck runs in
+  CI's version (0.9.0, `docker.io/koalaman/shellcheck:v0.9.0`) through podman or
+  docker when one is installed, because a newer local ShellCheck misses findings
+  that turn CI red. Without a container runtime, or when the image cannot be pulled,
+  the hook falls back to the local `shellcheck`; `TOOLKIT_SHELLCHECK_IMAGE=` (empty)
+  forces that, another value picks a different image.
 - **Bypass once:** `git commit --no-verify`.
 
 ## License
