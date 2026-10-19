@@ -4,8 +4,9 @@
 # nicht wechseln. Diese Funktion umhuellt das Skript, fragt es nach dem Pfad
 # (wt path / wt pick) und macht den cd selbst - angezeigt wie jeder andere Schritt.
 #
-#   wt new ... [--ide]        wie bisher, endet im neuen Worktree (zurueck: cd -)
-#   wt cd [--ide] [<x>]       wechseln; <x> = nr, kuerzel oder . (Hauptordner);
+#   wt new ... [--ide]        endet im neuen Worktree (zurueck: cd -)
+#   wt cd [--ide] [<x>]       wechseln; <x> = nr, ordner, branch, @ (Hauptordner)
+#                             oder . (Wurzel des Worktrees, in dem man steht);
 #                             ohne <x>: Auswahlliste (fzf); --ide oeffnet auch die IDE
 #   alles andere              unveraendert ans Skript
 
