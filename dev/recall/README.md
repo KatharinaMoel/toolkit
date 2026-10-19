@@ -136,6 +136,9 @@ Rows with exactly three cells count; header and separator rows are skipped,
 surrounding backticks are removed, `\|` becomes `|`, and the tool name of the
 `##` heading is added to the keywords. Text after ` — ` (or ` - `) in the heading
 is the group's subtitle. Keywords are shown dimmed so fzf can search them.
+`<br>` in an explanation starts a new line in the preview (one shell command
+per line, for example) and shows as ` · ` in the list line; spaces around it
+and empty parts are dropped. Only the exact spelling `<br>` counts.
 
 ## The assistant
 

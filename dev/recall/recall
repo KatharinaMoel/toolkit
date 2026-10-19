@@ -377,14 +377,16 @@ src_commands() { # src_commands tree|flat; tables "| command | explanation | key
       # Bash reads the list with a tab as IFS, where two tabs count as one: an empty
       # cell would shift the keywords into it. A space keeps the field; the preview trims it.
       if (expl == "") expl = " "
-      nc++; c_cmd[nc] = cmd; c_expl[nc] = expl; c_kw[nc] = trim(kw " " tool); c_tool[nc] = tool
+      # <br> splits an explanation into lines: the preview breaks there, the list line joins with " · "
+      disp = expl; gsub(/[ \t]*<br>[ \t]*/, " · ", disp)
+      nc++; c_cmd[nc] = cmd; c_expl[nc] = expl; c_disp[nc] = disp; c_kw[nc] = trim(kw " " tool); c_tool[nc] = tool
       count[tool]++
     }
     END {
       if (view == "flat") {
         for (i = 1; i <= nc; i++)
           printf "cmd\t%s\tc:%s\tf:%s\t%s⌘%s %s %s— %s%s  %s%s%s\t%s\t%s\n", c_cmd[i], c_tool[i], c_cmd[i], icon, rst, c_cmd[i],
-            fade, c_expl[i], rst, dim, c_kw[i], rst, c_expl[i], c_kw[i]
+            fade, c_disp[i], rst, dim, c_kw[i], rst, c_expl[i], c_kw[i]
         exit
       }
       for (t = 1; t <= nt; t++) {
@@ -397,7 +399,7 @@ src_commands() { # src_commands tree|flat; tables "| command | explanation | key
         if (g in isopen)
           for (i = 1; i <= nc; i++)
             if (c_tool[i] == tool)
-              printf "cmd\t%s\t%s\tf:%s\t    %s %s— %s%s\t%s\t%s\n", c_cmd[i], g, c_cmd[i], c_cmd[i], fade, c_expl[i], rst, c_expl[i], c_kw[i]
+              printf "cmd\t%s\t%s\tf:%s\t    %s %s— %s%s\t%s\t%s\n", c_cmd[i], g, c_cmd[i], c_cmd[i], fade, c_disp[i], rst, c_expl[i], c_kw[i]
       }
     }' "$COMMANDS_FILE"
 }
@@ -567,13 +569,22 @@ procedure_status() { # "updated <day>", plus a hint when that is long ago
 
 trim_ws() { local t=${1#"${1%%[![:space:]]*}"}; printf '%s' "${t%"${t##*[![:space:]]}"}"; }
 
-cmd_block() { # cmd_block <command> <explanation>: command, explanation, "Wann:" part, each on its own line
-  local cmd=$1 expl=$2 when=""
+br_parts() { # br_parts <text>: the parts between <br>, each trimmed, empty ones dropped, one per line
+  local rest=$1 part
+  while :; do
+    part=$(trim_ws "${rest%%<br>*}")
+    [ -z "$part" ] || printf '%s\n' "$part"
+    [[ $rest == *"<br>"* ]] || break
+    rest=${rest#*<br>}
+  done
+}
+
+cmd_block() { # cmd_block <command> <explanation>: command, explanation, "Wann:" part, each on its own lines (one per <br> part)
+  local cmd=$1 expl=$2 when="" part
   if [[ $expl == *Wann:* ]]; then when="Wann:${expl#*Wann:}"; expl=${expl%%Wann:*}; fi
-  expl=$(trim_ws "$expl"); when=$(trim_ws "$when")
   printf '%s%s%s\n' "$P_CMD" "$cmd" "$P_RST"
-  [ -z "$expl" ] || printf '    %s\n' "$expl"
-  [ -z "$when" ] || printf '    %s%s%s\n' "$P_WHEN" "$when" "$P_RST"
+  while IFS= read -r part; do printf '    %s\n' "$part"; done < <(br_parts "$expl")
+  while IFS= read -r part; do printf '    %s%s%s\n' "$P_WHEN" "$part" "$P_RST"; done < <(br_parts "$when")
 }
 
 group_preview() { # the entries of one group, compact

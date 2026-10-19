@@ -655,6 +655,47 @@ expect_eq "preview: Wann: at the start of the cell leaves no empty explanation l
     Wann:   nur   manchmal
 
 keywords: kw" "$out"
+# <br> in a cell: one line per part in the preview, " · " in the list line
+mv "$HOME/.config/recall/recall.conf" "$TMP/conf.bak"
+cat > "$TMP/br.md" <<'EOF'
+## wt-von-hand — Was wt ausfuehrt
+
+| Befehl | Erklaerung | Stichworte |
+|---|---|---|
+| `wt run .` | Server im Worktree<br>cd <wt> && python manage.py runserver | server |
+| `wt drop x` | Weg<br>git worktree remove x Wann: nach dem Merge | drop |
+EOF
+cat > "$HOME/.config/recall/recall.conf" <<EOF
+VAULT="$TMP/nirgends"
+COMMANDS_FILE="$TMP/br.md"
+PROCEDURE_GLOBS=()
+TEXT_ROOTS=("$TMP/nirgends")
+EOF
+brlist=$("$RECALL" --list flat 2>/dev/null)
+expect_has "<br>: list line joins the parts with ' · '" "⌘ wt run . — Server im Worktree · cd <wt> && python manage.py runserver" "$brlist"
+expect_not "<br>: never shown literally in the list" "<br>" "$(cut -f5 <<<"$brlist")"
+out=$("$RECALL" --preview "$(grep -m1 -F 'wt run .' <<<"$brlist")" 2>&1)
+expect_eq "<br>: preview shows one line per part" "wt run .
+    Server im Worktree
+    cd <wt> && python manage.py runserver
+
+keywords: server wt-von-hand" "$out"
+out=$("$RECALL" --preview "$(grep -m1 -F 'wt drop x' <<<"$brlist")" 2>&1)
+expect_eq "<br>: Wann: still gets its own line" "wt drop x
+    Weg
+    git worktree remove x
+    Wann: nach dem Merge
+
+keywords: drop wt-von-hand" "$out"
+mv "$TMP/conf.bak" "$HOME/.config/recall/recall.conf"
+out=$("$RECALL" --preview "$(printf 'cmd\tfoo\tc:x\tf:foo\tfoo\t<br>A <br>  B<br>Wann: nach dem Merge <br> git worktree remove x\tkw')" 2>&1)
+expect_eq "<br>: parts trimmed, empty parts dropped, also after Wann:" "foo
+    A
+    B
+    Wann: nach dem Merge
+    git worktree remove x
+
+keywords: kw" "$out"
 out=$("$RECALL" --preview "$(printf 'cmd\tfoo\tc:x\tf:foo\tfoo\t  Erst das  Wann: dann   Wann: nochmal \tkw')" 2>&1)
 expect_eq "preview: split at the first Wann:, both parts trimmed" "foo
     Erst das
