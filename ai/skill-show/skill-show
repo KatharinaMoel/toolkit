@@ -291,7 +291,8 @@ gather_plugins() {
              (if $en[$k] == false then "disabled" else "" end)]
           | map(tostring | gsub("[\u001f\n\r\t]"; " ")) | join($s)' 2>/dev/null); then
       while IFS="$US" read -r key path version scope state; do
-        [ -n "$key" ] && [ -d "$path" ] || continue
+        [ -n "$key" ] || continue
+        [ -d "$path" ] || continue
         safe_path "$path" || continue
         head="plugin %NAME% $version (${key#*@})"
         [ -z "$state" ] || head+=" (disabled)"
