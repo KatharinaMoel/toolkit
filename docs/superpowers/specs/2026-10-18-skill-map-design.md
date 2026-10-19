@@ -1043,3 +1043,41 @@ overrides the parts above where they differ.
   detect, and `SETUP.md` holds a prompt for Claude Code that asks the questions only
   a person can answer (own notes, what to hide, areas), writes the config and shows
   it for review.
+
+## Revision 2026-10-19 (user decided): profiles for a second page
+
+Need: a few texts the author withholds from her page (they name her team) should be
+readable for exactly that team, while the first page stays as it is.
+
+Options considered:
+
+1. **Loosen `withhold_text` and republish the one page.** No code. Price: there is
+   no page with the texts held back any more; who may read them then depends only on
+   how that one page is shared.
+2. **A second config file** (`--config team.conf`). Small change. Price: two files
+   that drift apart (a new `hide` or `withhold_text` entry lands in one only).
+3. **Profiles in the one config** (chosen). `[profiles.<name>]` overrides `title`,
+   `artifact_url`, `refresh_hint` and releases keys from `withhold_text`; each
+   profile has its own state folder `profiles/<name>/`. Price: one more concept in
+   config and CLI, and `check` reads one more state folder per published profile.
+
+Rules that come with it:
+
+- `release_text` only removes keys from `withhold_text`; a key it names that
+  `withhold_text` does not hold is a config error, so a typo cannot pass silently.
+  Classification, unknown source, account id and UTF-8 rules stay as they are
+  (fail closed): a profile can show less-guarded texts, never classified ones.
+- Without `--profile`, folders and output are unchanged (checked byte for byte
+  against a build from before the change, apart from `generated`).
+- `check` nags about a profile only after its first `mark-published`, so defining
+  a profile does not add a line before it exists online.
+- With the default `refresh_hint`, a profile's line names `--profile <name>`; a
+  hint set in the config (a slash command of one's own) is kept.
+- `runbook_text` (top level or profile, default false): the page shows a runbook's
+  whole file, not only its front matter. Need: the commands are short entry points
+  that say "read the runbook first", so without it a reader of the team page sees
+  the steps but not the rules. A runbook is held back by the `withhold_text` entry
+  of its command (looked up by command name too, so hiding the command does not
+  release it) and by its own classification. Price: on the first publish every
+  runbook text is new and has to be read in full. Linked knowledge notes stay out
+  (a separate decision).

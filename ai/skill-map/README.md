@@ -25,6 +25,7 @@ skill-map diff [--texts]      # what is new, removed or changed since the last p
 skill-map mark-published      # after you published the build: remember it
 skill-map check               # session start hook: one line when out of date, else nothing
 skill-map fingerprint         # the fingerprint and the set of keys it is computed from
+skill-map --profile NAME …    # the same for a second page, see Profiles
 ```
 
 - `skill-map.html` holds the data inside and opens from disk in any browser.
@@ -97,6 +98,40 @@ that no longer exists is struck through on the page and listed at the top.
   inserted as HTML.
 - No network, no model: skill-map never calls `claude` or the API.
 
+## Profiles: a second page for a few people
+
+Sometimes a text you withhold from your page is fine for a few people, for example
+a command that names your team, for your team. A profile builds a second page
+from the same config, with its own title, address and state folder:
+
+```toml
+[profiles.team]
+title = "Skill-Landkarte (Team)"
+artifact_url = "<link to the team page>"
+release_text = ["teamwork-tasks"]     # keys from withhold_text
+```
+
+```bash
+skill-map --profile team build    # into ~/.local/state/skill-map/profiles/team/build/
+skill-map --profile team diff --texts
+skill-map --profile team mark-published
+```
+
+- A profile may set `title`, `artifact_url`, `refresh_hint`, `release_text` and
+  `runbook_text`; any other key is a config error. Everything else comes from the
+  rest of the file.
+- `runbook_text = true` shows the whole runbook file, not only its front matter
+  (also allowed at the top level). A runbook is held back when its command is in
+  `withhold_text` (even if that command is hidden) and by its own classification.
+- `release_text` only takes keys out of `withhold_text`, and naming a key that
+  `withhold_text` does not hold is an error. A text withheld for any other reason
+  (a classification, an unknown source, an account id, invalid UTF-8) stays withheld.
+- Without `--profile` nothing changes: same folders, same output.
+- `check` reports a profile once it was published, one line per page. Unless the
+  config sets `refresh_hint`, the line names `--profile <name>`.
+- Who can open the second page is up to where you publish it. A claude.ai Artifact
+  starts private; share it with the people it is meant for, not wider.
+
 ## Usage counts
 
 From the top-level session logs in `~/.claude/projects/*/*.jsonl` (not subagent
@@ -162,7 +197,8 @@ skill-map build
 ```
 
 Output and state live in `~/.local/state/skill-map/` (`build/`, `published/`,
-`published.prev/`); nothing else is written.
+`published.prev/`, and the same three under `profiles/<name>/` per profile);
+nothing else is written.
 
 ## Tests
 

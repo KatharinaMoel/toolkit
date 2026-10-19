@@ -51,6 +51,16 @@ def _classified(e) -> bool:
     return False
 
 
+def _rule_key(key: str, e, cfg: Config) -> str:
+    """The key whose withhold_text entry decides a text: a runbook is held back with its
+    command (the same content in long form), also when that command is hidden."""
+    if e.kind == "runbook" and isinstance(e.runbook, dict):
+        for name in (e.runbook.get("command_entry"), e.runbook.get("command")):
+            if name in cfg.withhold_text:
+                return name
+    return key
+
+
 def _clean(text):
     """Free text from front matter: account ids replaced, as in paths."""
     return UUID_RE.sub("<konto>", text) if isinstance(text, str) else text
@@ -77,7 +87,8 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
     log(f"reading {tilde(ch / 'plugins/installed_plugins.json')}  (which plugin versions are installed)")
     log(f"reading {tilde(ch)}/{{commands,skills,agents,plugins,settings.json}}  (skills, commands, agents, hooks)")
     if cfg.vault:
-        log(f"reading {tilde(cfg.vault / '40-runbooks')}  (runbooks, front matter only)")
+        what = "runbooks, whole files (runbook_text)" if cfg.runbook_text else "runbooks, front matter only"
+        log(f"reading {tilde(cfg.vault / '40-runbooks')}  ({what})")
     world = discover(cfg)
     for note in world.notes:
         log(f"note: {note}")
@@ -106,9 +117,9 @@ def build(cfg: Config, out: Path, log: Callable[[str], None]) -> Path:
                 "text": "none", "text_sha256": None, "flags": sorted(e.flags)}
         if e.kind == "hook":
             item["matcher"] = e.extra.get("matcher", "")
-        if e.kind in TEXT_KINDS and e.path is not None:
+        if (e.kind in TEXT_KINDS or (e.kind == "runbook" and cfg.runbook_text)) and e.path is not None:
             try:
-                r = text_for(key, e.path, cfg, e.source_path, source_unknown=source_unknown)
+                r = text_for(_rule_key(key, e, cfg), e.path, cfg, e.source_path, source_unknown=source_unknown)
             except OSError:
                 item["text"] = "withheld"
                 item["flags"] = sorted(e.flags | {"withheld"})

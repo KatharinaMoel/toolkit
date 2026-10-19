@@ -26,7 +26,8 @@ def _names(keys: list[str]) -> str:
 
 # ---------- mark-published ----------
 def mark_published(cfg: Config, log: Callable[[str], None]) -> int:
-    build, pub, prev = state_dir() / "build", state_dir() / "published", state_dir() / "published.prev"
+    folder = state_dir(cfg.profile)
+    build, pub, prev = folder / "build", folder / "published", folder / "published.prev"
     if not (build / "inventory.json").is_file():
         log(f"skill-map: no build in {tilde(build)} - run skill-map build first")
         return 1
@@ -68,8 +69,9 @@ def _print_text(key: str, entry: dict, text: str, out: Callable[[str], None]) ->
         out(text + f"\n──── end of {key} (no newline at end of file) ────")
 
 
-def diff(texts: bool, log: Callable[[str], None], out: Callable[[str], None]) -> int:
-    build, pub = state_dir() / "build", state_dir() / "published"
+def diff(texts: bool, log: Callable[[str], None], out: Callable[[str], None],
+         profile: str | None = None) -> int:
+    build, pub = state_dir(profile) / "build", state_dir(profile) / "published"
     if not (build / "inventory.json").is_file():
         log(f"skill-map: no build in {tilde(build)} - run skill-map build first")
         return 1
@@ -130,7 +132,7 @@ def _group_name(key: str) -> str:
 
 def check_message(cfg: Config) -> str | None:
     """The one line for the session start, or None when nothing changed. Reads no logs."""
-    stored_file = state_dir() / "published" / "fingerprint.json"
+    stored_file = state_dir(cfg.profile) / "published" / "fingerprint.json"
     hint = cfg.refresh_hint
     world: World = discover(cfg)
     if not stored_file.is_file():

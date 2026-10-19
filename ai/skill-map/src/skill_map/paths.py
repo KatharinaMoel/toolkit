@@ -21,8 +21,10 @@ def config_dir() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME") or home() / ".config") / "skill-map"
 
 
-def state_dir() -> Path:
-    return Path(os.environ.get("XDG_STATE_HOME") or home() / ".local" / "state") / "skill-map"
+def state_dir(profile: str | None = None) -> Path:
+    """The state folder; a profile keeps its own build and publish under profiles/<name>."""
+    base = Path(os.environ.get("XDG_STATE_HOME") or home() / ".local" / "state") / "skill-map"
+    return base / "profiles" / profile if profile else base
 
 
 def expand(value: str) -> Path:

@@ -93,7 +93,7 @@ def test_tilde_replaces_account_ids_in_capitals(home):
 def test_example_conf_loads_with_every_key_switched_on(home, tmp_path):
     import re
     example = Path(__file__).resolve().parent.parent / "example.conf"
-    lines = [m.group(1) for m in (re.match(r"^# ((\[\[?[a-z_]+\]\]?)|([a-z_-]+ = .*))$", l)
+    lines = [m.group(1) for m in (re.match(r"^# ((\[\[?[a-z_.]+\]\]?)|([a-z_-]+ = .*))$", l)
                                   for l in example.read_text(encoding="utf-8").splitlines()) if m]
     text = "\n".join(lines).replace('withhold_text = ["timesheet"]\n', "")   # the table form replaces the list
     p = tmp_path / "all.conf"
@@ -101,3 +101,6 @@ def test_example_conf_loads_with_every_key_switched_on(home, tmp_path):
     cfg = load_config(p)
     assert cfg.vault == home / "notes" and cfg.projects[0].label == "App"
     assert cfg.withhold_text == {"timesheet": "enthält Stand und Vertragsdetails"}
+    team = load_config(p, profile="team")
+    assert team.title == "Skill-Landkarte (Team)" and team.withhold_text == {}
+    assert team.runbook_text is True and cfg.runbook_text is False
