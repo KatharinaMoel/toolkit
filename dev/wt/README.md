@@ -62,7 +62,9 @@ paths found by `git worktree list` may contain anything and are quoted with
 If the main checkout is not on `TARGET_BRANCH` (and that branch exists
 locally), `wt` prints a hint whenever you switch there; it never switches
 branches itself. `wt drop` refuses the main checkout and the worktree the
-shell stands in, however they are named (`.`, folder or branch).
+shell stands in, however they are named (`.`, folder or branch), and a
+worktree with uncommitted changes or untracked files — before it removes
+anything, listing the files; `--force` removes them too.
 
 ### Setting up an existing worktree
 

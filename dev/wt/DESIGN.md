@@ -93,6 +93,24 @@ checkout is the source and is refused. `wt new` uses the same steps, so
   copy. Without a shim only MR folders drop `<prefix><nr>`; for other folders
   `wt` prints the `dropdb` command instead of guessing whose copy it is.
 
+### Unsaved work in `wt drop`
+
+`git worktree remove` refuses a worktree with uncommitted changes or untracked
+files, but only at the end — after `wt drop` has removed the links. A refused
+drop used to leave a worktree without `media`, venv and `.reviews`. Now
+`wt drop` reads `git status --porcelain -z` first (unquoted paths, so link
+names with spaces still match), after the port check and
+before anything changes: any line aborts with the files listed and the
+command to repeat (`--db` kept) or to force. The links from `LINK_DIRS` are
+not counted (an untracked symlink `<dir>` appears when the ignore rule is
+`<dir>/`). `--force` skips the check and is passed to `git worktree remove`.
+
+Alternatives: keep relying on `git worktree remove` (old behaviour) — the
+refusal comes last, the links are already gone and the `--force` hint drops
+`--db`; put the links back after a failed remove — repairs instead of
+preventing. Price: one extra `git status` per drop, and a file that appears
+between the check and the remove is still caught only by Git.
+
 ### Settings for `wt run`
 
 Only when `SETTINGS_SHIM_PATH` is configured: shim present in the worktree →
@@ -131,6 +149,9 @@ No abort in advance.
 - `shim_db` reads only the exact line `settings_shim` writes.
 - `has_addr` does not recognise `localhost:8001` or `[::]:8000`.
 - The `migrate` warning only fires when `migrate` is the first argument.
+- `wt drop` on a worktree with submodules or a locked one (`git worktree
+  lock`): `git status` is clean, so the links go before `git worktree remove`
+  refuses (a locked one even with `--force`). `wt setup .` brings the links back.
 
 ## Verification
 

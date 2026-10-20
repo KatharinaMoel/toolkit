@@ -181,11 +181,12 @@ cd W && P app/manage.py shell --settings=app.settings_review
 
 ```bash
 ss -tln | grep ':8813 '                                              # MR-Ordner: Server läuft noch? dann Abbruch
+git -C W status --porcelain                                          # Ausgabe (außer den Links)? dann Abbruch, nichts entfernt
 rm W/app/media W/.venv                                               # nur die Links, nie das Ziel
-git -C H worktree remove W                                           # verweigert bei uncommitteten Änderungen: --force
+git -C H worktree remove W                                           # mit --force: nicht Eingechecktes geht mit
 ```
 
-Scheitert `worktree remove` an uncommitteten Änderungen, sind die Links schon weg; `wt setup .` holt sie zurück.
+`wt drop 813 --force` überspringt die Statusprüfung und löscht nicht eingecheckte Dateien mit.
 
 ### `wt drop 813 --db`
 

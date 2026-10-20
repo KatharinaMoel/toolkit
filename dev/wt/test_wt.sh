@@ -248,6 +248,46 @@ if [ ! -d "$BASE/feature-x" ]; then ok "drop trotz gitignorierter .idea/"
 else fail "drop trotz gitignorierter .idea/" "$err"; fi
 if [[ "$err" == *"PyCharm"* ]]; then ok "drop erinnert ans Fensterschliessen"
 else fail "drop erinnert ans Fensterschliessen" "$err"; fi
+# Nicht eingecheckte Datei: Abbruch, bevor etwas veraendert wird - die Links bleiben stehen.
+# 'media' hat hier keinen exclude-Eintrag, Git sieht den Link also selbst als untracked.
+printf 'IDE_CMD="fake-ide"\nLINK_DIRS=(media)\n' > "$HOME/.config/wt/demo.conf"
+git -C "$REPO" worktree add -q -b feat/dirty "$BASE/feat-dirty"
+ln -s "$TMP/media-ziel" "$BASE/feat-dirty/media"
+: > "$BASE/feat-dirty/szenario.py"
+err=$("$WT" drop feat-dirty --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -f "$BASE/feat-dirty/szenario.py" ] && [ -L "$BASE/feat-dirty/media" ]; then ok "drop mit untracked Datei -> verweigert, Links unversehrt"
+else fail "drop mit untracked Datei -> verweigert, Links unversehrt" "rc=$rc $err"; fi
+if [[ "$err" == *"szenario.py"* ]] && [[ "$err" != *"?? media"* ]] && [[ "$err" == *"wt drop feat-dirty --db --force"* ]]; then ok "drop mit untracked Datei nennt die Datei (nicht den Link) und den --force-Befehl"
+else fail "drop mit untracked Datei nennt die Datei (nicht den Link) und den --force-Befehl" "$err"; fi
+"$WT" drop feat-dirty --force >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$BASE/feat-dirty" ] && [ -d "$TMP/media-ziel" ]; then ok "drop --force mit untracked Datei -> entfernt, Link-Ziel bleibt"
+else fail "drop --force mit untracked Datei -> entfernt, Link-Ziel bleibt" "rc=$rc"; fi
+git -C "$REPO" worktree add -q -b feat/link "$BASE/feat-link"
+ln -s "$TMP/media-ziel" "$BASE/feat-link/media"
+err=$("$WT" drop feat-link 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$BASE/feat-link" ]; then ok "drop: ein Link aus LINK_DIRS, den Git als untracked sieht, blockiert nicht"
+else fail "drop: ein Link aus LINK_DIRS, den Git als untracked sieht, blockiert nicht" "rc=$rc $err"; fi
+# Echter Ordner statt Link unter einem LINK_DIRS-Namen: ist eigene Arbeit, blockiert
+git -C "$REPO" worktree add -q -b feat/echt "$BASE/feat-echt"
+mkdir "$BASE/feat-echt/media" && : > "$BASE/feat-echt/media/upload.png"
+err=$("$WT" drop feat-echt 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -f "$BASE/feat-echt/media/upload.png" ] && [[ "$err" == *"?? media/"* ]]; then ok "drop: echter Ordner mit LINK_DIRS-Namen -> verweigert"
+else fail "drop: echter Ordner mit LINK_DIRS-Namen -> verweigert" "rc=$rc $err"; fi
+"$WT" drop feat-echt --force >/dev/null 2>&1
+# Link-Ordner mit Leerzeichen (Git quotet solche Pfade ohne -z) und geaenderte eingecheckte Datei
+printf 'IDE_CMD="fake-ide"\nLINK_DIRS=("media dir")\n' > "$HOME/.config/wt/demo.conf"
+git -C "$REPO" worktree add -q -b feat/space "$BASE/feat-space"
+ln -s "$TMP/media-ziel" "$BASE/feat-space/media dir"
+err=$("$WT" drop feat-space 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$BASE/feat-space" ]; then ok "drop: Link aus LINK_DIRS mit Leerzeichen blockiert nicht"
+else fail "drop: Link aus LINK_DIRS mit Leerzeichen blockiert nicht" "rc=$rc $err"; fi
+git -C "$REPO" worktree add -q -b feat/mod "$BASE/feat-mod"
+printf 'x\n' >> "$BASE/feat-mod/.gitignore"
+err=$("$WT" drop feat-mod 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$BASE/feat-mod" ] && [[ "$err" == *" M .gitignore"* ]]; then ok "drop: geaenderte eingecheckte Datei -> verweigert"
+else fail "drop: geaenderte eingecheckte Datei -> verweigert" "rc=$rc $err"; fi
+"$WT" drop feat-mod --force >/dev/null 2>&1
+printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
 
 # ---------- wt new: Zielbranch, Forge, Remote ----------
 cd "$REPO" || exit 1
