@@ -230,7 +230,7 @@ the same way: `wt run 42 migrate` changes only `review_42`.
 ```text
 * Symlink 'app/media' entfernen (nur der Link, das Ziel im Hauptbaum bleibt)
 * Symlink '.venv-3.12' entfernen (nur der Link, das Ziel im Hauptbaum bleibt)
-* Worktree entfernen (verweigert bei uncommitteten Aenderungen; dann bewusst 'wt drop mp-mr-42 --force')
+* Worktree entfernen
   > git -C ~/src/myproject worktree remove ~/src/myproject-worktrees/mp-mr-42
 * Falls mp-mr-42 in PyCharm offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner.
 * DB-Kopie wegwerfen - die Stamm-DB war nie betroffen
@@ -241,6 +241,19 @@ What happened (the `> rm …` commands under the symlink steps and the psql look
 are left out): wt removes the links (only the links, never their targets), then the
 worktree, then the copy the shim named. The fetched ref `refs/mr/42` stays
 in the main repo; it is small, and the next `wt new --mr 42` updates it.
+
+If the worktree holds uncommitted changes or untracked files, `wt drop` stops
+before it touches anything — links, worktree and DB copy all stay:
+
+```text
+Fehler: in mp-mr-42 liegen nicht eingecheckte Aenderungen - nichts entfernt:
+  ?? app/tests/test_scenario.py
+sichern und erneut 'wt drop mp-mr-42 --db', oder bewusst mitloeschen: 'wt drop mp-mr-42 --db --force'
+```
+
+The links from `LINK_DIRS` never count as changes; `wt drop` removes them itself.
+Worktrees with submodules and locked worktrees are refused by Git only after
+the links are gone (see DESIGN.md, Known limits).
 
 ## 7. Pitfalls
 

@@ -53,8 +53,10 @@ wt - Worktrees mit erklaerten Schritten
                               kommt aus der Konfig oder der Remote-URL
   wt new --branch <name> [--db]
                               Arbeits-Worktree von einem (Remote-)Branch
-  wt drop <ziel> [--db]       Worktree entfernen (nicht . und nicht @); --db loescht
-                              seine DB-Kopie (Name aus dem Settings-Shim; ohne Shim nur bei MR-Ordnern)
+  wt drop <ziel> [--db] [--force]
+                              Worktree entfernen (nicht . und nicht @); --db loescht
+                              seine DB-Kopie (Name aus dem Settings-Shim; ohne Shim nur bei MR-Ordnern);
+                              nicht Eingechecktes bricht ab, --force loescht es mit
   wt run <ziel> [args]        manage.py im Worktree mit passenden Settings und Port
                               (ohne Args: runserver); 'wt help run' zeigt Beispiele
   wt setup <ziel> [--db]      bestehenden Worktree nachtraeglich einrichten wie 'wt new':
@@ -674,6 +676,21 @@ lookup_mr() { # $1 = worktree-pfad -> Nummer des offenen MR/PR zum ausgecheckten
   return 0
 }
 
+unsaved_changes() { # $1 = worktree-pfad -> 'XY pfad' je Aenderung, ohne die Links aus LINK_DIRS (die baut drop selbst ab)
+  local entry d own skip_next=0
+  git -C "$1" status --porcelain >/dev/null || return 1   # Fehler hier erkennen; die Prozess-Substitution unten verschluckt ihn
+  # -z: Pfade ungequotet (Leerzeichen, Umlaute), damit der Vergleich mit LINK_DIRS greift
+  while IFS= read -r -d '' entry; do
+    if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi   # zweiter Eintrag einer Umbenennung: der alte Pfad
+    case "${entry:0:2}" in R?|C?|?R|?C) skip_next=1 ;; esac
+    own=0
+    for d in ${LINK_DIRS[@]+"${LINK_DIRS[@]}"}; do
+      if [ "$entry" = "?? $d" ] && [ -L "$1/$d" ]; then own=1; fi
+    done
+    [ "$own" -eq 1 ] || printf '%s\n' "$entry"
+  done < <(git -C "$1" status --porcelain -z)
+}
+
 shim_db() { # $1 = worktree-pfad -> DB-Name aus dem Settings-Shim, sonst leer
   [ -n "$SETTINGS_SHIM_PATH" ] && [ -f "$1/$SETTINGS_SHIM_PATH" ] || return 0
   sed -n "s/^DATABASES\['default'\]\['NAME'\] = '\(.*\)'\$/\1/p" "$1/$SETTINGS_SHIM_PATH" | head -n1
@@ -803,6 +820,18 @@ cmd_drop() {
     fi
   fi
 
+  # Vor jeder Aenderung pruefen: 'git worktree remove' verweigert erst am Ende, die Links waeren dann schon weg
+  if [ "$force" -eq 0 ]; then
+    local changes again="wt drop $kuerzel"
+    changes=$(unsaved_changes "$wtpath") || die "Git-Status von $wtpath nicht lesbar - nichts entfernt"
+    if [ -n "$changes" ]; then
+      [ "$with_db" -eq 1 ] && again+=" --db"
+      die "in $kuerzel liegen nicht eingecheckte Aenderungen - nichts entfernt:
+$(printf '%s\n' "$changes" | sed 's/^/  /')
+sichern und erneut '$again', oder bewusst mitloeschen: '$again --force'"
+    fi
+  fi
+
   # DB vor dem Entfernen klaeren: der Shim im Worktree sagt, welche Kopie ihm gehoert, und geht mit dem Ordner verloren
   local dbname="" derived
   if [ "$with_db" -eq 1 ] && [ -z "$DB_CONTAINER" ]; then
@@ -826,10 +855,9 @@ cmd_drop() {
 
   unlink_project_dirs "$wtpath"
 
-  local rmflag=""
-  [ "$force" -eq 1 ] && rmflag=" --force"
-  run "git -C $(q "$REPO_ROOT") worktree remove$rmflag $(q "$wtpath")" \
-      "Worktree entfernen (verweigert bei uncommitteten Aenderungen; dann bewusst 'wt drop $kuerzel --force')"
+  local rmflag="" rmdesc="Worktree entfernen"
+  [ "$force" -eq 1 ] && rmflag=" --force" && rmdesc+=" samt nicht eingecheckter Aenderungen (--force)"
+  run "git -C $(q "$REPO_ROOT") worktree remove$rmflag $(q "$wtpath")" "$rmdesc"
   note "Falls $kuerzel in PyCharm offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner."
 
   if [ -n "$dbname" ]; then
