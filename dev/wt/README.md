@@ -181,12 +181,13 @@ Notes from setting this up with PyCharm 2026.2 (verify against your version):
 ## Configuration
 
 `wt` works with zero config (worktree + file copies only). Project specifics
-come from the first file found of:
+come from these files, both read if present, the later one winning:
 
 1. `<repo>/.worktree.conf` — committed, if a team shares the flow
 2. `~/.config/wt/<reponame>.conf` — personal, keeps the repo clean
 
-See [example.conf](example.conf) for all variables. Forge, remote and target branch are auto-detected; override them with `FORGE`, `REMOTE`, `TARGET_BRANCH`. Real config files contain
+See [example.conf](example.conf) for all variables, and [GUIDE.md](GUIDE.md) for
+a worked example that derives a config step by step from a real project. Forge, remote and target branch are auto-detected; override them with `FORGE`, `REMOTE`, `TARGET_BRANCH`. Real config files contain
 internal names (containers, databases, paths) — keep them local.
 
 ### Folder prefix
