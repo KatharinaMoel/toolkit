@@ -86,7 +86,7 @@ Make entries scannable at a glance without loud colours.
 
 - Muted accent per kind (`✎` / `⌘` / `☰`) instead of one flat grey; no bright
   or saturated colours, low contrast steps between neighbours.
-- Dim the repo prefix (`Mathe_im_Advent ·`), keep the file or command name in
+- Dim the repo prefix (`myproject ·`), keep the file or command name in
   the normal foreground; the long description after `—` dimmer still.
 - Highlight the match and the selected line quietly (soft background, no
   inverted blocks).
