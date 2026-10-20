@@ -36,6 +36,9 @@ wt ide [<target>]                    # open in your IDE (IDE_CMD, default `pycha
 wt cd [--ide] [<target>]             # cd there; no arg: picker (needs the shell integration)
 ```
 
+Which command uses which building block — and that only `wt new` contains the
+steps of `wt setup` — is shown in [bausteine.svg](bausteine.svg) (labels in German).
+
 ### Targets
 
 | Target | Means |
