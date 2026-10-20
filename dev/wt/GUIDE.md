@@ -186,7 +186,7 @@ This run uses the personal file only; with both files, wt prints one
 * DB-Kopie 'review_42' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)
   > docker exec myproject-postgres createdb -U postgres -T myproject review_42
 
-* Settings-Shim erzeugen: app/settings_review.py (gitignored; fixe 3-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)
+* Settings-Shim erzeugen: app/settings_review.py (gitignored; fixe 2-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)
     | from app.settings_local_docker import *  # noqa: F401,F403
     | DATABASES['default']['NAME'] = 'review_42'
 
