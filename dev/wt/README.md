@@ -38,6 +38,7 @@ wt cd [--ide] [<target>]             # cd there; no arg: picker (needs the shell
 
 Which command uses which building block — and that only `wt new` contains the
 steps of `wt setup` — is shown in [bausteine.svg](bausteine.svg) (labels in German).
+Every command with the shell commands it runs, on one page: [CHEATSHEET.md](CHEATSHEET.md) (German).
 
 ### Targets
 
