@@ -74,7 +74,7 @@ wt - Worktrees mit erklaerten Schritten
 
 <ziel>: .  der Worktree, in dem du stehst (auch aus einem Unterordner)
         @  der Hauptordner - ebenso sein Ordnername oder das Repo-Kuerzel (WT_PREFIX)
-        721, mr-721, mia-mr-721, feat-x   ein Worktree-Ordner
+        721, mr-721, abc-mr-721, feat-x   ein Worktree-Ordner
         feat/x   ein Branch: der Worktree, in dem er ausgecheckt ist (auch ausserhalb
                  des Sammelordners); der Ordnername geht vor
         /pfad    ein Worktree dieses Repos
@@ -110,7 +110,7 @@ RUN_MANAGE="manage.py"         # Pfad zu manage.py im Worktree (fuer 'wt run')
 RUN_SETTINGS=""                # Settings-Modul fuer 'wt run'; leer = nichts anhaengen
 RUN_PYTHON=""                  # Interpreter fuer 'wt run', wenn kein venv aktiv ist (relativ zum Hauptbaum oder absolut)
 IDE_CMD="pycharm"              # Befehl fuer 'wt ide'; bekommt den Ordner als Argument
-unset WT_PREFIX   # Repo-Kuerzel vor jedem Worktree-Ordner (mia -> mia-mr-721); nur die Konfig zaehlt:
+unset WT_PREFIX   # Repo-Kuerzel vor jedem Worktree-Ordner (abc -> abc-mr-721); nur die Konfig zaehlt:
                   # ungesetzt erinnert 'wt new' daran, WT_PREFIX="" schaltet die Erinnerung ab
 
 for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
@@ -176,7 +176,7 @@ wt_dir() { # $1 = slug -> Ordnername unter WT_BASE: '<WT_PREFIX>-<slug>', ohne R
 }
 
 find_wt() { # $1 = nr|kuerzel|branch|ordnername, $2 = --no-hint -> existierender Worktree-Ordner
-  # Erst '<WT_PREFIX>-<slug>', dann der Slug ohne Repo-Kuerzel: so findet 'mia-mr-721' sich selbst
+  # Erst '<WT_PREFIX>-<slug>', dann der Slug ohne Repo-Kuerzel: so findet 'abc-mr-721' sich selbst
   # und ein Ordner ohne Repo-Kuerzel bleibt erreichbar. Ein Repo-Kuerzel wird nie abgeschnitten.
   local slug p
   slug=$(resolve_slug "$1") || exit 1   # in $( ) gilt set -e nicht - Abbruch ausdruecklich weiterreichen
@@ -323,7 +323,7 @@ db_create() { # $1 = kopie-name
   run "docker exec $DB_CONTAINER createdb -U $DB_USER -T $DB_TEMPLATE $(q "$1")" \
       "DB-Kopie '$1' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)" \
     || die "createdb fehlgeschlagen - meist halten offene Verbindungen die Vorlage '$DB_TEMPLATE' fest:
-  ! laeuft ein Server auf der Haupt-DB ('wt run' ohne DB-Kopie, './manage.sh runserver --local_custom docker') oder ein psql?
+  ! laeuft ein Server auf der Haupt-DB ('wt run' ohne DB-Kopie oder ein eigener runserver) oder ein psql?
   ! beenden, dann erneut versuchen"
 }
 
@@ -794,7 +794,7 @@ cmd_drop() {
   if is_main_path "$wtpath"; then die "'$kuerzel' ist im Hauptordner ausgecheckt - der Hauptordner wird nie entfernt, nur Worktrees"; fi
   if is_here "$wtpath"; then die "$here_msg"; fi
   kuerzel=$(basename "$wtpath")
-  nr=$(mr_number "$kuerzel")   # aus dem gefundenen Ordner, nicht aus der Eingabe: 'mia-123' kann ein Branch-Ordner sein, nicht MR 123
+  nr=$(mr_number "$kuerzel")   # aus dem gefundenen Ordner, nicht aus der Eingabe: 'abc-123' kann ein Branch-Ordner sein, nicht MR 123
 
   if [ -n "$nr" ]; then
     local port=$((PORT_BASE + nr % 1000))
