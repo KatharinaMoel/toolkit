@@ -400,7 +400,7 @@ settings_shim() { # $1 = worktree-pfad, $2 = kopie-name
   if [ ! -d "$(dirname "$target")" ]; then
     run "mkdir -p $(q "$(dirname "$target")")" "Ordner fuer den Shim anlegen"
   fi
-  note "Settings-Shim erzeugen: $SETTINGS_SHIM_PATH (gitignored; fixe 3-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)"
+  note "Settings-Shim erzeugen: $SETTINGS_SHIM_PATH (gitignored; fixe 2-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)"
   printf '  > cat > %s\n' "$target" >&2
   cat > "$target" <<EOF
 from ${SETTINGS_SHIM_IMPORT} import *  # noqa: F401,F403
