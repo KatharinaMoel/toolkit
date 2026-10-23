@@ -82,3 +82,94 @@ Each entry: the options, the choice, why, and what it costs.
 - Everything from GitLab is HTML-escaped first; links become `href` only for
   `http(s)` and for GitLab-relative paths (prefixed with the host) — the project's
   own URLs from the snapshot go through the same check.
+
+---
+
+# v2 — sync and overview
+
+## Git state in an own ref namespace
+
+- Options: read `origin/*` as the user has it; fetch into `refs/remotes/origin/*`;
+  fetch into `refs/mr-export/*`.
+- Choice: `refs/mr-export/heads/<branch>` and `refs/mr-export/mr/<iid>`.
+- Why: the user's view of the remote must not move under them because a timer ran,
+  and their remote-tracking refs may be stale on purpose.
+- Cost: refs that `git gc` keeps alive; `git for-each-ref refs/mr-export` lists them,
+  `git update-ref -d` removes them.
+
+## "In target" by content, not only by ancestry
+
+- Options: ancestry (`merge-base --is-ancestor`); patch ids (`git cherry`); a test
+  merge (`git merge-tree --write-tree`).
+- Choice: ancestry first, then a test merge: if merging the MR into the target
+  yields the target's own tree, the changes are already there. This replaces the
+  spec's `git cherry` / `Local-MR:` trailer idea for this stage: patch ids miss
+  multi-commit squashes, and the trailer only exists once Part C merges.
+- A conflicting test merge (exit 1) is shown as *unclear*, not *no*: a change that
+  was squashed and later edited again on the target conflicts as well.
+  `--quiet` is not used — on real MRs it reported success despite conflicts.
+  The test merge writes loose objects into `.git`, never refs.
+- Why: teams that squash would otherwise see "no" for exactly the MRs that were
+  merged by hand. Patch ids miss a squash of several commits.
+- Cost: one merge-tree run per unmerged MR; needs Git ≥ 2.38.
+
+## Complete, partial, unfinished
+
+- A run is complete when every read worked, partial when it finished with gaps,
+  unfinished when it stopped half-way (meta.json is written with complete=false
+  first). `latest` points at the newest complete snapshot, or at a partial one that
+  is newer. Pruning keeps the newest `keep` complete ones, and up to `keep` partial
+  ones newer than the newest complete one; partial and unfinished ones older than it
+  are removed. A `meta.json` without `complete` comes from the first version, which
+  wrote it only after a successful run, and counts as complete.
+- Why: a string of half-good runs during an outage must not push out the last good
+  copy.
+
+## One fetch at a time
+
+- A `flock` on `<out_dir>/<repo>/.fetch.lock`; a second fetch stops at once.
+- Why: the timer and a manual run would otherwise race on pruning and `latest`.
+
+## Age computed in the browser
+
+- The page carries the read time and the threshold; a tiny script turns them into
+  "read 40 min ago" and colors it after `stale_after_hours`.
+- Why: a page written at read time would still say "5 min ago" next week. The timer's
+  interval is not known to the page, so the threshold is its own setting. The spec's
+  "red when the newest run was unfinished" is not possible on a static page that
+  cannot see later runs; an unfinished run is flagged on its own page instead.
+
+## Diff panel
+
+- `git diff <target>...<head>` is stored per MR at read time, so pages need no Git.
+  Files with up to 10 changed lines start open; a file is cut after 1500 lines, a page
+  after 6000, a line after 2000 characters; files beyond the page budget keep their
+  counts and stay listed; binary files are only listed. Diff text in other encodings
+  is decoded with replacement characters rather than failing the run.
+- MRs whose head cannot be fetched get no diff and no failure: their state says `?`.
+
+## Flatpak browsers
+
+- `open` asks `xdg-mime` for the default HTML handler; when it is a Flatpak whose
+  `filesystems` permission covers neither home nor the snapshot folder, it prints the
+  `flatpak override` command and still opens the page. It never runs the override.
+- Why: through the document portal such a browser sees only the one file; every link
+  from the overview fails, which looks like a broken tool.
+
+## Timer as a systemd user unit
+
+- Options: cron; systemd user timer with lingering; without lingering.
+- Choice: user timer without lingering, unit name `mr-export-<folder>-<hash>`.
+- Why: glab's token sits in the desktop keyring and SSH keys in the session's agent;
+  both exist only while the user is logged in. The hash keeps two clones with the same
+  folder name apart; `%` in paths is doubled because systemd reads it as a placeholder.
+
+## Images load at once
+
+- Images on MR pages load without `loading="lazy"`: the files are local, and lazy
+  images came out empty in headless screenshots and printouts.
+
+## Member list file
+
+- Members are stored as `members.ndjson` (glab's paginated output unchanged), not
+  `members.json` as the spec wrote; Part C reads that file.

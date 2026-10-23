@@ -26,6 +26,7 @@ class MergeRequest:
     data: dict
     discussions: list[dict] = field(default_factory=list)
     approvals: dict | None = None
+    git_state: dict | None = None   # from git.json: is the change in the target branch
 
     @property
     def iid(self) -> int:
@@ -98,6 +99,8 @@ def load(path: Path) -> Snapshot:
         raise FileNotFoundError(f"no merge request list (mrs.ndjson) in {path}")
     meta_file = path / "meta.json"
     meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.is_file() else {}
+    git_file = path / "git.json"
+    git_states = json.loads(git_file.read_text(encoding="utf-8")) if git_file.is_file() else {}
     mrs = []
     for item in read_ndjson(listing):
         iid = item["iid"]
@@ -109,6 +112,7 @@ def load(path: Path) -> Snapshot:
             data=data,
             discussions=read_ndjson(disc) if disc else [],
             approvals=json.loads(appr.read_text(encoding="utf-8")) if appr else None,
+            git_state=git_states.get(str(iid)),
         ))
     if not meta.get("web_url") and mrs:
         # https://host/group/project/-/merge_requests/835 -> https://host/group/project

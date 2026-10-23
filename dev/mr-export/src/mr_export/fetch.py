@@ -1,13 +1,19 @@
 """Read merge requests from GitLab into a new snapshot folder. Only GET requests;
 nothing on GitLab changes. An existing snapshot is never written to."""
+import fcntl
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from . import gitstate
 from .runner import CommandError, Console, Runner
 from .snapshot import MergeRequest, parse_ndjson, upload_refs
+
+
+class FetchLocked(Exception):
+    """Another fetch for the same repository is running."""
 
 
 @dataclass
@@ -29,8 +35,63 @@ def new_snapshot_dir(root: Path, now: datetime) -> Path:
     return candidate
 
 
+def collect_git_state(runner: Runner, console: Console, mrs: list[MergeRequest],
+                      emergency: dict[str, str], snap: Path) -> list[str]:
+    """Writes git.json (per MR: is its change in the target / in the emergency branch)
+    and mr/<iid>.diff. Returns failures; when Git cannot reach the server, one failure
+    and no git.json."""
+    try:
+        on_server = gitstate.remote_heads(runner)
+        targets = {m.data.get("target_branch") for m in mrs} - {None}
+        branches = sorted(b for b in targets | set(emergency.values()) if b in on_server)
+        console.result(f"{len(on_server)} branches; reading {', '.join(branches) or 'none'}")
+        gitstate.fetch_refs(runner, branches)
+    except CommandError as e:
+        console.note(f"Git over SSH failed: {e}")
+        return [f"git: {e}"]
+    console.step(f"For each MR: is its change already in its target branch, and its diff ({len(mrs)} MRs)")
+    states: dict[str, dict] = {}
+    failures: list[str] = []
+    for mr in mrs:
+        target, head = mr.data.get("target_branch"), mr.data.get("sha") or gitstate.mr_ref(mr.iid)
+        if target not in branches:
+            states[str(mr.iid)] = {"target": "unknown", "emergency": None, "emergency_branch": None}
+            continue
+        state = {"target": gitstate.merge_state(runner, head, gitstate.head_ref(target)),
+                 "emergency": None, "emergency_branch": None}
+        branch = emergency.get(target)
+        if state["target"] in ("no", "conflict") and branch in branches:
+            state["emergency"] = gitstate.merge_state(runner, head, gitstate.head_ref(branch))
+            state["emergency_branch"] = branch
+        states[str(mr.iid)] = state
+        if state["target"] == "unknown":   # head not fetchable (force-pushed, deleted): no diff
+            continue
+        try:
+            (snap / "mr" / f"{mr.iid}.diff").write_text(
+                gitstate.diff_text(runner, gitstate.head_ref(target), head), encoding="utf-8")
+        except CommandError as e:
+            failures.append(f"diff !{mr.iid}: {e}")
+    (snap / "git.json").write_text(json.dumps(states, indent=1), encoding="utf-8")
+    counts = {k: sum(1 for v in states.values() if v["target"] == k)
+              for k in ("yes", "content", "no", "conflict", "unknown")}
+    console.result(", ".join(f"{n} {k}" for k, n in counts.items() if n))
+    return failures
+
+
 def fetch(runner: Runner, console: Console, root: Path, state: str, images: bool,
-          now: datetime) -> FetchResult:
+          now: datetime, emergency: dict[str, str] | None = None) -> FetchResult:
+    """One fetch per repository at a time: a second one stops with FetchLocked."""
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / ".fetch.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise FetchLocked(f"another mr-export fetch is running for {root}") from None
+        return _fetch(runner, console, root, state, images, now, emergency or {})
+
+
+def _fetch(runner: Runner, console: Console, root: Path, state: str, images: bool,
+           now: datetime, emergency: dict[str, str]) -> FetchResult:
     project = json.loads(runner.glab_get(
         "projects/:id", "Ask GitLab which project this repository belongs to (also tests that the API answers)"))
     console.result(f"{project['path_with_namespace']} ({project['web_url']})")
@@ -56,6 +117,7 @@ def fetch(runner: Runner, console: Console, root: Path, state: str, images: bool
             "fetched_at": now.isoformat(timespec="seconds"),
             "count": result.count,
             "complete": complete,
+            "partial": bool(result.failures),
             "failures": result.failures,
             "failed_iids": failed_iids,
         }
@@ -95,6 +157,16 @@ def fetch(runner: Runner, console: Console, root: Path, state: str, images: bool
         mrs.append(MergeRequest(data=data, discussions=discussions, approvals=approvals))
         console.result(f"!{iid}: {len(discussions)} threads, {notes} notes")
 
+    try:
+        members = runner.glab_get("projects/:id/members/all?per_page=100",
+                                  "Read the project members and their roles", paginate=True, ndjson=True)
+        parse_ndjson(members)
+        (snap / "members.ndjson").write_bytes(members)
+        console.result(f"{len(parse_ndjson(members))} members")
+    except (CommandError, json.JSONDecodeError) as e:
+        result.failures.append(f"members: {e}")
+        console.note(f"members failed: {e}")
+
     if images:
         refs = sorted({ref for mr in mrs for ref in upload_refs(mr)})
         for i, (secret, name) in enumerate(refs):
@@ -115,6 +187,9 @@ def fetch(runner: Runner, console: Console, root: Path, state: str, images: bool
             console.result(f"{secret[:8]}…/{name} ({len(data) // 1024} KB)")
         if not refs:
             console.step("No uploaded files referenced in the texts")
+
+    console.step("Read over Git (SSH) what is already merged, and every MR's diff")
+    result.failures += collect_git_state(runner, console, mrs, emergency, snap)
 
     write_meta(True)
     return result

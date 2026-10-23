@@ -66,6 +66,7 @@ class FakeGitLab:
         self.uploads = uploads or {}
         self.repo = repo
         self.fail: set[str] = set()
+        self.members = [{"username": "alice", "access_level": 40}, {"username": "bob", "access_level": 30}]
 
     def answer(self, cmd):
         if cmd[0] == "git":
@@ -77,6 +78,8 @@ class FakeGitLab:
         ep = cmd[-1]
         if ep in self.fail:
             return None
+        if ep.startswith("projects/:id/members/all"):
+            return "".join(json.dumps(m) + "\n" for m in self.members)
         if ep == "projects/:id":
             return json.dumps({"path_with_namespace": "team/app", "web_url": "https://git.example.org/team/app"})
         if ep.startswith("projects/:id/merge_requests?"):
@@ -117,3 +120,23 @@ def gitlab():
                       approvals={1: {"approvals_required": 1, "approvals_left": 0, "approved": True,
                                      "approved_by": [{"user": {"username": "carol"}}]}},
                       uploads={f"{UPLOAD_ID}/a.png": b"PNG-A", f"{UPLOAD_ID}/screen%20one.png": b"PNG-B"})
+
+
+@pytest.fixture(autouse=True)
+def no_git_state(monkeypatch, request):
+    """fetch() reads Git state through collect_git_state; tests that run fetch against the
+    fake GitLab get a stub that records its call. Tests marked 'real_git' keep the real one."""
+    if request.node.get_closest_marker("real_git"):
+        return None
+    import mr_export.fetch as fetch_mod
+    calls = []
+
+    def stub(runner, console, mrs, emergency, snap):
+        calls.append({"mrs": [m.iid for m in mrs], "emergency": emergency, "snap": snap})
+        return []
+    monkeypatch.setattr(fetch_mod, "collect_git_state", stub)
+    return calls
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_git: run fetch with the real Git state collector")
