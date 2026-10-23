@@ -15,7 +15,8 @@ def run_fetch(gitlab, root, images=True):
     err = StringIO()
     console = Console(err)
     runner = Runner(root, console, run=gitlab)
-    return fetch(runner, console, root, "opened", images, NOW), err.getvalue()
+    return fetch(runner, console, root, "opened", images, NOW,
+                 {"dev": "notfall/dev", "main": "notfall/main"}), err.getvalue()
 
 
 def test_writes_the_snapshot_layout(gitlab, tmp_path):
@@ -77,7 +78,7 @@ def test_no_folder_when_the_list_cannot_be_read(gitlab, tmp_path):
     gitlab.fail.add("projects/:id/merge_requests?state=opened&per_page=100")
     with pytest.raises(Exception):
         run_fetch(gitlab, tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    assert [p.name for p in tmp_path.iterdir()] == [".fetch.lock"]   # no snapshot folder
 
 
 def test_explains_each_call_once_with_the_command(gitlab, tmp_path):
@@ -119,7 +120,7 @@ def test_bad_list_answer_leaves_no_folder(gitlab, tmp_path):
     gitlab.answer = lambda cmd: "not json\n" if "merge_requests?" in cmd[-1] else gitlab.answer_orig(cmd)
     with pytest.raises(json.JSONDecodeError):
         run_fetch(gitlab, tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    assert [p.name for p in tmp_path.iterdir()] == [".fetch.lock"]   # no snapshot folder
 
 
 def test_uploads_of_other_projects_are_not_requested(gitlab, tmp_path):
@@ -127,3 +128,46 @@ def test_uploads_of_other_projects_are_not_requested(gitlab, tmp_path):
     result, _ = run_fetch(gitlab, tmp_path)
     assert not result.failures
     assert not any("x.png" in c[-1] for c in gitlab.calls)
+
+
+def test_members_are_saved(gitlab, tmp_path):
+    result, _ = run_fetch(gitlab, tmp_path)
+    lines = (result.path / "members.ndjson").read_text().splitlines()
+    assert [json.loads(x)["username"] for x in lines] == ["alice", "bob"]
+
+
+def test_git_state_collector_gets_mrs_and_emergency_branches(gitlab, tmp_path, no_git_state):
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert no_git_state[0]["mrs"] == [1, 2]
+    assert no_git_state[0]["emergency"] == {"dev": "notfall/dev", "main": "notfall/main"}
+    assert json.loads((result.path / "meta.json").read_text())["partial"] is False
+
+
+def test_git_failure_makes_run_partial(gitlab, tmp_path, monkeypatch):
+    import mr_export.fetch as fetch_mod
+    monkeypatch.setattr(fetch_mod, "collect_git_state", lambda *a: ["git: ssh: connect timed out"])
+    result, _ = run_fetch(gitlab, tmp_path)
+    meta = json.loads((result.path / "meta.json").read_text())
+    assert meta["partial"] is True and meta["complete"] is True
+    assert "git: ssh: connect timed out" in meta["failures"]
+
+
+def test_second_fetch_waits_for_lock_and_stops(gitlab, tmp_path):
+    import fcntl
+    from mr_export.fetch import FetchLocked
+    with open(tmp_path / ".fetch.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(FetchLocked):
+            run_fetch(gitlab, tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == [".fetch.lock"]
+    assert not any(c[0] == "glab" for c in gitlab.calls)
+
+
+def test_quiet_console_prints_only_notes():
+    buf = StringIO()
+    c = Console(buf, quiet=True)
+    c.step("explain", ["git", "x"])
+    c.result("ok")
+    c.line("header")
+    c.note("problem")
+    assert buf.getvalue().strip() == "! problem"

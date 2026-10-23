@@ -136,3 +136,106 @@ def test_failed_mr_page_says_so(gitlab, tmp_path):
     render(snapshot.load(result.path))
     assert "Not all data of this merge request" in (result.path / "mr" / "2.html").read_text()
     assert "Not all data" not in (result.path / "mr" / "1.html").read_text()
+
+
+def with_meta(tmp_path, items, meta=None, git=None):
+    s = legacy(tmp_path, items, items)
+    if meta is not None:
+        (tmp_path / "meta.json").write_text(json.dumps(meta))
+    if git is not None:
+        (tmp_path / "git.json").write_text(json.dumps(git))
+    return snapshot.load(tmp_path)
+
+
+def row_order(html):
+    import re
+    return [int(x) for x in re.findall(r'<tr data-iid="(\d+)"', html)]
+
+
+def test_order_non_drafts_then_top_labels_then_updated(tmp_path):
+    items = [
+        mr(1, draft=True, labels=["Approval ready"], updated_at="2026-10-05T00:00:00Z"),
+        mr(2, labels=[], updated_at="2026-10-01T00:00:00Z"),
+        mr(3, labels=["Approval ready"], updated_at="2026-10-02T00:00:00Z"),
+        mr(4, labels=[], updated_at="2026-10-04T00:00:00Z"),
+    ]
+    render(with_meta(tmp_path, items))
+    assert row_order((tmp_path / "index.html").read_text()) == [3, 4, 2, 1]
+
+
+def test_custom_top_labels(tmp_path):
+    items = [mr(1, labels=["Urgent"], updated_at="2026-10-01T00:00:00Z"),
+             mr(2, labels=["Approval ready"], updated_at="2026-10-02T00:00:00Z")]
+    render(with_meta(tmp_path, items), top_labels=["Urgent"])
+    assert row_order((tmp_path / "index.html").read_text()) == [1, 2]
+
+
+def test_chip_per_label_with_count(tmp_path):
+    items = [mr(1, labels=["URGENT"]), mr(2, labels=["URGENT", "Docs"]), mr(3, labels=[])]
+    render(with_meta(tmp_path, items))
+    html = (tmp_path / "index.html").read_text()
+    assert 'data-filter="label:URGENT">URGENT <span class="count">2</span>' in html
+    assert 'data-filter="label:Docs">Docs <span class="count">1</span>' in html
+    for special in ("draft", "intarget", "threads"):
+        assert f'data-filter="{special}"' in html
+    assert 'data-labels="URGENT|Docs"' in html
+
+
+def test_in_target_column_texts(tmp_path):
+    items = [mr(i) for i in range(1, 6)]
+    git = {"1": {"target": "yes", "emergency": None, "emergency_branch": None},
+           "2": {"target": "content", "emergency": None, "emergency_branch": None},
+           "3": {"target": "no", "emergency": None, "emergency_branch": None},
+           "4": {"target": "unknown", "emergency": None, "emergency_branch": None},
+           "5": {"target": "no", "emergency": "content", "emergency_branch": "notfall/dev"}}
+    render(with_meta(tmp_path, items, git=git))
+    html = (tmp_path / "index.html").read_text()
+    import re
+    cells = dict(re.findall(r'<tr data-iid="(\d+)".*?<td class="intarget">(.*?)</td>', html))
+    assert "yes" in cells["1"] and "squashed" not in cells["1"]
+    assert "yes (squashed)" in cells["2"]
+    assert cells["3"] == "no"
+    assert "?" in cells["4"]
+    assert "in notfall/dev" in cells["5"]
+
+
+def test_age_banner_has_timestamp_and_threshold(tmp_path):
+    meta = {"fetched_at": "2026-10-23T10:05:00", "complete": True, "partial": True,
+            "failures": ["git: timeout"], "project": "team/app"}
+    render(with_meta(tmp_path, [mr(1)], meta=meta), stale_after_hours=3)
+    html = (tmp_path / "index.html").read_text()
+    assert 'data-fetched="2026-10-23T10:05:00"' in html and 'data-stale-hours="3"' in html
+    assert "Some data could not be read" in html
+
+
+def test_no_git_json_still_renders(tmp_path):
+    render(with_meta(tmp_path, [mr(1)]))
+    html = (tmp_path / "index.html").read_text()
+    assert '<td class="intarget"><span class="muted">?</span></td>' in html
+
+
+def test_mr_page_has_changes_panel(tmp_path):
+    with_meta(tmp_path, [mr(1)])
+    (tmp_path / "mr").mkdir(exist_ok=True)
+    (tmp_path / "mr" / "1.diff").write_text(
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+print(1)\n")
+    render(snapshot.load(tmp_path))
+    html = (tmp_path / "mr" / "1.html").read_text()
+    assert "<h2>Changes" in html and '<span class="add">+print(1)</span>' in html
+
+
+def test_mr_page_without_diff_says_so(tmp_path):
+    render(with_meta(tmp_path, [mr(1)]))
+    assert "No diff in this snapshot" in (tmp_path / "mr" / "1.html").read_text()
+
+
+def test_images_load_without_waiting_for_scroll(snap):
+    html = (snap / "mr" / "2.html").read_text()
+    assert "<img " in html and 'loading="lazy"' not in html
+
+
+def test_conflict_state_is_shown_as_unclear(tmp_path):
+    git = {"1": {"target": "conflict", "emergency": None, "emergency_branch": None}}
+    render(with_meta(tmp_path, [mr(1)], git=git))
+    html = (tmp_path / "index.html").read_text()
+    assert "unclear" in html and 'data-intarget="0"' in html
