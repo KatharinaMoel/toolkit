@@ -25,6 +25,7 @@ on any Linux. Each tool's README states its actual requirements.
 | [ai/skill-map](ai/skill-map/) | ai | One page of every skill, command, plugin and agent Claude Code can use — where it lives, how often it is used, its full text unchanged — with a session start reminder when the page is out of date |
 | [ai/skill-show](ai/skill-show/) | ai | Shows the file behind a Claude Code skill or slash command byte for byte, with its path and the precedence among same-named ones — no model reads it for you |
 | [dev/wt](dev/wt/) | dev | Disposable git worktrees for parallel MR reviews and branch work — with per-review database copies |
+| [dev/mr-export](dev/mr-export/) | dev | GitLab merge requests — descriptions, threads, approvals, pipeline, images — read-only into a local snapshot with an offline HTML overview, for when the server is down |
 | [dev/recall](dev/recall/) | dev | One hotkey, one fuzzy list: copy prepared commit/MR texts and forgotten commands, read procedures — with Claude Code as a read-only fallback for fuzzy questions |
 | [media/transcribe](media/transcribe/) | media | Public podcast episodes (or any audio) to Markdown — the publisher's transcript when the feed has one, otherwise local CPU recognition with timestamps; resumable queue for multi-day runs |
 
