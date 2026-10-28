@@ -19,6 +19,17 @@ from urllib.parse import unquote
 # GitLab upload links of this project: a relative /uploads/<32 hex>/<file name> at the
 # start of a link target; absolute URLs (other projects) are left alone.
 UPLOAD_RE = re.compile(r"(?:^|(?<=[(\"'\s]))/uploads/([0-9a-f]{32})/([^/\s)\"'<>]+)")
+# Uploads kept in the snapshot: types a browser shows without running code. Anything else
+# (html, svg, js, ...) stays a link to GitLab, which serves such files as a download.
+LOCAL_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".pdf", ".txt", ".log", ".csv"}
+
+
+def mr_number(value) -> int:
+    """An MR's iid goes into file names and API paths: only a positive whole number."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)) or not str(value).isdigit() \
+            or int(value) < 1:
+        raise ValueError(f"not a merge request number: {value!r}")
+    return int(value)
 
 
 @dataclass
@@ -76,6 +87,11 @@ def safe_upload(secret: str, name: str) -> bool:
             and "/" not in name and "\\" not in name and not name.startswith("."))
 
 
+def keep_locally(name: str) -> bool:
+    """Whether an upload is downloaded and linked from the snapshot (see LOCAL_TYPES)."""
+    return Path(file_name(name)).suffix.lower() in LOCAL_TYPES
+
+
 def upload_refs(mr: MergeRequest) -> list[tuple[str, str]]:
     """Every distinct (secret, plain file name) referenced in description and notes."""
     texts = [mr.data.get("description") or ""]
@@ -84,7 +100,7 @@ def upload_refs(mr: MergeRequest) -> list[tuple[str, str]]:
     seen: dict[tuple[str, str], None] = {}
     for text in texts:
         for secret, name in UPLOAD_RE.findall(text):
-            if safe_upload(secret, name):
+            if safe_upload(secret, name) and keep_locally(name):
                 seen[(secret, file_name(name))] = None
     return list(seen)
 
@@ -103,7 +119,10 @@ def load(path: Path) -> Snapshot:
     git_states = json.loads(git_file.read_text(encoding="utf-8")) if git_file.is_file() else {}
     mrs = []
     for item in read_ndjson(listing):
-        iid = item["iid"]
+        try:
+            iid = mr_number(item.get("iid"))
+        except ValueError:
+            continue   # fetch has already listed it as a failure; no file can belong to it
         detail = _first(path / "mr" / f"{iid}.json", path / f"mr-{iid}.json")
         data = json.loads(detail.read_text(encoding="utf-8")) if detail else item
         disc = _first(path / "mr" / f"{iid}-discussions.ndjson", path / f"mr-{iid}-discussions.ndjson")

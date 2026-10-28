@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import diffview
-from .snapshot import UPLOAD_RE, MergeRequest, Snapshot, file_name, safe_upload
+from .snapshot import UPLOAD_RE, MergeRequest, Snapshot, file_name, keep_locally, safe_upload
 
 CSS = """
 :root { --add-bg:#e3f4e8; --del-bg:#fbe6e4; --bg:#f7f8fa; --surface:#fff; --fg:#1c2230; --muted:#5d6676; --line:#dde2ea;
@@ -158,7 +158,7 @@ class Markdown:
         if not m or not safe_upload(m.group(1), m.group(2)):
             return None
         name = file_name(m.group(2))
-        if self.snap.upload_path(m.group(1), name).is_file():
+        if keep_locally(name) and self.snap.upload_path(m.group(1), name).is_file():
             return name, f"{self.prefix}uploads/{m.group(1)}/{quote(name)}", True
         online = self.url(f"{self.snap.web_url}/uploads/{m.group(1)}/{quote(name)}") if self.snap.web_url else None
         return name, online, False

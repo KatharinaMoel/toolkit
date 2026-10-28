@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from . import gitstate
 from .runner import CommandError, Console, Runner
-from .snapshot import MergeRequest, parse_ndjson, upload_refs
+from .snapshot import MergeRequest, mr_number, parse_ndjson, upload_refs
 
 
 class FetchLocked(Exception):
@@ -127,7 +127,12 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
 
     mrs: list[MergeRequest] = []
     for i, item in enumerate(items):
-        iid = item["iid"]
+        try:
+            iid = mr_number(item.get("iid"))
+        except ValueError as e:
+            result.failures.append(str(e))
+            console.note(f"skipped: {e}")
+            continue
         shown = i == 0   # the first MR shows its three calls; the rest repeat them, one line each
         if i == 1:
             console.step(f"The same three reads for the other {len(items) - 1} merge requests, one line each")

@@ -130,6 +130,14 @@ def test_uploads_of_other_projects_are_not_requested(gitlab, tmp_path):
     assert not any("x.png" in c[-1] for c in gitlab.calls)
 
 
+def test_bad_mr_number_is_a_failure_and_writes_nothing(gitlab, tmp_path):
+    gitlab.mrs[0]["iid"] = "../evil"
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert any("../evil" in f for f in result.failures)
+    assert not any("evil" in c[-1] for c in gitlab.calls)
+    assert not list(tmp_path.rglob("*evil*"))
+
+
 def test_members_are_saved(gitlab, tmp_path):
     result, _ = run_fetch(gitlab, tmp_path)
     lines = (result.path / "members.ndjson").read_text().splitlines()

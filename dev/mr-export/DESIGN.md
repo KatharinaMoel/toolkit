@@ -75,6 +75,18 @@ Each entry: the options, the choice, why, and what it costs.
   asking this project for them would only fail. Uploads that are not images (a PDF)
   are linked to the local copy as well.
 
+## Only uploads that cannot run code are kept
+
+- Anyone who can comment on an MR can upload a file. An `.html` or `.svg` saved in the
+  snapshot and opened from the page would run its script from `file://`, without the
+  protection GitLab gives it (GitLab serves such files as a download). So only types a
+  browser shows without running code are downloaded and linked locally: images
+  (png, jpg, gif, webp, avif, bmp), pdf, txt, log, csv. Everything else stays a link
+  to GitLab — offline it is missing, which is the price. Files of other types already
+  on disk from an older run are never linked.
+- The MR number (`iid`) goes into file names and API paths, so it must be a positive
+  whole number; any other value is a failure of that run and is skipped on reading.
+
 ## Offline pages without scripts from elsewhere
 
 - No web fonts, no CDN; system font stack, light and dark via `prefers-color-scheme`.
