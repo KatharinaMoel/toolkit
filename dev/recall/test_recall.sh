@@ -594,6 +594,9 @@ reset "PICK commit msg neu.txt"
 expect_eq  "text: exit 0 after copy" 0 "$rc"
 expect_eq  "text: clipboard holds the file" "$(cat "$R1/.reviews/commit msg neu.txt")" "$(cat "$CLIP")"
 expect_has "text: notification" "Copied: commit msg neu.txt" "$(cat "$NOTIFY_LOG")"
+# wl-copy guesses the type from the file: a .sql file went out only as application/sql,
+# which editors such as PyCharm do not paste. Every copy is offered as plain text.
+expect_has "text: offered as plain text" $'-t\ntext/plain;charset=utf-8' "$(cat "$CLIP_ARGS")"
 expect_has "text: copy time stored" "$R1/.reviews/commit msg neu.txt	$RECALL_NOW	0" "$(cat "$STATE/texts.tsv")"
 rm -f "$STATE/texts.tsv"
 
@@ -606,6 +609,7 @@ reset "SEARCH git log"
 "$RECALL" </dev/null >/dev/null 2>&1
 expect_eq  "command: clipboard holds the command" "git log | head" "$(cat "$CLIP")"
 expect_has "command: copied without newline" "-n" "$(cat "$CLIP_ARGS")"
+expect_has "command: offered as plain text" $'-t\ntext/plain;charset=utf-8' "$(cat "$CLIP_ARGS")"
 
 reset "SEARCH Git-Branches" ESC
 "$RECALL" </dev/null >/dev/null 2>&1; rc=$?
@@ -833,12 +837,14 @@ reset ESC
 out=$(RECALL_RUN="$RUN" "$RECALL" --copy "$(line_of "$TMP/flat" "git log | head")" 2>&1); rc=$?
 expect_eq  "ctrl-y on a command: exit 0, nothing for fzf to run" "0|" "$rc|$out"
 expect_eq  "ctrl-y on a command: clipboard holds the command" "git log | head" "$(cat "$CLIP")"
-expect_eq  "ctrl-y on a command: no trailing newline" "-n" "$(cat "$CLIP_ARGS")"
+expect_has "ctrl-y on a command: no trailing newline" "-n" "$(cat "$CLIP_ARGS")"
+expect_has "ctrl-y on a command: offered as plain text" $'-t\ntext/plain;charset=utf-8' "$(cat "$CLIP_ARGS")"
 expect_has "ctrl-y on a command: notification" "Copied: git log | head" "$(cat "$NOTIFY_LOG")"
 reset ESC
 RECALL_RUN="$RUN" "$RECALL" --copy "$(line_of "$TMP/flat" "commit msg neu.txt")" >/dev/null 2>&1
 expect_eq  "ctrl-y on a text with a space in its name: file content" \
   "$(cat "$R1/.reviews/commit msg neu.txt")" "$(cat "$CLIP")"
+expect_has "ctrl-y on a text: offered as plain text" $'-t\ntext/plain;charset=utf-8' "$(cat "$CLIP_ARGS")"
 reset ESC
 RECALL_RUN="$RUN" "$RECALL" --copy "$(line_of "$TMP/flat" "Altes Runbook")" >/dev/null 2>&1
 expect_eq  "ctrl-y on a procedure: nothing copied" "" "$(cat "$CLIP" 2>/dev/null)"
