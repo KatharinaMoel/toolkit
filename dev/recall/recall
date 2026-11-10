@@ -810,8 +810,11 @@ notify() {
 }
 
 # ---------- actions ----------
-copy_text() { wl-copy < "$1"; set_text_state "$1" copied "$(now_epoch)"; notify "Copied: ${1##*/}"; }
-copy_cmd()  { printf '%s' "$1" | wl-copy -n; notify "Copied: $1"; }
+# wl-copy guesses the type from the content: a .sql file went out only as application/sql,
+# which PyCharm and other editors do not paste. Texts and commands are always plain text.
+CLIP_TYPE='text/plain;charset=utf-8'
+copy_text() { wl-copy -t "$CLIP_TYPE" < "$1"; set_text_state "$1" copied "$(now_epoch)"; notify "Copied: ${1##*/}"; }
+copy_cmd()  { printf '%s' "$1" | wl-copy -n -t "$CLIP_TYPE"; notify "Copied: $1"; }
 read_proc() { show_file "$1" page; }
 copy_entry() { # ctrl-y / right-click: copy a text or command, recall stays open
   local kind target

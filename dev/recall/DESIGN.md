@@ -183,6 +183,18 @@ separated by a blank line; the single preview adds the keywords in grey below. T
 styles have their own variables because `group_preview` empties the list colours to
 read plain text from the list sources.
 
+## Clipboard type
+
+Every copy goes out as `wl-copy -t 'text/plain;charset=utf-8'` (`CLIP_TYPE`).
+Without `-t`, wl-copy guesses the type from the content (`xdg-mime`): a `.sql` text
+was offered only as `application/sql`, and PyCharm pasted nothing. A `.md` text
+worked, because its guessed type is `text/markdown`, and for that wl-copy also
+offers the plain text types.
+Found on 2026-11-10. Ruled out before the cause was clear: the Ptyxis scope does
+not kill the forked `wl-copy`, so `systemd-run`/`setsid` would change nothing.
+Price: an app that asks for the specific type (`application/sql`) no longer gets
+it. recall copies texts for pasting, so that is fine.
+
 ## Not included
 
 Mouse support, a `## Kurz` excerpt, a "park now" key, a second assistant backend.
