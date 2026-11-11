@@ -121,7 +121,11 @@ def cmd_fetch(args, console: Console) -> int:
         console.result(", ".join(p.name for p in gone) if gone else "nothing to delete")
 
     console.line("\n── Result ──────────────────────────────────────")
-    console.line(f"  {result.count} merge requests, {result.notes} notes, {result.images} images")
+    console.line(f"  {result.count} merge requests, {result.notes} notes, {result.images} images"
+                 + (f" ({result.images_reused} taken from the previous snapshot)" if result.images_reused else ""))
+    if result.shared_files:
+        console.line(f"  Shared:   {result.shared_files} unchanged files stored once "
+                     f"({result.shared_bytes // (1024 * 1024)} MB not stored twice)")
     console.line(f"  Snapshot: {result.path}")
     if index:
         console.line(f"  Open:     xdg-open {index}")

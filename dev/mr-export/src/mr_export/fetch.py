@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import gitstate
+from . import gitstate, share
 from .runner import CommandError, Console, Runner
 from .snapshot import MergeRequest, mr_number, parse_ndjson, upload_refs
 
@@ -22,6 +22,9 @@ class FetchResult:
     count: int = 0
     notes: int = 0
     images: int = 0
+    images_reused: int = 0
+    shared_files: int = 0
+    shared_bytes: int = 0
     failures: list[str] = field(default_factory=list)
 
 
@@ -101,6 +104,7 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
         f"List the merge requests with state '{state}', all pages", paginate=True, ndjson=True)
 
     items = parse_ndjson(listing)   # before any folder exists: a bad answer leaves nothing behind
+    previous = share.previous_complete(root)   # looked up before the new folder exists
     snap = new_snapshot_dir(root, now)
     (snap / "mr").mkdir(parents=True)
     (snap / "mrs.ndjson").write_bytes(listing)
@@ -174,14 +178,29 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
 
     if images:
         refs = sorted({ref for mr in mrs for ref in upload_refs(mr)})
-        for i, (secret, name) in enumerate(refs):
-            if i == 1:
-                console.step(f"The same download for the other {len(refs) - 1} files, one line each")
+        known = previous / "uploads" if previous else None
+        if known is not None and any(share.existing_file(known / s / n) for s, n in refs):
+            console.step(f"Files already in {previous.name} are taken from there (hard link), not downloaded again")
+        downloads = 0
+        for secret, name in refs:
             target = snap / "uploads" / secret / name
+            if known is not None and share.existing_file(known / secret / name):
+                try:
+                    share.link_or_copy(known / secret / name, target)
+                except OSError as e:
+                    result.failures.append(f"upload {secret}/{name}: {e}")
+                    console.note(f"upload {name} failed: {e}")
+                    continue
+                result.images += 1
+                result.images_reused += 1
+                continue
+            downloads += 1
+            if downloads == 2:
+                console.step("The same download for the other new files, one line each")
             try:
                 data = runner.glab_get(
                     f"projects/:id/uploads/{secret}/{quote(name, safe='')}",
-                    "Download a file uploaded to a description or comment" if i == 0 else None)
+                    "Download a file uploaded to a description or comment" if downloads == 1 else None)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
             except (CommandError, OSError) as e:
@@ -195,6 +214,12 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
 
     console.step("Read over Git (SSH) what is already merged, and every MR's diff")
     result.failures += collect_git_state(runner, console, mrs, emergency, snap)
+
+    if previous is not None:
+        console.step(f"Store files that did not change since {previous.name} only once (hard links)")
+        shared = share.share_unchanged(snap, previous)
+        result.shared_files, result.shared_bytes = shared.files, shared.bytes
+        console.result(f"{shared.files} files shared, {shared.bytes // 1024} KB not stored twice")
 
     write_meta(True)
     return result
