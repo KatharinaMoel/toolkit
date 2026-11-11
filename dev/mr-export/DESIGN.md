@@ -35,7 +35,31 @@ Each entry: the options, the choice, why, and what it costs.
 - Choice: new folder `<YYYY-MM-DD_HHMM>`, `-2`, `-3` when the minute is taken.
 - Why: an outage can strike in the middle of a run; a half-written update would
   spoil the last good copy. Old snapshots also show how things stood back then.
-- Cost: disk space (images dominate); old folders are deleted by hand.
+- Cost: disk space; kept small by sharing unchanged files (next section), and old
+  folders are deleted by `keep`.
+
+## Unchanged files shared between snapshots
+
+- Options: (a) keep downloading and storing everything per run; (b) hard-link what is
+  unchanged since the previous run; (c) also skip reading MRs whose `updated_at` did
+  not change.
+- Choice: (b). An upload whose path (`uploads/<secret>/<file>`) is already in the
+  newest **complete** snapshot is linked from there instead of downloaded. At the end
+  of a run, every file with the same bytes as the same path in that snapshot becomes
+  a hard link to it. Where a link fails (other device, link limit) the upload is
+  copied and other files stay as they are - never a failure.
+- Why: each snapshot stays a full, independent folder - deleting the older one keeps
+  the newer intact - while unchanged MRs, diffs and images take space once.
+  Upload reuse saves the downloads. It rests on an assumption, not on a check: a file
+  under the same secret path does not change (each upload gets its own secret).
+- Never shared: `*.html` (rewritten in place by `render`) and `meta.json` (rewritten
+  during the run). Writing one of them can therefore never change another snapshot.
+  Unfinished and partial runs are no source: a half-written file there could spread.
+- Not done: (c). Whether GitLab moves `updated_at` on approvals and pipeline changes
+  is not checked; if not, a snapshot could stay quietly outdated - the worst outcome
+  for an outage copy. Each run still reads every MR in full.
+- Cost: a file edited by hand inside a snapshot changes it in every snapshot that
+  shares it. `du` counts a shared file once per call (`du -sh <out_dir>/<repo>`).
 
 ## Partial results instead of all-or-nothing
 

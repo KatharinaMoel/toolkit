@@ -67,6 +67,12 @@ mr-export schedule --off          # stop and remove
   failed) is marked **partial**: it becomes `latest` when it is the newest run. The
   newest `keep` complete snapshots always stay; partial runs newer than them are kept
   up to the same number, older partial runs are removed once a complete one exists.
+- Each run reads every MR again, but stores what did not change only once: images
+  already in the previous complete snapshot are hard-linked from there instead of
+  downloaded, and unchanged data files (`.json`, `.ndjson`, `.diff`) become hard links
+  too. Pages (`.html`) and `meta.json` are always separate files. Every snapshot is
+  still a complete folder; deleting an old one does not touch the newer ones. Do not
+  edit files inside a snapshot by hand - a shared file changes in all snapshots.
 
 Snapshot layout:
 
