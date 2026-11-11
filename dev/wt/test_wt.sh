@@ -289,6 +289,45 @@ else fail "drop: geaenderte eingecheckte Datei -> verweigert" "rc=$rc $err"; fi
 "$WT" drop feat-mod --force >/dev/null 2>&1
 printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
 
+# ---------- drop: ein laufender manage.py im Worktree blockiert, nicht der Port ----------
+# Ein Server kann mit --port woanders lauschen, und auf PORT_BASE + nr kann ein fremder
+# Dienst laufen. Gesucht wird darum nach manage.py-Prozessen, deren Arbeitsordner im
+# Worktree liegt (/proc, also nur unter Linux).
+if [ -d /proc/self ]; then
+  cd "$REPO" || exit 1
+  start_fake() { # Ordner argv0 -> PID eines sleep, der unter argv0 im Ordner laeuft
+    ( cd "$1" && exec -a "$2" sleep 300 ) >/dev/null 2>&1 &
+    local pid=$! _
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$(cd "$1" && pwd -P)" ] && break
+      sleep 0.1
+    done
+    echo "$pid"
+  }
+  git -C "$REPO" worktree add -q --detach "$BASE/mr-61"
+  git -C "$REPO" worktree add -q --detach "$BASE/mr-62"
+  srv=$(start_fake "$BASE/mr-61" "python manage.py runserver 127.0.0.1:8999")
+  err=$("$WT" drop 61 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -ne 0 ] && [ -d "$BASE/mr-61" ] && [[ "$err" == *"$srv"* ]]; then ok "drop: Server im Worktree auf eigenem Port -> verweigert, nennt die PID"
+  else fail "drop: Server im Worktree auf eigenem Port -> verweigert, nennt die PID" "rc=$rc $err"; fi
+  err=$("$WT" drop 61 --force 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -ne 0 ] && [ -d "$BASE/mr-61" ]; then ok "drop --force: laufender Server blockiert trotzdem"
+  else fail "drop --force: laufender Server blockiert trotzdem" "rc=$rc $err"; fi
+  mkdir -p "$TMP/ss-busy"
+  printf '#!/usr/bin/env bash\nprintf "LISTEN 0 128 *:8062 *:*\\n"\n' > "$TMP/ss-busy/ss"; chmod +x "$TMP/ss-busy/ss"
+  err=$(PATH="$TMP/ss-busy:$PATH" "$WT" drop 62 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -e "$BASE/mr-62" ]; then ok "drop: fremder Dienst auf dem MR-Port und Server in anderem Worktree blockieren nicht"
+  else fail "drop: fremder Dienst auf dem MR-Port und Server in anderem Worktree blockieren nicht" "rc=$rc $err"; fi
+  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+  other=$(start_fake "$BASE/mr-61" "sleep 300")
+  err=$("$WT" drop 61 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -e "$BASE/mr-61" ]; then ok "drop: anderer Prozess als manage.py im Worktree blockiert nicht"
+  else fail "drop: anderer Prozess als manage.py im Worktree blockiert nicht" "rc=$rc $err"; fi
+  kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
+else
+  ok "drop: Serverpruefung uebersprungen (kein /proc)"
+fi
+
 # ---------- wt new: Zielbranch, Forge, Remote ----------
 cd "$REPO" || exit 1
 # Regression: TARGET_BRANCH zeigt auf einen Branch, den der Remote nicht hat -> frueher
@@ -513,7 +552,7 @@ expect_eq "prefix: new neben Ordner ohne Repo-Kuerzel -> Exit 1" "1" "$rc"
 if [[ "$err" == *"ohne Repo-Kuerzel"* ]] && [ ! -e "$PXB/abc-mr-5" ]; then ok "prefix: kein zweiter Ordner fuer MR 5"
 else fail "prefix: kein zweiter Ordner fuer MR 5" "$err"; fi
 
-# MR-Nummer aus dem Ordnernamen: ss-Stub meldet Port 8007 belegt -> drop muss abbrechen
+# Ein fremder Dienst auf dem MR-Port (8007) blockiert drop nicht: geprueft wird der Prozess im Worktree
 mkdir -p "$TMP/ss-stub"
 cat > "$TMP/ss-stub/ss" <<'EOF'
 #!/usr/bin/env bash
@@ -521,10 +560,7 @@ printf 'LISTEN 0 4096 127.0.0.1:8007 0.0.0.0:*\n'
 EOF
 chmod +x "$TMP/ss-stub/ss"
 err=$(PATH="$TMP/ss-stub:$PATH" "$WT" drop abc-mr-7 2>&1 >/dev/null); rc=$?
-expect_eq "prefix: drop abc-mr-7 erkennt MR 7 -> Exit 1 bei belegtem Port" "1" "$rc"
-if [[ "$err" == *"Port 8007"* ]]; then ok "prefix: drop abc-mr-7 prueft Port 8007"; else fail "prefix: drop abc-mr-7 prueft Port 8007" "$err"; fi
-err=$("$WT" drop abc-mr-7 2>&1 >/dev/null); rc=$?
-expect_eq "prefix: drop abc-mr-7 -> Exit 0" "0" "$rc"
+expect_eq "prefix: drop abc-mr-7 -> Exit 0 trotz belegtem Port 8007" "0" "$rc"
 if [ ! -e "$PXB/abc-mr-7" ]; then ok "prefix: abc-mr-7 entfernt"; else fail "prefix: abc-mr-7 entfernt" "$err"; fi
 err=$("$WT" drop 5 2>&1 >/dev/null); rc=$?
 expect_eq "prefix: drop 5 (ohne Repo-Kuerzel) -> Exit 0" "0" "$rc"
@@ -841,10 +877,13 @@ git clone -q "$REMOTE_BARE" "$MRR"
 git -C "$MRR" worktree add -q --detach "$MRB/mr-5"
 printf 'WT_PREFIX="mr"\n' > "$HOME/.config/wt/mrrepo.conf"
 cd "$MRR" || exit 1
-printf '#!/usr/bin/env bash\nprintf "LISTEN 0 4096 127.0.0.1:8005 0.0.0.0:*\\n"\n' > "$TMP/ss-stub/ss"
-err=$(PATH="$TMP/ss-stub:$PATH" "$WT" drop 5 2>&1 >/dev/null); rc=$?
-expect_eq "prefix mr: drop 5 (Ordner mr-5) -> Exit 1 bei belegtem Port" "1" "$rc"
-if [[ "$err" == *"Port 8005"* ]]; then ok "prefix mr: drop 5 findet MR 5 im Ordner mr-5"; else fail "prefix mr: drop 5 findet MR 5 im Ordner mr-5" "$err"; fi
+if [ -d /proc/self ]; then
+  srv=$(start_fake "$MRB/mr-5" "python manage.py runserver")
+  err=$("$WT" drop 5 2>&1 >/dev/null); rc=$?
+  expect_eq "prefix mr: drop 5 (Ordner mr-5) -> Exit 1 bei laufendem Server" "1" "$rc"
+  if [[ "$err" == *"in mr-5 laeuft noch manage.py"* ]]; then ok "prefix mr: drop 5 findet MR 5 im Ordner mr-5"; else fail "prefix mr: drop 5 findet MR 5 im Ordner mr-5" "$err"; fi
+  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+fi
 
 # ---------- Zeichenregeln ----------
 cd "$PX" || exit 1
