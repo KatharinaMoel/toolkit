@@ -871,6 +871,59 @@ PATH="$TMP/python-stub:$PATH" "$WT" run 77 runserver >/dev/null 2>&1
 if grep -q '127.0.0.1:8077' "$PY_LOG"; then ok "run 77 nimmt Port 8077 aus dem Ordner abc-mr-77"
 else fail "run 77 nimmt Port 8077 aus dem Ordner abc-mr-77" "$(cat "$PY_LOG")"; fi
 
+# ---------- drop ohne --db: eine vorhandene DB-Kopie haelt an, --keep-db behaelt sie; list zeigt verwaiste ----------
+cd "$PX" || exit 1
+cat > "$HOME/.config/wt/pxrepo.conf" <<'EOF'
+WT_PREFIX="abc"
+DB_CONTAINER="stubdb"
+DB_TEMPLATE="stamm_db"
+DB_COPY_PREFIX="review_"
+SETTINGS_SHIM_PATH="app/settings_review.py"
+SETTINGS_SHIM_IMPORT="app.settings_docker"
+EOF
+for n in 301 302 303 304; do git -C "$PX" worktree add -q --detach "$PXB/abc-mr-$n"; done
+git -C "$PX" worktree add -q -b feat/y "$PXB/abc-feat-y"
+mkdir -p "$PXB/abc-feat-y/app"
+printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'review_feat_y'\n" > "$PXB/abc-feat-y/app/settings_review.py"
+printf '%s\n' 'app/settings_review.py' >> "$PX/.git/info/exclude"
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING="stamm_db review_301" dk drop 301 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$PXB/abc-mr-301" ] && ! grep -q dropdb "$DOCKER_LOG" \
+   && [[ "$err" == *"review_301"* ]] && [[ "$err" == *"'wt drop abc-mr-301 --db'"* ]] && [[ "$err" == *"'wt drop abc-mr-301 --keep-db'"* ]]; then
+  ok "drop ohne --db: vorhandene Kopie -> Abbruch, nichts entfernt, beide Befehle genannt"
+else fail "drop ohne --db: vorhandene Kopie -> Abbruch, nichts entfernt, beide Befehle genannt" "rc=$rc $err"; fi
+err=$(DB_EXISTING="stamm_db review_301" dk drop 301 --force 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$PXB/abc-mr-301" ] && [[ "$err" == *"'wt drop abc-mr-301 --db --force'"* ]]; then ok "drop --force ohne --db: Kopie haelt an, --force bleibt im Befehl"
+else fail "drop --force ohne --db: Kopie haelt an, --force bleibt im Befehl" "rc=$rc $err"; fi
+: > "$DOCKER_LOG"
+err=$(DB_EXISTING="stamm_db review_301" dk drop 301 --keep-db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$PXB/abc-mr-301" ] && ! grep -q dropdb "$DOCKER_LOG" && [[ "$err" == *"review_301"* ]]; then ok "drop --keep-db: Worktree weg, Kopie bleibt, Hinweis nennt sie"
+else fail "drop --keep-db: Worktree weg, Kopie bleibt, Hinweis nennt sie" "rc=$rc $err"; fi
+err=$(DB_EXISTING="stamm_db review_feat_y" dk drop feat-y 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$PXB/abc-feat-y" ] && [[ "$err" == *"review_feat_y"* ]]; then ok "drop ohne --db: Kopie aus dem Shim (kein MR-Ordner) -> Abbruch"
+else fail "drop ohne --db: Kopie aus dem Shim (kein MR-Ordner) -> Abbruch" "rc=$rc $err"; fi
+: > "$DOCKER_LOG"
+DB_EXISTING="stamm_db review_feat_y" dk drop feat-y --db >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'dropdb.*review_feat_y' "$DOCKER_LOG"; then ok "drop --db nach dem Hinweis: Kopie aus dem Shim geloescht (Positivkontrolle)"
+else fail "drop --db nach dem Hinweis: Kopie aus dem Shim geloescht (Positivkontrolle)" "rc=$rc $(cat "$DOCKER_LOG")"; fi
+err=$(DB_EXISTING="stamm_db" dk drop 302 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$PXB/abc-mr-302" ]; then ok "drop ohne --db, keine Kopie vorhanden -> laeuft durch"
+else fail "drop ohne --db, keine Kopie vorhanden -> laeuft durch" "rc=$rc $err"; fi
+err=$(DOCKER_FAIL_PSQL=1 dk drop 303 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$PXB/abc-mr-303" ] && [[ "$err" == *"nicht pruefbar"* ]]; then ok "drop ohne --db, Container nicht erreichbar -> Hinweis, laeuft durch"
+else fail "drop ohne --db, Container nicht erreichbar -> Hinweis, laeuft durch" "rc=$rc $err"; fi
+err=$(DB_EXISTING="stamm_db review_304" dk drop 304 --db --keep-db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$PXB/abc-mr-304" ] && [[ "$err" == *"entweder"* ]]; then ok "drop --db --keep-db -> verweigert"
+else fail "drop --db --keep-db -> verweigert" "rc=$rc $err"; fi
+out=$(DB_EXISTING="stamm_db review_304 review_401 review_feat_y" dk list 2>&1)
+if [[ "$out" == *"verwaist"*"review_401"* ]] && [[ "$out" == *"review_feat_y"* ]] && ! grep -q "verwaist.*review_304" <<<"$out"; then ok "list: verwaiste Kopien (review_401, review_feat_y) genannt, review_304 (Worktree da) nicht"
+else fail "list: verwaiste Kopien (review_401, review_feat_y) genannt, review_304 (Worktree da) nicht" "$out"; fi
+: > "$DOCKER_LOG"
+DB_EXISTING="stamm_db review_401" dk list >/dev/null 2>&1
+if ! grep -q dropdb "$DOCKER_LOG"; then ok "list loescht nie eine Kopie"; else fail "list loescht nie eine Kopie" "$(cat "$DOCKER_LOG")"; fi
+dk drop 304 --keep-db >/dev/null 2>&1
+printf 'WT_PREFIX="abc"\nDB_CONTAINER="stubdb"\nLINK_DIRS=(media)\n' > "$HOME/.config/wt/pxrepo.conf"
+
 # Kuerzel 'mr' und Ordner ohne Repo-Kuerzel (mr-5): die Nummer geht nicht verloren
 MRR="$TMP/px/mrrepo"; MRB="$TMP/px/mrrepo-worktrees"
 git clone -q "$REMOTE_BARE" "$MRR"

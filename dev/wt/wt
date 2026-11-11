@@ -53,9 +53,11 @@ wt - Worktrees mit erklaerten Schritten
                               kommt aus der Konfig oder der Remote-URL
   wt new --branch <name> [--db]
                               Arbeits-Worktree von einem (Remote-)Branch
-  wt drop <ziel> [--db] [--force]
+  wt drop <ziel> [--db|--keep-db] [--force]
                               Worktree entfernen (nicht . und nicht @); --db loescht
                               seine DB-Kopie (Name aus dem Settings-Shim; ohne Shim nur bei MR-Ordnern);
+                              gibt es eine Kopie und fehlt beides, bricht drop ab und nennt
+                              beide Befehle; --keep-db behaelt sie bewusst;
                               nicht Eingechecktes bricht ab, --force loescht es mit
   wt run <ziel> [args]        manage.py im Worktree mit passenden Settings und Port
                               (ohne Args: runserver); 'wt help run' zeigt Beispiele
@@ -711,6 +713,19 @@ shim_db() { # $1 = worktree-pfad -> DB-Name aus dem Settings-Shim, sonst leer
   sed -n "s/^DATABASES\['default'\]\['NAME'\] = '\(.*\)'\$/\1/p" "$1/$SETTINGS_SHIM_PATH" | head -n1
 }
 
+own_copy() { # $1 = worktree-pfad -> DB-Kopie, die ihm gehoert: aus dem Shim, sonst <prefix><nr> bei MR-Ordnern; sonst leer
+  local n nr
+  n=$(shim_db "$1")
+  if [ -n "$n" ]; then
+    if is_copy_name "$n"; then printf '%s
+' "$n"; fi
+    return 0
+  fi
+  nr=$(mr_number "$(basename "$1")")
+  if [ -n "$nr" ]; then printf '%s
+' "${DB_COPY_PREFIX}${nr}"; fi
+}
+
 cmd_run() {
   case "${1:-}" in ""|-h|--help) usage_run; return 0 ;; esac
   local nr="$1" wtpath; shift
@@ -806,15 +821,19 @@ cmd_run() {
 }
 
 cmd_drop() {
-  local kuerzel="" with_db=0 force=0
+  local kuerzel="" with_db=0 keep_db=0 force=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --db)    with_db=1; shift ;;
-      --force) force=1; shift ;;
+      --db)      with_db=1; shift ;;
+      --keep-db) keep_db=1; shift ;;
+      --force)   force=1; shift ;;
       *)       kuerzel="$1"; shift ;;
     esac
   done
   [ -n "$kuerzel" ] || die "drop braucht <nr> oder <kuerzel>"
+  if [ "$with_db" -eq 1 ] && [ "$keep_db" -eq 1 ]; then
+    die "entweder --db (DB-Kopie loeschen) oder --keep-db (DB-Kopie behalten), nicht beides"
+  fi
   if is_main_repo_arg "$kuerzel"; then die "der Hauptordner wird nie entfernt - nur Worktrees"; fi
   local here_msg="der Ordner unter der eigenen Shell wird nicht geloescht - erst herauswechseln (wt cd @), dann 'wt drop <name>'"
   if [ "$kuerzel" = "." ]; then die "$here_msg"; fi
@@ -844,9 +863,30 @@ cmd_drop() {
     changes=$(unsaved_changes "$wtpath") || die "Git-Status von $wtpath nicht lesbar - nichts entfernt"
     if [ -n "$changes" ]; then
       [ "$with_db" -eq 1 ] && again+=" --db"
+      [ "$keep_db" -eq 1 ] && again+=" --keep-db"
       die "in $kuerzel liegen nicht eingecheckte Aenderungen - nichts entfernt:
 $(printf '%s\n' "$changes" | sed 's/^/  /')
 sichern und erneut '$again', oder bewusst mitloeschen: '$again --force'"
+    fi
+  fi
+
+  # Ohne --db: gehoert dem Worktree eine vorhandene Kopie, jetzt fragen - mit dem Shim geht das Wissen darueber verloren
+  local owned="" names
+  if [ "$with_db" -eq 0 ] && [ -n "$DB_CONTAINER" ]; then owned=$(own_copy "$wtpath"); fi
+  if [ -n "$owned" ] && [ "$keep_db" -eq 0 ]; then
+    if names=$(run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database\"" \
+                   "pruefen, ob zu $kuerzel noch eine DB-Kopie gehoert"); then
+      if printf '%s\n' "$names" | grep -qxF -- "$owned"; then
+        local suffix=""
+        [ "$force" -eq 1 ] && suffix=" --force"
+        die "zu $kuerzel gehoert die DB-Kopie '$owned' - nichts entfernt.
+  mit Kopie loeschen:  'wt drop $kuerzel --db$suffix'
+  Kopie behalten:      'wt drop $kuerzel --keep-db$suffix'"
+      fi
+      owned=""
+    else
+      note "DB-Kopien nicht pruefbar ('$DB_CONTAINER' nicht erreichbar?) - weiter ohne Pruefung; '$owned' bleibt, falls es sie gibt."
+      owned=""
     fi
   fi
 
@@ -882,13 +922,38 @@ sichern und erneut '$again', oder bewusst mitloeschen: '$again --force'"
     run "docker exec $DB_CONTAINER dropdb -U $DB_USER $(q "$dbname")" \
         "DB-Kopie wegwerfen - die Stamm-DB war nie betroffen"
   fi
+  if [ -n "$owned" ]; then
+    note "DB-Kopie '$owned' bleibt (--keep-db). 'wt list' zeigt sie als verwaist; loeschen von Hand:"
+    printf '  > docker exec %s dropdb -U %s %s\n' "$DB_CONTAINER" "$DB_USER" "$(q "$owned")" >&2
+  fi
 }
 
 cmd_list() {
   run "git -C $(q "$REPO_ROOT") worktree list" "alle Worktrees dieses Repos zeigen"
-  if [ -n "$DB_CONTAINER" ]; then
-    run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database WHERE datname LIKE '${DB_COPY_PREFIX}%'\"" \
-        "vorhandene Review-DB-Kopien zeigen"
+  [ -n "$DB_CONTAINER" ] || return 0
+  local copies
+  copies=$(run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database WHERE datname LIKE '${DB_COPY_PREFIX}%'\"" \
+               "vorhandene Review-DB-Kopien zeigen") || die "Datenbanken in '$DB_CONTAINER' nicht abfragbar - laeuft der Container?"
+  [ -z "$copies" ] || printf '%s\n' "$copies"
+  # Verwaist: eine Kopie, die kein Worktree (Shim, MR-Nummer oder Ordnername) fuer sich beansprucht. Nur zeigen, nie loeschen.
+  if [ -z "$DB_COPY_PREFIX" ]; then
+    note "ohne DB_COPY_PREFIX ist nicht erkennbar, welche Datenbanken Kopien sind - keine Suche nach verwaisten Kopien."
+    return 0
+  fi
+  local claimed="" path line orphans="" c
+  while IFS= read -r line; do
+    [[ "$line" == "worktree "* ]] || continue
+    path="${line#worktree }"
+    is_main_path "$path" && continue
+    claimed+=$'\n'"$(own_copy "$path")"$'\n'"$(db_name "$path" 2>/dev/null || true)"
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+  while IFS= read -r c; do
+    if [ -z "$c" ] || [[ "$c" != "$DB_COPY_PREFIX"* ]] || [ "$c" = "$DB_TEMPLATE" ]; then continue; fi
+    printf '%s\n' "$claimed" | grep -qxF -- "$c" || orphans+=" $c"
+  done <<<"$copies"
+  if [ -n "$orphans" ]; then
+    note "verwaiste DB-Kopien (kein Worktree dazu):$orphans - wt loescht sie nicht; von Hand:"
+    for c in $orphans; do printf '  > docker exec %s dropdb -U %s %s\n' "$DB_CONTAINER" "$DB_USER" "$(q "$c")" >&2; done
   fi
 }
 

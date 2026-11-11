@@ -130,6 +130,30 @@ slow on big trees and not always installed. Price: Linux only (no `/proc` → no
 check), only processes of the same user are visible, and a `manage.py` started
 from outside with a path into the worktree is not found.
 
+### DB copy left behind by `wt drop`
+
+Without `--db`, `wt drop` asks Postgres whether the copy the worktree owns
+exists (the shim's name if it is a copy, else `<prefix><nr>` for MR folders)
+and, if so, stops before anything changes, naming `--db` and `--keep-db`
+(`--force` kept). The shim goes with the worktree, and with it the only record
+of which copy belonged there, so this is the last moment to decide. `--keep-db`
+skips the check and prints the `dropdb` command; `--db --keep-db` is refused.
+If the container cannot be asked, `drop` says so and goes on — a stopped
+container must not block removing a worktree.
+
+`wt list` names copies with `DB_COPY_PREFIX` that no worktree claims (its
+shim, its MR number or its folder name, the template never) and prints the
+`dropdb` commands. It never drops: a copy may belong to a worktree of another
+clone or be kept on purpose. Without `DB_COPY_PREFIX` there is no orphan search,
+since every database would look like one.
+
+Alternatives: ask "drop the copy too? [y/N]" — hangs or fails silently without
+a terminal (`!` commands, scripts), and a default answer would either lose data
+or keep orphans; drop the copy by default — a worktree is cheap to recreate,
+a copy with test data may not be; only warn after the worktree is gone — the
+shim is gone then, too. Price: one `psql` call per `drop` without `--db` when
+`DB_CONTAINER` is set.
+
 ### Settings for `wt run`
 
 Only when `SETTINGS_SHIM_PATH` is configured: shim present in the worktree →
@@ -182,6 +206,8 @@ paths), ports (fixed, `--mr` with and without number, glab/gh stubs and a
 PATH without them), settings choice, `wt setup` (paths with spaces, no
 overwrite, idempotence, DB ownership, template and prefix guards, dangling
 symlink shim), `wt drop --db`, the server check of `wt drop` (fake `manage.py`
-processes via `exec -a`, a foreign listener on the MR port) and the `wt link` pointer. A manual test in a
+processes via `exec -a`, a foreign listener on the MR port), the DB-copy stop
+of `wt drop` with `--keep-db` and orphaned copies in `wt list` (docker stub) and
+the `wt link` pointer. A manual test in a
 real repo: `wt run <nr>` in an MR worktree, `wt setup .` + `wt run .` in an
 IDE-made worktree, `wt setup . --db` + `wt run . migrate`, `wt drop <x> --db`.

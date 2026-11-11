@@ -28,8 +28,8 @@ wt new --mr <nr> [--db] [--ide]      # disposable worktree from the MR/PR ref (+
 wt new --branch <name> [--db] [--ide] # working worktree from a (remote) branch
 wt setup <target> [--db]             # set up an existing worktree the way `wt new` would (never overwrites)
 wt run <target> [args]               # manage.py in that worktree (default: runserver); `wt help run`
-wt drop <target> [--db]              # remove worktree (and its DB copy)
-wt list                              # show worktrees and existing review DB copies
+wt drop <target> [--db|--keep-db]    # remove worktree (and its DB copy, or keep it)
+wt list                              # show worktrees, review DB copies and orphaned ones
 wt path <target>                     # print the path, nothing else
 wt pick                              # fuzzy picker (fzf): main checkout + all worktrees -> path
 wt ide [<target>]                    # open in your IDE (IDE_CMD, default `pycharm`); no arg: picker
@@ -85,7 +85,11 @@ no shim here points to (it belongs to another worktree), and `wt drop --db`
 drops the DB the shim names — checked before the worktree goes, and never the
 template or a name without `DB_COPY_PREFIX`. Without a shim, `wt drop --db`
 drops `<prefix><nr>` for MR folders only; for other folders it prints the
-`dropdb` command instead of guessing.
+`dropdb` command instead of guessing. Without `--db`, `wt drop` stops before
+anything changes when the copy the worktree owns (shim, else `<prefix><nr>`)
+exists, and names both commands: `--db` drops it, `--keep-db` keeps it on
+purpose. `wt list` names copies that no worktree claims any more (orphaned)
+and prints the `dropdb` commands; it never drops anything.
 
 ### Ports and settings for `wt run`
 

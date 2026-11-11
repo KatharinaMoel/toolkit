@@ -269,6 +269,18 @@ Fehler: in mp-mr-42 laeuft noch manage.py (PID 4711) - erst beenden (Ctrl+C), da
 Worktrees with submodules and locked worktrees are refused by Git only after
 the links are gone (see DESIGN.md, Known limits).
 
+Forgot `--db`? When the worktree owns a copy that exists, `wt drop 42` stops
+before anything changes and names both ways:
+
+```text
+Fehler: zu mp-mr-42 gehoert die DB-Kopie 'review_42' - nichts entfernt.
+  mit Kopie loeschen:  'wt drop mp-mr-42 --db'
+  Kopie behalten:      'wt drop mp-mr-42 --keep-db'
+```
+
+`--keep-db` removes the worktree and leaves the copy; `wt list` then shows it
+as orphaned together with the `dropdb` command.
+
 ## 7. Pitfalls
 
 - **Two venv names.** In the example project the Makefile creates `.venv`, while
