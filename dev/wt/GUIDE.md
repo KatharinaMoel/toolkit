@@ -141,6 +141,13 @@ Why each personal value is personal:
   these two move to the personal file.
 - Personal helper folders (notes, scratch files) can be added to `LINK_DIRS` in the
   personal file only.
+- **AI agent settings** are personal and gitignored, so a new worktree does not have
+  them. If you start an agent inside a worktree, copy its local settings, for example
+  the permission rules of Claude Code:
+  `COPY_FILES+=(".claude/settings.local.json")`. `wt` creates the missing `.claude/`
+  folder. Committed files such as `AGENTS.md` or `CLAUDE.md` need nothing, they are
+  part of every checkout. A copy does not follow later changes in the main checkout;
+  `wt setup` never overwrites it, so delete it there first to refresh it.
 
 Never put passwords in either file. The database password belongs in `.env` or
 the local settings file, which `wt` copies without showing its content.

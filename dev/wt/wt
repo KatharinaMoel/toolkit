@@ -259,6 +259,10 @@ copy_project_files() { # $1 = worktree-pfad; was im Worktree schon liegt, bleibt
     if [ -e "$1/$f" ] || [ -L "$1/$f" ]; then
       note "'$f' ist im Worktree schon vorhanden - nicht ueberschrieben."
     elif [ -f "$REPO_ROOT/$f" ]; then
+      if [ ! -d "$(dirname "$1/$f")" ]; then
+        run "mkdir -p $(q "$(dirname "$1/$f")")" \
+            "Ordner fuer '$f' anlegen (gitignoriert, fehlt deshalb im Worktree)"
+      fi
       run "cp $(q "$REPO_ROOT/$f") $(q "$1/$f")" \
           "gitignorte Datei '$f' in den Worktree kopieren (Inhalt wird nie angezeigt)"
     else
