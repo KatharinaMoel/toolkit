@@ -553,6 +553,17 @@ is_here() { # $1 = ordner -> wahr, wenn die Shell in diesem Worktree steht (auch
   [ "$(realpath -e -- "$top")" = "$(realpath -e -- "$1" 2>/dev/null)" ]
 }
 
+server_pids() { # $1 = ordner -> PIDs der manage.py-Prozesse, deren Arbeitsordner darin liegt (Linux: /proc)
+  local dir p cwd
+  dir=$(realpath -e -- "$1" 2>/dev/null) || return 0
+  for p in /proc/[0-9]*; do
+    cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
+    case "$cwd/" in
+      "$dir"/*) tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q 'manage\.py' && printf '%s ' "${p#/proc/}" ;;
+    esac
+  done
+}
+
 cmd_path() {
   [ -n "${1:-}" ] || die "path braucht ein Ziel: . (hier), @ (Hauptordner), Nummer, Ordner oder Branch"
   resolve_path "$1"
@@ -817,11 +828,14 @@ cmd_drop() {
   kuerzel=$(basename "$wtpath")
   nr=$(mr_number "$kuerzel")   # aus dem gefundenen Ordner, nicht aus der Eingabe: 'abc-123' kann ein Branch-Ordner sein, nicht MR 123
 
-  if [ -n "$nr" ]; then
-    local port=$((PORT_BASE + nr % 1000))
-    if ss -tln 2>/dev/null | grep -q ":$port "; then
-      die "auf Port $port lauscht noch ein Server - erst beenden, dann erneut 'wt drop $nr'"
-    fi
+  # Nach dem Prozess fragen, nicht nach dem Port: ein Server kann mit --port woanders lauschen,
+  # und auf PORT_BASE + nr kann ein fremder Dienst laufen. Gilt auch mit --force.
+  local pids retry="wt drop $kuerzel"
+  pids=$(server_pids "$wtpath")
+  if [ -n "$pids" ]; then
+    [ "$with_db" -eq 1 ] && retry+=" --db"
+    [ "$force" -eq 1 ] && retry+=" --force"
+    die "in $kuerzel laeuft noch manage.py (PID ${pids% }) - erst beenden (Ctrl+C), dann erneut '$retry'"
   fi
 
   # Vor jeder Aenderung pruefen: 'git worktree remove' verweigert erst am Ende, die Links waeren dann schon weg

@@ -259,6 +259,13 @@ sichern und erneut 'wt drop mp-mr-42 --db', oder bewusst mitloeschen: 'wt drop m
 ```
 
 The links from `LINK_DIRS` never count as changes; `wt drop` removes them itself.
+
+A `manage.py` still running inside the worktree stops `wt drop` as well, on whatever
+port it listens (also with `--force`); stop it with Ctrl+C and repeat the command:
+
+```text
+Fehler: in mp-mr-42 laeuft noch manage.py (PID 4711) - erst beenden (Ctrl+C), dann erneut 'wt drop mp-mr-42 --db'
+```
 Worktrees with submodules and locked worktrees are refused by Git only after
 the links are gone (see DESIGN.md, Known limits).
 

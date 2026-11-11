@@ -99,7 +99,7 @@ checkout is the source and is refused. `wt new` uses the same steps, so
 files, but only at the end — after `wt drop` has removed the links. A refused
 drop used to leave a worktree without `media`, venv and `.reviews`. Now
 `wt drop` reads `git status --porcelain -z` first (unquoted paths, so link
-names with spaces still match), after the port check and
+names with spaces still match), after the server check and
 before anything changes: any line aborts with the files listed and the
 command to repeat (`--db` kept) or to force. The links from `LINK_DIRS` are
 not counted (an untracked symlink `<dir>` appears when the ignore rule is
@@ -110,6 +110,25 @@ refusal comes last, the links are already gone and the `--force` hint drops
 `--db`; put the links back after a failed remove — repairs instead of
 preventing. Price: one extra `git status` per drop, and a file that appears
 between the check and the remove is still caught only by Git.
+
+### Running server in `wt drop`
+
+`wt drop` refuses while a `manage.py` process has its working directory inside
+the worktree (`/proc/<pid>/cwd`, `/proc/<pid>/cmdline`), on any port and also
+with `--force`. `wt run` starts the server with `cd <worktree>`, so that is where
+its own server always sits. The error names the PIDs and the command to repeat.
+
+Cause: the check used to be "something listens on `PORT_BASE + nr`". A foreign
+service on that port (a container publishing it) blocked every drop of that MR,
+even with `--force`, and a server started with `--port` elsewhere was missed, so
+the worktree could vanish under it.
+
+Alternatives: keep the port check and ask `ss -p` who owns the port — still misses
+`--port`, and a container shows up as `pasta`; check every process with its cwd in
+the worktree — a second terminal standing there would block too; `lsof +D` —
+slow on big trees and not always installed. Price: Linux only (no `/proc` → no
+check), only processes of the same user are visible, and a `manage.py` started
+from outside with a path into the worktree is not found.
 
 ### Settings for `wt run`
 
@@ -147,6 +166,8 @@ No abort in advance.
   folders can get the same 9xxx port; only the busy-port check catches that.
 - A non-MR folder named only by digits gets the DB name of an MR copy.
 - `shim_db` reads only the exact line `settings_shim` writes.
+- The server check in `wt drop` needs `/proc` (Linux); elsewhere it finds nothing
+  and does not block.
 - `has_addr` does not recognise `localhost:8001` or `[::]:8000`.
 - The `migrate` warning only fires when `migrate` is the first argument.
 - `wt drop` on a worktree with submodules or a locked one (`git worktree
@@ -160,6 +181,7 @@ folders, `@`, tag, branch lookup outside the worktree folder, non-worktree
 paths), ports (fixed, `--mr` with and without number, glab/gh stubs and a
 PATH without them), settings choice, `wt setup` (paths with spaces, no
 overwrite, idempotence, DB ownership, template and prefix guards, dangling
-symlink shim), `wt drop --db` and the `wt link` pointer. A manual test in a
+symlink shim), `wt drop --db`, the server check of `wt drop` (fake `manage.py`
+processes via `exec -a`, a foreign listener on the MR port) and the `wt link` pointer. A manual test in a
 real repo: `wt run <nr>` in an MR worktree, `wt setup .` + `wt run .` in an
 IDE-made worktree, `wt setup . --db` + `wt run . migrate`, `wt drop <x> --db`.

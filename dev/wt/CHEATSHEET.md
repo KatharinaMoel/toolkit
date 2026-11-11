@@ -180,13 +180,13 @@ cd W && P app/manage.py shell --settings=app.settings_review
 ### `wt drop 813`
 
 ```bash
-ss -tln | grep ':8813 '                                              # MR-Ordner: Server läuft noch? dann Abbruch
+readlink /proc/*/cwd                                                 # läuft manage.py mit Arbeitsordner in W? dann Abbruch (jeder Port)
 git -C W status --porcelain                                          # Ausgabe (außer den Links)? dann Abbruch, nichts entfernt
 rm W/app/media W/.venv                                               # nur die Links, nie das Ziel
 git -C H worktree remove W                                           # mit --force: nicht Eingechecktes geht mit
 ```
 
-`wt drop 813 --force` überspringt die Statusprüfung und löscht nicht eingecheckte Dateien mit.
+`wt drop 813 --force` überspringt die Statusprüfung und löscht nicht eingecheckte Dateien mit. Ein laufender Server blockiert auch mit `--force`; ein fremder Dienst auf Port 8813 blockiert nie.
 
 ### `wt drop 813 --db`
 
