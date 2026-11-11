@@ -610,9 +610,11 @@ else fail "drop abc-mr-123 --db loescht review_123 (Positivkontrolle)" "$(cat "$
 dk() { PATH="$TMP/docker-stub:$PATH" "$WT" "$@"; }   # wt mit Docker-Stub
 printf '%s\n' '.env' >> "$PX/.git/info/exclude"   # wie im echten Projekt gitignoriert
 printf 'haupt\n' > "$PX/.env"
+printf '%s\n' '.claude/' >> "$PX/.git/info/exclude"   # ganzer Ordner gitignoriert, fehlt also im Worktree
+mkdir -p "$PX/.claude" && printf 'agent\n' > "$PX/.claude/settings.local.json"
 cat > "$HOME/.config/wt/pxrepo.conf" <<'EOF'
 WT_PREFIX="abc"
-COPY_FILES=(".env")
+COPY_FILES=(".env" ".claude/settings.local.json")
 LINK_DIRS=(media)
 DB_CONTAINER="stubdb"
 DB_TEMPLATE="stamm_db"
@@ -626,6 +628,7 @@ mkdir -p "$SP/app"
 err=$(dk setup feat/setup 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 0 ] && [ "$(cat "$SP/.env" 2>/dev/null)" = "haupt" ] && [ -L "$SP/media" ]; then ok "setup <branch, Pfad mit Leerzeichen> kopiert .env und verlinkt media"
 else fail "setup <branch, Pfad mit Leerzeichen> kopiert .env und verlinkt media" "rc=$rc $err"; fi
+expect_eq "setup kopiert eine Datei, deren Ordner im Worktree fehlt (.claude/)" "agent" "$(cat "$SP/.claude/settings.local.json" 2>/dev/null)"
 printf 'eigen\n' > "$SP/.env"
 err=$(dk setup feat/setup 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 0 ] && [[ "$err" == *"schon vorhanden"* ]] && [[ "$err" != *"> cp "* ]] && [[ "$err" != *"> ln "* ]]; then ok "setup zweimal -> nur 'schon vorhanden', kein cp/ln"
