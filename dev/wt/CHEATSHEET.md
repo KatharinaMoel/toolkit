@@ -52,13 +52,14 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 | `wt path <ziel>` | nur den Pfad ausgeben, z. B. `cd "$(wt path feature/x)"` – geht in jeder Shell |
 | `wt pick` | Hauptordner oder Worktree aus einer Liste (fzf) wählen, Pfad ausgeben |
 | `wt ide <ziel>` | Worktree in der IDE öffnen (`IDE_CMD`, Standard `pycharm`) |
-| `wt list` | Worktrees und vorhandene DB-Kopien zeigen |
+| `wt list` | Worktrees und vorhandene DB-Kopien zeigen; verwaiste Kopien (kein Worktree dazu) mit `dropdb`-Befehl, löscht nie selbst |
 
 ### Aufräumen
 
 | Befehl | Was er tut |
 |---|---|
 | `wt drop <nr\|ordner\|branch> --db` | Worktree entfernen, DB-Kopie löschen (Name aus dem Shim; ohne Shim nur bei MR-Ordnern); nie `.` oder `@`; `--force` bei uncommitteten Änderungen |
+| `wt drop <nr\|ordner\|branch> --keep-db` | Worktree entfernen, DB-Kopie bewusst behalten. Ohne `--db`/`--keep-db` bricht `drop` ab, wenn es eine Kopie gibt, und nennt beide Befehle |
 
 ### Konfiguration
 
@@ -182,6 +183,7 @@ cd W && P app/manage.py shell --settings=app.settings_review
 ```bash
 readlink /proc/*/cwd                                                 # läuft manage.py mit Arbeitsordner in W? dann Abbruch (jeder Port)
 git -C W status --porcelain                                          # Ausgabe (außer den Links)? dann Abbruch, nichts entfernt
+docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_database"  # gehört W eine Kopie? dann Abbruch: --db oder --keep-db
 rm W/app/media W/.venv                                               # nur die Links, nie das Ziel
 git -C H worktree remove W                                           # mit --force: nicht Eingechecktes geht mit
 ```
@@ -210,5 +212,6 @@ git -C H worktree list --porcelain                                   # wt path f
 git -C H worktree list --porcelain | fzf                             # wt pick
 git -C H worktree list                                               # wt list, dazu:
 docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'review_%'"
+                                                                     # Kopien ohne Worktree (Shim, MR-Nummer, Ordnername) -> "verwaist"
 setsid -f pycharm ~/src/myproject-worktrees/abc-mr-813               # wt ide 813
 ```
