@@ -220,8 +220,8 @@ What happened: wt fetched the MR into a named ref and created a worktree in
 *detached* mode, so there is no local branch to collide with. It copied the two
 gitignored files and linked media and the venv. Because `requirements.txt` is unchanged
 against `dev`, the shared venv fits. Finally it cloned the database and wrote the shim.
-(Left out here and in the blocks below: each `docker exec … psql` lookup, git's
-own progress lines, the one-time `echo … >> .git/info/exclude` steps that keep the
+(Left out here and in the blocks below: the `┄┄┄` line after each command, each
+`docker exec … psql` lookup, git's own progress lines, the one-time `echo … >> .git/info/exclude` steps that keep the
 links and the shim out of `git status`, the `> cat > …` line before the shim, and,
 without `wt.zsh`, a final `cd <path>` hint.)
 
@@ -254,7 +254,7 @@ the same way: `wt run 42 migrate` changes only `review_42`.
 * Symlink '.venv-3.12' entfernen (nur der Link, das Ziel im Hauptbaum bleibt)
 * Worktree entfernen
   > git -C ~/src/myproject worktree remove ~/src/myproject-worktrees/mp-mr-42
-* Falls mp-mr-42 in PyCharm offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner.
+* Falls mp-mr-42 in einer IDE offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner. Legt die IDE ihn wieder an (nur .idea/), zeigt 'wt list' ihn mit dem Loeschbefehl.
 * DB-Kopie wegwerfen - die Stamm-DB war nie betroffen
   > docker exec myproject-postgres dropdb -U postgres review_42
 ```
@@ -295,6 +295,29 @@ Fehler: zu mp-mr-42 gehoert die DB-Kopie 'review_42' - nichts entfernt.
 
 `--keep-db` removes the worktree and leaves the copy; `wt list` then shows it
 as orphaned together with the `dropdb` command.
+
+Close the worktree's IDE window **before** `wt drop`. A window left open writes
+its project files again later (for example when you close it) and recreates
+the folder with only `.idea/` inside. When PyCharm or another JetBrains IDE
+lists the worktree as an open project, `wt drop` warns before it removes
+anything, but goes on:
+
+```text
+* ACHTUNG: mp-mr-42 ist in PyCharm2026.3 noch als offenes Projekt eingetragen - das Fenster schliessen. Solange es offen ist, legt die IDE den Ordner mit .idea/ wieder an (z.B. beim Schliessen); 'wt list' zeigt solche Reste mit dem Loeschbefehl.
+```
+
+It only warns because the IDE updates its list of open projects every few
+minutes, so the hint can be late in both directions (see DESIGN.md). Processes
+whose working directory is inside the worktree (a terminal, an agent) get a
+`Hinweis` line with their PIDs. If the folder came back, `wt list` names it:
+
+```text
+* Reste ohne Worktree (nur IDE-Ordner, meist von 'wt drop' bei offenem IDE-Fenster) - wt loescht sie nicht; erst das IDE-Fenster schliessen, dann von Hand:
+  > rm -rf -- ~/src/myproject-worktrees/mp-mr-42   # .idea/
+```
+
+`wt drop 42` on such a folder refuses with the same `rm -rf` command. Close the
+window first, otherwise the IDE writes the folder once more.
 
 ## 7. Pitfalls
 

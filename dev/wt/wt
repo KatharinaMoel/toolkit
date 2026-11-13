@@ -58,14 +58,20 @@ wt - Worktrees mit erklaerten Schritten
                               seine DB-Kopie (Name aus dem Settings-Shim; ohne Shim nur bei MR-Ordnern);
                               gibt es eine Kopie und fehlt beides, bricht drop ab und nennt
                               beide Befehle; --keep-db behaelt sie bewusst;
-                              nicht Eingechecktes bricht ab, --force loescht es mit
+                              nicht Eingechecktes bricht ab, --force loescht es mit;
+                              ein laufender manage.py im Worktree bricht immer ab;
+                              warnt, wenn eine JetBrains-IDE ihn noch offen hat oder
+                              Prozesse darin stehen, und meldet IDE-Reste danach;
+                              ein Ordner, der kein Worktree ist, bricht ab
   wt run <ziel> [args]        manage.py im Worktree mit passenden Settings und Port
                               (ohne Args: runserver); 'wt help run' zeigt Beispiele
   wt setup <ziel> [--db]      bestehenden Worktree nachtraeglich einrichten wie 'wt new':
                               COPY_FILES kopieren, LINK_DIRS verlinken, requirements
                               pruefen, mit --db DB-Kopie + Settings-Shim; ueberschreibt nie
                               (SETTINGS_SHIM_COOKIES=1: haengt den fehlenden Session-Cookie-Namen an den Shim an)
-  wt list                     Worktrees und vorhandene Review-DB-Kopien
+  wt list                     Worktrees, Review-DB-Kopien und verwaiste Kopien (kein
+                              Worktree dazu), dazu Ordner nur mit IDE-Resten (.idea/,
+                              .vscode/); zeigt die Loeschbefehle, loescht nie selbst
   wt path <ziel>              nur den Pfad ausgeben (fuer Skripte/Agenten)
   wt pick                     Auswahlliste (fzf): Hauptrepo + alle Worktrees,
                               gibt den gewaehlten Pfad aus
@@ -600,14 +606,64 @@ is_here() { # $1 = ordner -> wahr, wenn die Shell in diesem Worktree steht (auch
   [ "$(realpath -e -- "$top")" = "$(realpath -e -- "$1" 2>/dev/null)" ]
 }
 
-server_pids() { # $1 = ordner -> PIDs der manage.py-Prozesse, deren Arbeitsordner darin liegt (Linux: /proc)
-  local dir p cwd
+procs_in() { # $1 = ordner -> 'pid<TAB>name<TAB>befehlszeile' je Prozess, dessen Arbeitsordner darin liegt (Linux: /proc)
+  local dir p cwd name
   dir=$(realpath -e -- "$1" 2>/dev/null) || return 0
   for p in /proc/[0-9]*; do
     cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
     case "$cwd/" in
-      "$dir"/*) tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q 'manage\.py' && printf '%s ' "${p#/proc/}" ;;
+      "$dir"/*)
+        name=""; read -r name 2>/dev/null < "$p/comm" || true   # 2> vor <: endet der Prozess gerade, bleibt es still
+        printf '%s\t%s\t%s\n' "${p#/proc/}" "$name" "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")" ;;
     esac
+  done
+}
+
+server_pids() { # $1 = ordner -> PIDs der manage.py-Prozesse, deren Arbeitsordner darin liegt
+  procs_in "$1" | awk -F'\t' '$3 ~ /manage\.py/ { printf "%s ", $1 }'
+}
+
+# IDE-Reste: Eine IDE, deren Fenster beim Entfernen noch offen ist, schreibt ihre Projektdateien spaeter
+# (z.B. beim Schliessen) wieder hinein und legt den Ordner damit neu an - nur mit .idea/ darin.
+ide_leftover() { # $1 = ordner -> wahr, wenn er kein Worktree ist und nur IDE-Ordner enthaelt (.idea, .vscode)
+  local e found=0
+  [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/.git" ] || return 1
+  for e in "$1"/.[!.]* "$1"/..?* "$1"/*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue   # Muster ohne Treffer
+    case "${e##*/}" in .idea|.vscode) found=1 ;; *) return 1 ;; esac
+  done
+  [ "$found" -eq 1 ]
+}
+
+leftover_names() { # $1 = ordner -> 'a/ b/' (Inhalt, fuer Meldungen)
+  local e out=""
+  for e in "$1"/.[!.]* "$1"/..?* "$1"/*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    out+="${e##*/}/ "
+  done
+  printf '%s\n' "${out% }"
+}
+
+jetbrains_open() { # $1 = worktree-pfad -> je laufender JetBrains-IDE, die ihn als offenes Projekt fuehrt, ihren Konfig-Ordner (z.B. PyCharm2026.3)
+  # recentProjects.xml markiert offene Projekte mit opened="true" - aber erst beim naechsten Speichern (Minuten
+  # spaeter), und die Markierung bleibt nach dem Beenden stehen. Darum nur Konfig-Ordner, in denen gerade ein
+  # Prozess eine Datei offen haelt (= die IDE dieser Version laeuft). Eine Heuristik: wt warnt damit nur.
+  local base="${XDG_CONFIG_HOME:-$HOME/.config}/JetBrains" f d real opened
+  [ -d /proc/self/fd ] || return 0
+  real=$(realpath -e -- "$1" 2>/dev/null) || real="$1"
+  for f in "$base"/*/options/recentProjects.xml; do
+    [ -f "$f" ] || continue
+    d="${f%/options/recentProjects.xml}"
+    # Erst einsammeln, dann vergleichen: mit pipefail zaehlte sonst der Exit-Status von awk/find
+    # (find meldet fremde, nicht lesbare /proc-Eintraege) statt des Treffers.
+    opened=$(awk -v home="$HOME" '
+      /<entry key="/ { k = $0; sub(/.*<entry key="/, "", k); sub(/".*/, "", k); gsub(/\$USER_HOME\$/, home, k) }
+      /<RecentProjectMetaInfo/ && /opened="true"/ { print k }
+    ' "$f" 2>/dev/null) || continue
+    grep -qxF -e "$1" -e "$real" <<<"$opened" || continue
+    d=$(realpath -e -- "$d" 2>/dev/null) || continue   # /proc/*/fd zeigt echte Pfade (~/.config kann ein Symlink sein)
+    [ -n "$(find /proc/[0-9]*/fd -maxdepth 1 -lname "$d/*" -print -quit 2>/dev/null)" ] || continue
+    printf '%s\n' "${d##*/}"
   done
 }
 
@@ -887,6 +943,17 @@ cmd_drop() {
   # Der aufgeloeste Ordner zaehlt, nicht die Eingabe: ein Branch kann im Hauptordner oder hier ausgecheckt sein
   [ -d "$wtpath" ] || die "den Ordner $wtpath gibt es nicht mehr, Git fuehrt ihn aber noch als Worktree - aufraeumen:
   > git -C $(q "$REPO_ROOT") worktree prune"
+  if ide_leftover "$wtpath"; then   # vor is_worktree: auch ein von Hand geloeschter, noch eingetragener Worktree
+    local prune=""
+    is_worktree "$wtpath" && prune="
+  > git -C $(q "$REPO_ROOT") worktree prune"
+    die "$wtpath ist kein Worktree mehr, nur IDE-Reste ($(leftover_names "$wtpath")) - eine IDE hat den Ordner nach dem Entfernen neu angelegt; wt loescht ihn nicht
+  ! erst das IDE-Fenster dieses Ordners schliessen, sonst legt die IDE ihn wieder an; dann von Hand:
+  > rm -rf -- $(q "$wtpath")$prune"
+  fi
+  if ! is_worktree "$wtpath"; then
+    die "$wtpath ist kein Worktree von $REPO_NAME - nichts entfernt ('git -C $(q "$REPO_ROOT") worktree list' zeigt alle)"
+  fi
   if is_main_path "$wtpath"; then die "'$kuerzel' ist im Hauptordner ausgecheckt - der Hauptordner wird nie entfernt, nur Worktrees"; fi
   if is_here "$wtpath"; then die "$here_msg"; fi
   kuerzel=$(basename "$wtpath")
@@ -956,12 +1023,31 @@ sichern und erneut '$again', oder bewusst mitloeschen: '$again --force'"
     fi
   fi
 
+  # Nur warnen, nie abbrechen: beides sind Hinweise, kein sicherer Befund (siehe DESIGN.md), und --force
+  # zum Uebergehen wuerde auch nicht Eingechecktes mitloeschen.
+  local ides others
+  ides=$(jetbrains_open "$wtpath" | paste -sd, - | sed 's/,/, /g')
+  if [ -n "$ides" ]; then
+    note "ACHTUNG: $kuerzel ist in $ides noch als offenes Projekt eingetragen - das Fenster schliessen. Solange es offen ist, legt die IDE den Ordner mit .idea/ wieder an (z.B. beim Schliessen); 'wt list' zeigt solche Reste mit dem Loeschbefehl."
+  fi
+  others=$(procs_in "$wtpath" | awk -F'\t' '{ printf "%s%s (%s)", sep, $1, $2; sep = ", " }')
+  if [ -n "$others" ]; then
+    note "Hinweis: in $kuerzel arbeiten noch Prozesse (PID $others) - Terminals oder Programme stehen danach in einem geloeschten Ordner."
+  fi
+
   unlink_project_dirs "$wtpath"
 
   local rmflag="" rmdesc="Worktree entfernen"
   [ "$force" -eq 1 ] && rmflag=" --force" && rmdesc+=" samt nicht eingecheckter Aenderungen (--force)"
   run "git -C $(q "$REPO_ROOT") worktree remove$rmflag $(q "$wtpath")" "$rmdesc"
-  note "Falls $kuerzel in PyCharm offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner."
+  if ide_leftover "$wtpath"; then
+    note "ACHTUNG: $wtpath ist schon wieder da, nur mit IDE-Resten ($(leftover_names "$wtpath")) - erst das IDE-Fenster schliessen, dann von Hand:"
+    printf '  > rm -rf -- %s\n' "$(q "$wtpath")" >&2
+  elif [ -e "$wtpath" ]; then
+    note "ACHTUNG: $wtpath existiert nach dem Entfernen noch - Inhalt pruefen: ls -A $(q "$wtpath")"
+  else
+    note "Falls $kuerzel in einer IDE offen war: das Fenster schliessen - es zeigt jetzt auf einen geloeschten Ordner. Legt die IDE ihn wieder an (nur .idea/), zeigt 'wt list' ihn mit dem Loeschbefehl."
+  fi
 
   if [ -n "$dbname" ]; then
     run "docker exec $DB_CONTAINER dropdb -U $DB_USER $(q "$dbname")" \
@@ -975,6 +1061,16 @@ sichern und erneut '$again', oder bewusst mitloeschen: '$again --force'"
 
 cmd_list() {
   run "git -C $(q "$REPO_ROOT") worktree list" "alle Worktrees dieses Repos zeigen"
+  # Ordner im Sammelordner, die nur noch IDE-Reste enthalten (Fenster war beim 'wt drop' offen). Nur zeigen, nie loeschen.
+  local d rests=()
+  for d in "$WT_BASE"/*/; do
+    d="${d%/}"
+    if ide_leftover "$d"; then rests+=("$d"); fi
+  done
+  if [ "${#rests[@]}" -gt 0 ]; then
+    note "Reste ohne Worktree (nur IDE-Ordner, meist von 'wt drop' bei offenem IDE-Fenster) - wt loescht sie nicht; erst das IDE-Fenster schliessen, dann von Hand:"
+    for d in "${rests[@]}"; do printf '  > rm -rf -- %s   # %s\n' "$(q "$d")" "$(leftover_names "$d")" >&2; done
+  fi
   [ -n "$DB_CONTAINER" ] || return 0
   local copies
   copies=$(run "docker exec $DB_CONTAINER psql -U $DB_USER -Atc \"SELECT datname FROM pg_database WHERE datname LIKE '${DB_COPY_PREFIX}%'\"" \
