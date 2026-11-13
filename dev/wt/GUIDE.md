@@ -62,6 +62,21 @@ shim names (without a shim: `review_<nr>` for MR folders only; for other folders
 prints the `dropdb` command instead). It never drops the template or a name without
 `DB_COPY_PREFIX`.
 
+**Own session cookie (optional).** Browsers keep cookies per host, not per port. If
+the main checkout (main DB) and a review with a copy run side by side on
+`127.0.0.1`, they share the session cookie, but each finds the session only in its
+own database, and you get logged out in turns. `SETTINGS_SHIM_COOKIES=1` adds one
+line to the shim:
+
+```python
+SESSION_COOKIE_NAME = 'sessionid_review_42'
+```
+
+`wt setup <x> --db` appends it to a shim that already exists. The CSRF cookie stays
+shared. Before you turn it on, search the project for code that reads `sessionid`
+by name; that code sees the other server's cookie in such a worktree and should
+read `settings.SESSION_COOKIE_NAME` instead.
+
 ## 3. Prerequisite: the main checkout runs
 
 `wt` only copies and links what already exists. Before configuring it, check

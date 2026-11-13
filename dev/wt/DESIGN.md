@@ -93,6 +93,39 @@ checkout is the source and is refused. `wt new` uses the same steps, so
   copy. Without a shim only MR folders drop `<prefix><nr>`; for other folders
   `wt` prints the `dropdb` command instead of guessing whose copy it is.
 
+### Own session cookie in the shim
+
+Browsers keep cookies per host, not per port. The main checkout (main DB) and
+a worktree with a copy, both on `127.0.0.1`, share Django's `sessionid`, but
+each server looks the session up in its own database: logging in on one logs
+you out on the other. With `SETTINGS_SHIM_COOKIES=1` the shim also sets
+`SESSION_COOKIE_NAME = 'sessionid_<copy>'`. Worktrees on the main DB have no
+shim and keep the shared cookie, which is correct for them. Default `0`, since
+`wt` is not only for Django projects.
+
+Only the session cookie, not the CSRF cookie: the CSRF cookie holds a secret
+that does not depend on the database, so a shared one works on both servers,
+and projects often read it by its default name in JavaScript (`csrftoken`).
+Renamed, those requests would fail with 403 in the worktree. Side effect of the
+shared CSRF cookie: logging in on one server renews it, so a form already open
+on the other fails once with 403; reloading the page fixes it.
+
+Existing shims: `wt setup <target> --db` appends the missing line to a regular
+file whose DB line names this copy, and keeps the DB line and a session cookie
+name already set. Not through a symlink, and not to a file `wt` did not write
+(no DB line for this copy).
+
+Alternatives: rewrite the shim from scratch with the DB name read from it —
+loses lines added by hand; a new command or `--force` for the shim — one more
+thing to remember for a one-line change; a separate cookie file next to the
+shim — the shim would have to import it, and `wt drop` would have one more file
+to own. Price: `wt setup` is no longer strictly "never changes a file" (it only
+appends), a running server reloads and logs you out once in that worktree, and
+project code that reads the session cookie as `sessionid` instead of
+`settings.SESSION_COOKIE_NAME` sees the other server's cookie there. The
+cookie name is taken from the copy name only when that has letters, digits and
+`_` only.
+
 ### Unsaved work in `wt drop`
 
 `git worktree remove` refuses a worktree with uncommitted changes or untracked
@@ -205,7 +238,7 @@ folders, `@`, tag, branch lookup outside the worktree folder, non-worktree
 paths), ports (fixed, `--mr` with and without number, glab/gh stubs and a
 PATH without them), settings choice, `wt setup` (paths with spaces, no
 overwrite, idempotence, DB ownership, template and prefix guards, dangling
-symlink shim), `wt drop --db`, the server check of `wt drop` (fake `manage.py`
+symlink shim, session cookie line in new and existing shims), `wt drop --db`, the server check of `wt drop` (fake `manage.py`
 processes via `exec -a`, a foreign listener on the MR port), the DB-copy stop
 of `wt drop` with `--keep-db` and orphaned copies in `wt list` (docker stub) and
 the `wt link` pointer. A manual test in a

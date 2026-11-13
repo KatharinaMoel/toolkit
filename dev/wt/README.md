@@ -108,6 +108,23 @@ copying it, and `migrate` there changes it for every branch. Without
 `SETTINGS_SHIM_PATH`, `RUN_SETTINGS` is always appended. An explicit
 `--settings` is left alone.
 
+Browsers keep cookies per host, not per port: the main checkout on
+`127.0.0.1:8000` and a worktree with a DB copy on `127.0.0.1:8042` share
+Django's session cookie, but each server finds the session only in its own
+database, so logging in on one logs you out on the other.
+`SETTINGS_SHIM_COOKIES=1` writes `SESSION_COOKIE_NAME = 'sessionid_<copy>'` into
+the shim. The CSRF cookie stays shared: it does not depend on the database, and
+JavaScript often reads it as `csrftoken`. Worktrees without a copy use the main
+DB and keep the shared session cookie, which is right there. For an existing
+shim, `wt setup <target> --db` appends the line and keeps the DB line and a
+session cookie name already set; this is the one change `wt setup` makes to a
+file in the worktree. A running server reloads, and you log in once more in
+that worktree. Code that reads the session cookie as `sessionid` sees the other
+server's cookie there; it should read `settings.SESSION_COOKIE_NAME`. Logging in
+on one server renews the shared CSRF cookie, so a form already open on the other
+fails once with 403; reloading the page fixes it. Default `0`: cookies are left
+alone.
+
 `wt run` uses the active venv (`python`); without one it falls back to `RUN_PYTHON`
 from the config (relative to the main checkout, e.g. its venv), then to `python` from PATH.
 

@@ -753,6 +753,67 @@ err=$(dk new --mr 123 --db 2>&1 >/dev/null)
 if [[ "$err" == *"runserver 127.0.0.1:8123 --settings=app.settings_review"* ]]; then ok "new --mr --db -> RUN_HINT mit Port"
 else fail "new --mr --db -> RUN_HINT mit Port" "$err"; fi
 DB_EXISTING=review_123 dk drop 123 --db --force >/dev/null 2>&1
+# ---------- SETTINGS_SHIM_COOKIES: eigenes Session-Cookie je DB-Kopie ----------
+# Zwei Server auf 127.0.0.1 mit verschiedenen DBs teilen sonst das Session-Cookie (Browser trennen nach Host, nicht nach Port)
+CONF="$HOME/.config/wt/pxrepo.conf"
+CK="$PXB/abc-feat-ck/app/settings_review.py"
+git -C "$PX" worktree add -q -b feat/ck "$PXB/abc-feat-ck"
+dk setup abc-feat-ck --db >/dev/null 2>&1
+expect_eq "cookies: ohne SETTINGS_SHIM_COOKIES bleibt der Shim bei zwei Zeilen" \
+  "from app.settings_docker import *  # noqa: F401,F403
+DATABASES['default']['NAME'] = 'review_feat_ck'" "$(cat "$CK")"
+printf 'SETTINGS_SHIM_COOKIES=1\n' >> "$CONF"
+err=$(DB_EXISTING=review_feat_ck dk setup abc-feat-ck --db 2>&1 >/dev/null); rc=$?
+expect_eq "cookies: setup --db ergaenzt einen vorhandenen Shim, DB-Zeile bleibt" \
+  "from app.settings_docker import *  # noqa: F401,F403
+DATABASES['default']['NAME'] = 'review_feat_ck'
+SESSION_COOKIE_NAME = 'sessionid_review_feat_ck'" "$(cat "$CK")"
+if [ "$rc" -eq 0 ] && [[ "$err" == *"cat >> "* ]]; then ok "cookies: das Anhaengen wird gezeigt"; else fail "cookies: das Anhaengen wird gezeigt" "rc=$rc $err"; fi
+before=$(cat "$CK")
+err=$(DB_EXISTING=review_feat_ck dk setup abc-feat-ck --db 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$CK")" = "$before" ] && [[ "$err" == *"steht schon im Shim"* ]]; then ok "cookies: setup --db zweimal -> nichts doppelt"
+else fail "cookies: setup --db zweimal -> nichts doppelt" "rc=$rc $err $(cat "$CK")"; fi
+if command -v python3 >/dev/null 2>&1; then
+  if python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$CK"; then ok "cookies: Shim ist gueltiges Python"; else fail "cookies: Shim ist gueltiges Python" "$(cat "$CK")"; fi
+fi
+# wt drop und wt list lesen den DB-Namen weiter aus dem Shim
+out=$(DB_EXISTING="stamm_db review_feat_ck" dk list 2>&1)
+if ! grep -q "verwaist.*review_feat_ck" <<<"$out"; then ok "cookies: list ordnet die Kopie dem Worktree zu"; else fail "cookies: list ordnet die Kopie dem Worktree zu" "$out"; fi
+: > "$DOCKER_LOG"
+DB_EXISTING="stamm_db review_feat_ck" dk drop abc-feat-ck --db --force >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'dropdb .*review_feat_ck' "$DOCKER_LOG"; then ok "cookies: drop --db liest den DB-Namen aus dem Shim"
+else fail "cookies: drop --db liest den DB-Namen aus dem Shim" "rc=$rc $(cat "$DOCKER_LOG")"; fi
+# neuer Shim: Session-Cookie gleich dabei, das CSRF-Cookie bleibt gemeinsam
+git -C "$PX" worktree add -q -b feat/ck2 "$PXB/abc-feat-ck2"
+dk setup abc-feat-ck2 --db >/dev/null 2>&1
+if grep -qxF "SESSION_COOKIE_NAME = 'sessionid_review_feat_ck2'" "$PXB/abc-feat-ck2/app/settings_review.py" \
+   && ! grep -q CSRF "$PXB/abc-feat-ck2/app/settings_review.py"; then ok "cookies: neuer Shim bekommt den Session-Cookie-Namen, keine CSRF-Zeile"
+else fail "cookies: neuer Shim bekommt den Session-Cookie-Namen, keine CSRF-Zeile" "$(cat "$PXB/abc-feat-ck2/app/settings_review.py")"; fi
+# ein eigener Name bleibt
+printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'review_feat_ck2'\nSESSION_COOKIE_NAME = 'eigen'\n" > "$PXB/abc-feat-ck2/app/settings_review.py"
+DB_EXISTING=review_feat_ck2 dk setup abc-feat-ck2 --db >/dev/null 2>&1
+expect_eq "cookies: eigener SESSION_COOKIE_NAME bleibt unveraendert" \
+  "from app.settings_docker import *
+DATABASES['default']['NAME'] = 'review_feat_ck2'
+SESSION_COOKIE_NAME = 'eigen'" "$(cat "$PXB/abc-feat-ck2/app/settings_review.py")"
+# ohne Zeilenende am Schluss: nicht an die letzte Zeile kleben
+printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'review_feat_ck2'" > "$PXB/abc-feat-ck2/app/settings_review.py"
+DB_EXISTING=review_feat_ck2 dk setup abc-feat-ck2 --db >/dev/null 2>&1
+expect_eq "cookies: Shim ohne Zeilenende am Schluss -> eigene Zeile" \
+  "from app.settings_docker import *
+DATABASES['default']['NAME'] = 'review_feat_ck2'
+SESSION_COOKIE_NAME = 'sessionid_review_feat_ck2'" "$(cat "$PXB/abc-feat-ck2/app/settings_review.py")"
+# Shim als Symlink auf eine Datei ausserhalb: nie hindurchschreiben
+printf "from app.settings_docker import *\nDATABASES['default']['NAME'] = 'review_feat_ck2'\n" > "$TMP/ausserhalb/ck.py"
+rm "$PXB/abc-feat-ck2/app/settings_review.py"; ln -s "$TMP/ausserhalb/ck.py" "$PXB/abc-feat-ck2/app/settings_review.py"
+DB_EXISTING=review_feat_ck2 dk setup abc-feat-ck2 --db >/dev/null 2>&1
+if ! grep -q COOKIE "$TMP/ausserhalb/ck.py"; then ok "cookies: kein Anhaengen durch einen Symlink"; else fail "cookies: kein Anhaengen durch einen Symlink" "$(cat "$TMP/ausserhalb/ck.py")"; fi
+git -C "$PX" worktree remove --force "$PXB/abc-feat-ck2"
+sed -i '/^SETTINGS_SHIM_COOKIES=/d' "$CONF"
+printf 'SETTINGS_SHIM_COOKIES=ja\n' >> "$CONF"
+err=$("$WT" path @ 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"0 oder 1"* ]]; then ok "cookies: SETTINGS_SHIM_COOKIES=ja -> Abbruch"; else fail "cookies: SETTINGS_SHIM_COOKIES=ja -> Abbruch" "rc=$rc $err"; fi
+sed -i '/^SETTINGS_SHIM_COOKIES=/d' "$CONF"
 err=$("$WT" link 42 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 1 ] && [[ "$err" == *"wt setup"* ]]; then ok "link -> Wegweiser auf wt setup"; else fail "link -> Wegweiser auf wt setup" "rc=$rc $err"; fi
 for w in "$SP" "$PXB/$LONG" "$PXB/abc-feat-c"; do git -C "$PX" worktree remove --force "$w"; done
