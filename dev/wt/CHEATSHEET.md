@@ -67,6 +67,7 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 |---|---|
 | `<repo>/.worktree.conf` | Werte fürs ganze Team; wird zuerst gelesen |
 | `~/.config/wt/<repo>.conf` | persönliche Werte; überschreibt die Team-Datei. Listen mit `+=` ergänzen, z. B. `LINK_DIRS+=(".notizen")` |
+| `SETTINGS_SHIM_COOKIES=1` | Shim setzt ein eigenes Session-Cookie (`sessionid_<kopie>`). Browser trennen Cookies nach Host, nicht nach Port – sonst loggen sich Hauptordner und Worktree mit DB-Kopie auf `127.0.0.1` gegenseitig aus. Das CSRF-Cookie bleibt gemeinsam. `wt setup <x> --db` ergänzt einen vorhandenen Shim. Standard `0` |
 | `WT_PREFIX="abc"` | Repo-Kürzel vor jedem Worktree-Ordner (`abc-mr-721`); `721`, `mr-721` und `abc-mr-721` finden denselben Ordner; `abc` allein ist der Hauptordner; `""` = bewusst ohne |
 
 ## Von Hand – was wt ausführt
@@ -138,6 +139,8 @@ docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_
 docker exec my_postgres_container createdb -U postgres -T my_project_db review_feature_x
 echo app/settings_review.py >> H/.git/info/exclude                   # nur beim ersten Mal
 # W/app/settings_review.py mit DATABASES['default']['NAME'] = 'review_feature_x'
+# mit SETTINGS_SHIM_COOKIES=1 zusätzlich (bei vorhandenem Shim angehängt, wenn sie fehlt):
+#   SESSION_COOKIE_NAME = 'sessionid_review_feature_x'
 ```
 
 ### `wt run .`
