@@ -187,6 +187,56 @@ a copy with test data may not be; only warn after the worktree is gone — the
 shim is gone then, too. Price: one `psql` call per `drop` without `--db` when
 `DB_CONTAINER` is set.
 
+### Open IDE window in `wt drop`
+
+Cause: a worktree was removed while a PyCharm window on it was still open.
+PyCharm wrote `<worktree>/.idea/workspace.xml` again afterwards, and a folder
+with only `.idea/` stayed behind. Closing the window after the removal most
+likely does not help either, since an IDE saves its project files when a window
+closes (not verified separately).
+
+Before removing, `wt drop` warns, after all checks that can stop it:
+
+- **JetBrains IDEs:** `recentProjects.xml` in
+  `${XDG_CONFIG_HOME:-~/.config}/JetBrains/<product><version>/options/` marks
+  open projects with `opened="true"` on the `RecentProjectMetaInfo` of the
+  entry whose key is the path (`$USER_HOME$` stands for the home folder). The
+  mark is written only when the IDE saves its settings, a few minutes after a
+  window opens or closes, and it stays after the IDE quits (to reopen the
+  projects on start); old versions keep their last state for good. So the file
+  counts only while that IDE version runs: some process holds a file open in
+  its config folder (`find /proc/*/fd -lname '<dir>/*'` on the resolved path,
+about 50 ms). Checked
+  read-only on PyCharm 2026.3 (Linux); other products and versions are assumed
+  to use the same format.
+- **Any process** whose working directory is inside the worktree (the same
+  `/proc` scan as the server check): terminals, also an IDE's built-in one,
+  and agents. They are named with PID and process name.
+
+Both only warn. The JetBrains mark can be minutes late in both directions,
+and the obvious way past a stop, `--force`, also deletes uncommitted work. A
+stop would need a flag of its own just to get past a hint that may be stale.
+What is left behind is harmless and easy to spot: a folder without `.git` that
+holds nothing but `.idea/` or `.vscode/` is named with its `rm -rf` command
+right after `git worktree remove`, and by `wt list` for `<repo>-worktrees/`.
+If Git still lists it (deleted by hand, then recreated), `wt drop` adds
+`git worktree prune`. `wt drop`
+on such a folder refuses and prints the same command (before, it failed on
+`git status`), and any other non-worktree folder is refused as well. `wt`
+deletes none of them: like orphaned DB copies, they are reported, not removed,
+and closing the window has to come first anyway.
+
+Alternatives: abort and ask for `--force` (it also drops unsaved work); a new
+`--ide-ok` flag (one more flag for a hint); ask the IDE itself (no documented
+interface for open projects was found); `lsof +D` on the worktree (slow,
+not always installed, and the IDE keeps no file inside it open: on the machine
+checked, PyCharm held only files in its own cache folders, and its cwd was the
+home folder); per-project cache files under `~/.cache/JetBrains/…/projects/<name>.<hash>/`
+(the hash is internal); VS Code's window state (not verified, not detected).
+Price: the JetBrains check depends on an undocumented file; a window opened in
+the last minutes may go unnoticed; a closed one may still be reported; only
+`.idea/` and `.vscode/` count as leftovers.
+
 ### Settings for `wt run`
 
 Only when `SETTINGS_SHIM_PATH` is configured: shim present in the worktree →
@@ -224,7 +274,9 @@ No abort in advance.
 - A non-MR folder named only by digits gets the DB name of an MR copy.
 - `shim_db` reads only the exact line `settings_shim` writes.
 - The server check in `wt drop` needs `/proc` (Linux); elsewhere it finds nothing
-  and does not block.
+  and does not block. The same holds for the IDE and process warnings.
+- The open-IDE warning knows JetBrains IDEs only and lags behind the IDE by
+  its save interval (minutes).
 - `has_addr` does not recognise `localhost:8001` or `[::]:8000`.
 - The `migrate` warning only fires when `migrate` is the first argument.
 - `wt drop` on a worktree with submodules or a locked one (`git worktree
@@ -240,7 +292,11 @@ PATH without them), settings choice, `wt setup` (paths with spaces, no
 overwrite, idempotence, DB ownership, template and prefix guards, dangling
 symlink shim, session cookie line in new and existing shims), `wt drop --db`, the server check of `wt drop` (fake `manage.py`
 processes via `exec -a`, a foreign listener on the MR port), the DB-copy stop
-of `wt drop` with `--keep-db` and orphaned copies in `wt list` (docker stub) and
+of `wt drop` with `--keep-db` and orphaned copies in `wt list` (docker stub), the
+open-IDE warning (a fake `recentProjects.xml` and a `sleep` holding a file open
+in its config folder; a closed project and a version that does not run stay
+silent), processes inside the worktree, IDE leftovers after the removal (a `git`
+stub that recreates `.idea/`), in `wt list` and as a `wt drop` target, and
 the `wt link` pointer. A manual test in a
 real repo: `wt run <nr>` in an MR worktree, `wt setup .` + `wt run .` in an
 IDE-made worktree, `wt setup . --db` + `wt run . migrate`, `wt drop <x> --db`.

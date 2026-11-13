@@ -28,8 +28,8 @@ wt new --mr <nr> [--db] [--ide]      # disposable worktree from the MR/PR ref (+
 wt new --branch <name> [--db] [--ide] # working worktree from a (remote) branch
 wt setup <target> [--db]             # set up an existing worktree the way `wt new` would (never overwrites)
 wt run <target> [args]               # manage.py in that worktree (default: runserver); `wt help run`
-wt drop <target> [--db|--keep-db]    # remove worktree (and its DB copy, or keep it)
-wt list                              # show worktrees, review DB copies and orphaned ones
+wt drop <target> [--db|--keep-db] [--force] # remove worktree (and its DB copy, or keep it)
+wt list                              # show worktrees, review DB copies, orphaned copies and IDE leftovers
 wt path <target>                     # print the path, nothing else
 wt pick                              # fuzzy picker (fzf): main checkout + all worktrees -> path
 wt ide [<target>]                    # open in your IDE (IDE_CMD, default `pycharm`); no arg: picker
@@ -64,7 +64,11 @@ locally), `wt` prints a hint whenever you switch there; it never switches
 branches itself. `wt drop` refuses the main checkout and the worktree the
 shell stands in, however they are named (`.`, folder or branch), and a
 worktree with uncommitted changes or untracked files — before it removes
-anything, listing the files; `--force` removes them too.
+anything, listing the files; `--force` removes them too. A `manage.py` still
+running inside the worktree (any port) stops it even with `--force` (Linux:
+read from `/proc`). Before removing, it warns when a JetBrains IDE still has
+the worktree open or other processes (terminals, agents) still work inside it,
+see [PyCharm](#pycharm-and-other-ides).
 
 ### Setting up an existing worktree
 
@@ -141,29 +145,57 @@ $ wt new --mr 42 --db
 
 * Konfig geladen: ~/.config/wt/myproject.conf
 
+* vorhandene Datenbanken abfragen
+  > docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_database"
+  ┄┄┄
+
+* Forge: gitlab (aus der URL von 'origin'; FORGE in der Konfig setzen, falls falsch)
+
 * MR-Stand unter benanntem Ref holen (ohne Checkout; + erlaubt Force-Push-Updates)
-  > git -C ~/repos/myproject fetch origin '+refs/merge-requests/42/head:refs/mr/42'
+  > git -C ~/repos/myproject fetch origin +refs/merge-requests/42/head:refs/mr/42
+  ┄┄┄
 
 * Wegwerf-Worktree detached anlegen - kein lokaler Branch, keine Branch-Kollision
-  > git -C ~/repos/myproject worktree add --detach ~/repos/myproject-worktrees/mr-42 refs/mr/42
+  > git -C ~/repos/myproject worktree add --detach ~/repos/myproject-worktrees/abc-mr-42 refs/mr/42
+  ┄┄┄
 
 * gitignorte Datei '.env' in den Worktree kopieren (Inhalt wird nie angezeigt)
-  > cp ~/repos/myproject/.env ~/repos/myproject-worktrees/mr-42/.env
+  > cp ~/repos/myproject/.env ~/repos/myproject-worktrees/abc-mr-42/.env
+  ┄┄┄
+
+* Zielbranch aktualisieren, damit der requirements-Vergleich stimmt
+  > git -C ~/repos/myproject fetch -q origin dev
+  ┄┄┄
 
 * requirements.txt unveraendert gegenueber origin/dev -> Haupt-venv mitnutzen ist ok.
 
+* vorhandene Datenbanken abfragen
+  > docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_database"
+  ┄┄┄
+
 * DB-Kopie 'review_42' per Postgres-Template anlegen (dateiweise Kopie, fast sofort)
-  > docker exec my_postgres_container createdb -U postgres -T my_project_db 'review_42'
+  > docker exec my_postgres_container createdb -U postgres -T my_project_db review_42
+  ┄┄┄
+
+* Shim in .git/info/exclude eintragen (lokal ignoriert, gilt fuer alle Worktrees, blockiert 'worktree remove' nicht)
+  > echo app/settings_review.py >> ~/repos/myproject/.git/info/exclude
+  ┄┄┄
+
+* Settings-Shim erzeugen: app/settings_review.py (gitignored; fixe 2-Zeilen-Vorlage, zeigt nur auf die DB-Kopie)
+  > cat > ~/repos/myproject-worktrees/abc-mr-42/app/settings_review.py
+    | from app.settings_local import *  # noqa: F401,F403
+    | DATABASES['default']['NAME'] = 'review_42'
 
 * Fertig. Naechste Schritte von Hand:
+  cd ~/repos/myproject-worktrees/abc-mr-42
   python app/manage.py runserver 127.0.0.1:8042 --settings=app.settings_review
-
-* Wechseln nach mr-42 [detached] (zurueck: cd -)
-  > cd ~/repos/myproject-worktrees/mr-42
+  wt run 42   (Server starten; wt run 42 migrate fuer manage.py-Befehle)
 ```
 
-(The last step comes from the shell integration below; without it, `wt`
-prints the `cd` line for you to run yourself.)
+Git's own progress lines are left out. The first `psql` lookup checks before
+anything is created that `review_42` does not exist yet. The `.git/info/exclude`
+step runs once per repo. With the shell integration below, the `cd` line is
+replaced by the `cd` itself (`* Wechseln nach abc-mr-42 [detached]`).
 
 ## Shell integration (zsh)
 
@@ -199,6 +231,21 @@ Notes from setting this up with PyCharm 2026.2 (verify against your version):
   (`wt drop` reminds you).
 - There is **no documented command-line flag to *attach*** a directory to an
   open project — attaching is only a button in the "open project" dialog.
+- **Close the window before `wt drop`.** An IDE window left open on a removed
+  worktree writes its project files again later, for example when you close
+  it, and so recreates the folder with only `.idea/` inside. `wt drop` warns
+  beforehand when a JetBrains IDE lists the worktree as an open project: its
+  `recentProjects.xml` (under `~/.config/JetBrains/<product><version>/options/`)
+  marks it `opened="true"`, and a process of that IDE version is running. This
+  is a hint, not proof: the IDE writes the file only every few minutes, so a
+  window opened or closed just now can be missed or still be reported. That is
+  why `wt drop` only warns and never stops for it. Other IDEs are not detected,
+  but their terminals are: `wt drop` names every process whose working directory
+  is inside the worktree.
+- **Leftovers.** A folder that is no worktree and holds only `.idea/` or
+  `.vscode/` is reported right after `wt drop` (if the IDE was quick) and, in
+  `<repo>-worktrees/`, by `wt list`, each with the `rm -rf` command; `wt drop` on such a
+  folder refuses and prints the same command. `wt` never deletes it itself.
 - PyCharm's own **Git | Worktrees** tab (switch by double-click) only works for
   projects with a single Git root. Attached worktrees or leftover entries under
   *Settings | Version Control | Directory Mappings* turn the project into a
@@ -230,6 +277,8 @@ If `WT_PREFIX` is unset in every config, `wt` uses plain folder names and `wt ne
 ## Requirements
 
 - Bash, Git ≥ 2.23
+- Linux for the process checks of `wt drop` (running server, open IDE, other
+  processes): they read `/proc`; elsewhere they find nothing and do not block
 - `wt pick` and argument-less `wt cd` / `wt ide` need [fzf](https://github.com/junegunn/fzf)
 - `--db` steps additionally need Docker **or** Podman (docker CLI emulation)
   with a running Postgres container

@@ -30,7 +30,7 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 | `wt new --mr <nr> --db` | Wegwerf-Worktree vom MR-Ref, mit eigener Kopie der Stamm-DB (mit `wt.zsh` endet es im Worktree); `--pr` ist dasselbe für GitHub |
 | `wt new --branch <name>` | Arbeits-Worktree von einem bestehenden (Remote-)Branch; zweigt keinen neuen Branch ab. `--db` für eine eigene DB-Kopie, `--ide` öffnet die IDE |
 | `wt setup .` | bestehenden Worktree nachträglich einrichten wie `wt new`: `COPY_FILES` kopieren, `LINK_DIRS` verlinken, `requirements.txt` vergleichen. Überschreibt nie, beliebig oft lauffähig |
-| `wt setup . --db` | dasselbe plus eigene DB-Kopie (`abc-feature-x` → `review_feature_x`) und Settings-Shim |
+| `wt setup . --db` | dasselbe plus eigene DB-Kopie (`abc-feature-x` → `review_feature_x`) und Settings-Shim; mit `SETTINGS_SHIM_COOKIES=1` hängt es an einen vorhandenen Shim die fehlende Session-Cookie-Zeile an |
 
 ### Benutzen
 
@@ -52,14 +52,18 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 | `wt path <ziel>` | nur den Pfad ausgeben, z. B. `cd "$(wt path feature/x)"` – geht in jeder Shell |
 | `wt pick` | Hauptordner oder Worktree aus einer Liste (fzf) wählen, Pfad ausgeben |
 | `wt ide <ziel>` | Worktree in der IDE öffnen (`IDE_CMD`, Standard `pycharm`) |
-| `wt list` | Worktrees und vorhandene DB-Kopien zeigen; verwaiste Kopien (kein Worktree dazu) mit `dropdb`-Befehl, löscht nie selbst |
+| `wt list` | Worktrees und vorhandene DB-Kopien zeigen; verwaiste Kopien (kein Worktree dazu) mit `dropdb`-Befehl und Ordner, in denen nur noch `.idea/` oder `.vscode/` liegt, mit `rm -rf`-Befehl. Löscht nie selbst |
 
 ### Aufräumen
 
 | Befehl | Was er tut |
 |---|---|
-| `wt drop <nr\|ordner\|branch> --db` | Worktree entfernen, DB-Kopie löschen (Name aus dem Shim; ohne Shim nur bei MR-Ordnern); nie `.` oder `@`; `--force` bei uncommitteten Änderungen |
+| `wt drop <nr\|ordner\|branch> --db` | Worktree entfernen, DB-Kopie löschen (Name aus dem Shim; ohne Shim nur bei MR-Ordnern); nie `.` oder `@`; `--force` bei uncommitteten Änderungen. Läuft dort noch `manage.py`: Abbruch, auch mit `--force` |
 | `wt drop <nr\|ordner\|branch> --keep-db` | Worktree entfernen, DB-Kopie bewusst behalten. Ohne `--db`/`--keep-db` bricht `drop` ab, wenn es eine Kopie gibt, und nennt beide Befehle |
+
+**Vor `wt drop` das IDE-Fenster schließen**, sonst legt die IDE den Ordner später mit `.idea/` neu an.
+`drop` warnt vorher (bricht nicht ab), wenn eine laufende JetBrains-IDE das Projekt als offen führt
+oder Prozesse im Worktree stehen; einen neu angelegten Ordner nennen `drop` und `wt list` mit `rm -rf`-Befehl.
 
 ### Konfiguration
 
@@ -102,6 +106,7 @@ echo app/settings_review.py >> H/.git/info/exclude                   # nur beim 
 # W/app/settings_review.py schreiben:
 #   from app.settings_local import *
 #   DATABASES['default']['NAME'] = 'review_813'
+#   SESSION_COOKIE_NAME = 'sessionid_review_813'                     # nur mit SETTINGS_SHIM_COOKIES=1
 ```
 
 ### `wt new --branch feature/x`
@@ -119,7 +124,7 @@ git -C H worktree add --track -b feature/x ~/src/myproject-worktrees/abc-feature
 ### `wt setup .`
 
 ```bash
-# Dateien kopieren (COPY_FILES; nur wenn im Worktree noch nicht da)
+# Dateien kopieren (COPY_FILES; nur wenn im Worktree noch nicht da; fehlt der Ordner, vorher mkdir -p)
 cp H/.env W/.env
 cp H/app/settings_local.py W/app/settings_local.py
 # Ordner verlinken (LINK_DIRS; nur wenn noch nicht da; erst Eintrag in H/.git/info/exclude)
@@ -187,8 +192,12 @@ cd W && P app/manage.py shell --settings=app.settings_review
 readlink /proc/*/cwd                                                 # läuft manage.py mit Arbeitsordner in W? dann Abbruch (jeder Port)
 git -C W status --porcelain                                          # Ausgabe (außer den Links)? dann Abbruch, nichts entfernt
 docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_database"  # gehört W eine Kopie? dann Abbruch: --db oder --keep-db
+grep -A2 'key="$USER_HOME$/src/myproject-worktrees/abc-mr-813"' ~/.config/JetBrains/*/options/recentProjects.xml  # opened="true"?
+find /proc/*/fd -lname "$HOME/.config/JetBrains/PyCharm2026.3/*" -print -quit 2>/dev/null   # und läuft diese IDE-Version? dann nur Warnung
+readlink /proc/*/cwd                                                 # andere Prozesse in W (Terminal, Agent)? dann nur Hinweis
 rm W/app/media W/.venv                                               # nur die Links, nie das Ziel
 git -C H worktree remove W                                           # mit --force: nicht Eingechecktes geht mit
+ls -A W                                                              # wieder da, nur .idea/? Fenster schließen, dann: rm -rf -- W
 ```
 
 `wt drop 813 --force` überspringt die Statusprüfung und löscht nicht eingecheckte Dateien mit. Ein laufender Server blockiert auch mit `--force`; ein fremder Dienst auf Port 8813 blockiert nie.
@@ -216,5 +225,6 @@ git -C H worktree list --porcelain | fzf                             # wt pick
 git -C H worktree list                                               # wt list, dazu:
 docker exec my_postgres_container psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'review_%'"
                                                                      # Kopien ohne Worktree (Shim, MR-Nummer, Ordnername) -> "verwaist"
+ls -A ~/src/myproject-worktrees/*/                                   # Ordner ohne .git, nur mit .idea/ oder .vscode/ -> "Reste ohne Worktree"
 setsid -f pycharm ~/src/myproject-worktrees/abc-mr-813               # wt ide 813
 ```

@@ -13,7 +13,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 export HOME="$TMP/home" NO_COLOR=1 COLUMNS=10000 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-unset WT_PREFIX
+unset WT_PREFIX XDG_CONFIG_HOME   # die JetBrains-Suche liest sonst die echte IDE-Konfig
 mkdir -p "$HOME"
 
 # ---------- Stubs ----------
@@ -246,7 +246,7 @@ mkdir -p "$BASE/feature-x/.idea" && : > "$BASE/feature-x/.idea/workspace.xml"
 err=$("$WT" drop feature-x 2>&1)
 if [ ! -d "$BASE/feature-x" ]; then ok "drop trotz gitignorierter .idea/"
 else fail "drop trotz gitignorierter .idea/" "$err"; fi
-if [[ "$err" == *"PyCharm"* ]]; then ok "drop erinnert ans Fensterschliessen"
+if [[ "$err" == *"in einer IDE offen"* ]]; then ok "drop erinnert ans Fensterschliessen"
 else fail "drop erinnert ans Fensterschliessen" "$err"; fi
 # Nicht eingecheckte Datei: Abbruch, bevor etwas veraendert wird - die Links bleiben stehen.
 # 'media' hat hier keinen exclude-Eintrag, Git sieht den Link also selbst als untracked.
@@ -323,10 +323,130 @@ if [ -d /proc/self ]; then
   err=$("$WT" drop 61 2>&1 >/dev/null); rc=$?
   if [ "$rc" -eq 0 ] && [ ! -e "$BASE/mr-61" ]; then ok "drop: anderer Prozess als manage.py im Worktree blockiert nicht"
   else fail "drop: anderer Prozess als manage.py im Worktree blockiert nicht" "rc=$rc $err"; fi
+  if [[ "$err" == *"arbeiten noch Prozesse (PID $other (sleep))"* ]]; then ok "drop: anderer Prozess im Worktree -> Hinweis mit PID und Name"
+  else fail "drop: anderer Prozess im Worktree -> Hinweis mit PID und Name" "$err"; fi
   kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
+
+  # JetBrains-IDE hat den Worktree noch offen: recentProjects.xml mit opened="true", und die IDE
+  # dieser Version laeuft (ein Prozess haelt eine Datei in ihrem Konfig-Ordner offen). Nur Warnung.
+  JB="$HOME/.config/JetBrains"
+  mkdir -p "$TMP/jb-echt" && ln -s "$TMP/jb-echt" "$JB"   # Konfig per Symlink (Dotfiles): /proc/*/fd zeigt den echten Pfad
+  jb_xml() { # konfig-ordner schluessel opened-attribut -> recentProjects.xml im Format der IDE
+    mkdir -p "$JB/$1/options"
+    cat > "$JB/$1/options/recentProjects.xml" <<XML
+<application>
+  <component name="RecentProjectsManager">
+    <option name="additionalInfo">
+      <map>
+        <entry key="\$USER_HOME\$/anderes-projekt">
+          <value>
+            <RecentProjectMetaInfo frameTitle="anderes-projekt" opened="true" projectWorkspaceId="x1">
+              <option name="activationTimestamp" value="1" />
+            </RecentProjectMetaInfo>
+          </value>
+        </entry>
+        <entry key="$2">
+          <value>
+            <RecentProjectMetaInfo frameTitle="wt"$3 projectWorkspaceId="x2">
+              <option name="activationTimestamp" value="1" />
+            </RecentProjectMetaInfo>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</application>
+XML
+  }
+  start_ide() { # konfig-ordner -> PID eines Prozesses, der dort eine Datei offen haelt (wie die laufende IDE)
+    ( cd "$TMP" && exec 3<"$JB/$1/options/recentProjects.xml" && exec -a fake-pycharm sleep 300 ) >/dev/null 2>&1 &
+    local pid=$! _
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ -n "$(find "/proc/$pid/fd" -maxdepth 1 -lname "$TMP/jb-echt/$1/*" 2>/dev/null)" ] && break
+      sleep 0.1
+    done
+    echo "$pid"
+  }
+  git -C "$REPO" worktree add -q -b feat/ide-a "$HOME/wts/ide-a"
+  jb_xml PyCharm2099.1 "\$USER_HOME\$/wts/ide-a" ' opened="true"'
+  ide=$(start_ide PyCharm2099.1)
+  err=$("$WT" drop feat/ide-a 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -e "$HOME/wts/ide-a" ]; then ok "drop: Projekt in laufender JetBrains-IDE offen -> nur Warnung, Worktree entfernt"
+  else fail "drop: Projekt in laufender JetBrains-IDE offen -> nur Warnung, Worktree entfernt" "rc=$rc $err"; fi
+  if [[ "$err" == *"ide-a ist in PyCharm2099.1 noch als offenes Projekt eingetragen"* ]]; then ok "drop: Warnung nennt die IDE (\$USER_HOME\$ aufgeloest, Konfig per Symlink)"
+  else fail "drop: Warnung nennt die IDE (\$USER_HOME\$ aufgeloest, Konfig per Symlink)" "$err"; fi
+  if [[ "$err" == *"ACHTUNG: ide-a"*"* Worktree entfernen"* ]]; then ok "drop: Warnung kommt vor dem Entfernen"
+  else fail "drop: Warnung kommt vor dem Entfernen" "$err"; fi
+  # Gegenproben: Eintrag ohne opened="true" bei laufender IDE; opened="true" in einer Version, die nicht laeuft
+  git -C "$REPO" worktree add -q -b feat/ide-b "$BASE/ide-b"
+  jb_xml PyCharm2099.1 "$BASE/ide-b" ''
+  err=$("$WT" drop ide-b 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [[ "$err" != *"offenes Projekt"* ]]; then ok "drop: Projekt ohne opened=\"true\" bei laufender IDE -> keine Warnung"
+  else fail "drop: Projekt ohne opened=\"true\" bei laufender IDE -> keine Warnung" "rc=$rc $err"; fi
+  if [[ "$err" != *"arbeiten noch Prozesse"* ]]; then ok "drop: ohne Prozess im Worktree -> kein Prozess-Hinweis"
+  else fail "drop: ohne Prozess im Worktree -> kein Prozess-Hinweis" "$err"; fi
+  git -C "$REPO" worktree add -q -b feat/ide-d "$BASE/ide-d"
+  jb_xml PyCharm2098.1 "$BASE/ide-d" ' opened="true"'
+  err=$("$WT" drop ide-d 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [[ "$err" != *"offenes Projekt"* ]]; then ok "drop: opened=\"true\" nur in einer alten, nicht laufenden IDE-Version -> keine Warnung"
+  else fail "drop: opened=\"true\" nur in einer alten, nicht laufenden IDE-Version -> keine Warnung" "rc=$rc $err"; fi
+  kill "$ide" 2>/dev/null; wait "$ide" 2>/dev/null
+  git -C "$REPO" worktree add -q -b feat/ide-c "$BASE/ide-c"
+  jb_xml PyCharm2099.1 "$BASE/ide-c" ' opened="true"'
+  err=$("$WT" drop ide-c 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [[ "$err" != *"offenes Projekt"* ]]; then ok "drop: opened=\"true\", aber keine IDE laeuft -> keine Warnung"
+  else fail "drop: opened=\"true\", aber keine IDE laeuft -> keine Warnung" "rc=$rc $err"; fi
+  rm -rf "$JB" "$TMP/jb-echt" "$HOME/wts"
 else
   ok "drop: Serverpruefung uebersprungen (kein /proc)"
 fi
+
+# ---------- drop: IDE-Reste (Ordner nur mit .idea/ oder .vscode/) ----------
+# Ein offenes IDE-Fenster schreibt nach dem Entfernen wieder in den Ordner. Der git-Stub spielt das
+# nach: nach 'worktree remove' legt er .idea/workspace.xml an.
+cd "$REPO" || exit 1
+REAL_GIT=$(command -v git)
+mkdir -p "$TMP/git-ide"
+cat > "$TMP/git-ide/git" <<EOF
+#!/usr/bin/env bash
+"$REAL_GIT" "\$@"; rc=\$?
+if [ "\$rc" -eq 0 ] && [ "\${3:-}" = worktree ] && [ "\${4:-}" = remove ]; then
+  mkdir -p "\${*: -1}/.idea" && : > "\${*: -1}/.idea/workspace.xml"
+fi
+exit "\$rc"
+EOF
+chmod +x "$TMP/git-ide/git"
+git -C "$REPO" worktree add -q -b feat/rest "$BASE/rest"
+err=$(PATH="$TMP/git-ide:$PATH" "$WT" drop rest 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$BASE/rest/.idea/workspace.xml" ] && [[ "$err" == *"schon wieder da, nur mit IDE-Resten (.idea/)"* ]] && [[ "$err" == *"rm -rf -- $BASE/rest"* ]]; then ok "drop: Ordner nach dem Entfernen neu angelegt -> Meldung mit rm-Befehl, nichts geloescht"
+else fail "drop: Ordner nach dem Entfernen neu angelegt -> Meldung mit rm-Befehl, nichts geloescht" "rc=$rc $err"; fi
+err=$("$WT" drop rest 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [ -d "$BASE/rest/.idea" ] && [[ "$err" == *"kein Worktree mehr, nur IDE-Reste"* ]] && [[ "$err" == *"rm -rf -- $BASE/rest"* ]]; then ok "drop <Ordner nur mit .idea/> -> Abbruch mit rm-Befehl, loescht nicht"
+else fail "drop <Ordner nur mit .idea/> -> Abbruch mit rm-Befehl, loescht nicht" "rc=$rc $err"; fi
+mkdir -p "$BASE/rest-vs/.vscode" "$BASE/rest-beide/.idea" "$BASE/rest-beide/.vscode" "$BASE/notizen/.idea" "$BASE/punkt/.idea"
+: > "$BASE/notizen/plan.txt"; : > "$BASE/punkt/.env"
+git -C "$REPO" worktree add -q -b feat/mit-idea "$BASE/mit-idea"; mkdir -p "$BASE/mit-idea/.idea"
+err=$("$WT" list 2>&1 >/dev/null)
+if [[ "$err" == *"Reste ohne Worktree"* ]] && [[ "$err" == *"rm -rf -- $BASE/rest   # .idea/"* ]] && [[ "$err" == *"rm -rf -- $BASE/rest-vs   # .vscode/"* ]]; then ok "list: Ordner nur mit .idea/ bzw. .vscode/ -> mit rm-Befehl"
+else fail "list: Ordner nur mit .idea/ bzw. .vscode/ -> mit rm-Befehl" "$err"; fi
+if [[ "$err" == *"rm -rf -- $BASE/rest-beide   # .idea/ .vscode/"* ]]; then ok "list: Ordner mit .idea/ und .vscode/ -> Rest"
+else fail "list: Ordner mit .idea/ und .vscode/ -> Rest" "$err"; fi
+if [[ "$err" != *"$BASE/notizen"* ]] && [[ "$err" != *"$BASE/punkt"* ]] && [[ "$err" != *"rm -rf -- $BASE/mit-idea"* ]] && [ -d "$BASE/rest" ]; then ok "list: Ordner mit weiterer Datei (auch Punktdatei) und Worktree mit .idea/ sind keine Reste; nichts geloescht"
+else fail "list: Ordner mit weiterer Datei (auch Punktdatei) und Worktree mit .idea/ sind keine Reste; nichts geloescht" "$err"; fi
+err=$("$WT" drop notizen 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [ -f "$BASE/notizen/plan.txt" ] && [[ "$err" == *"kein Worktree von demo"* ]]; then ok "drop <Ordner, kein Worktree> -> Abbruch, nichts entfernt"
+else fail "drop <Ordner, kein Worktree> -> Abbruch, nichts entfernt" "rc=$rc $err"; fi
+# Worktree von Hand geloescht, IDE legt .idea/ neu an: Git fuehrt ihn noch -> rm und prune
+git -C "$REPO" worktree add -q -b feat/von-hand "$BASE/von-hand"; rm -rf "$BASE/von-hand"; mkdir -p "$BASE/von-hand/.idea"
+err=$("$WT" drop von-hand 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [ -d "$BASE/von-hand/.idea" ] && [[ "$err" == *"nur IDE-Reste"* ]] && [[ "$err" == *"worktree prune"* ]]; then ok "drop <noch eingetragener Ordner nur mit .idea/> -> rm- und prune-Befehl"
+else fail "drop <noch eingetragener Ordner nur mit .idea/> -> rm- und prune-Befehl" "rc=$rc $err"; fi
+if [[ "$(PATH="$TMP/git-ide:$PATH" "$WT" drop rest 2>&1)" != *"worktree prune"* ]]; then ok "drop <Rest, nicht mehr eingetragen> -> kein prune-Befehl"
+else fail "drop <Rest, nicht mehr eingetragen> -> kein prune-Befehl" "prune genannt"; fi
+rm -rf "$BASE/rest" "$BASE/rest-vs" "$BASE/rest-beide" "$BASE/notizen" "$BASE/punkt" "$BASE/von-hand"; git -C "$REPO" worktree prune
+"$WT" drop mit-idea >/dev/null 2>&1
+err=$("$WT" list 2>&1 >/dev/null)
+if [[ "$err" != *"Reste ohne Worktree"* ]]; then ok "list: ohne Reste -> kein Hinweis"; else fail "list: ohne Reste -> kein Hinweis" "$err"; fi
 
 # ---------- wt new: Zielbranch, Forge, Remote ----------
 cd "$REPO" || exit 1
