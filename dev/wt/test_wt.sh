@@ -30,7 +30,22 @@ printf '%s\n' "$@" > "$IDE_LOG"
 EOF
 chmod +x "$STUBS/fzf" "$STUBS/fake-ide"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUBS/ss"; chmod +x "$STUBS/ss"
-export PATH="$STUBS:$PATH" FZF_LOG="$TMP/fzf.log" IDE_LOG="$TMP/ide.log"
+# glab/gh als Spione: jeder Aufruf landet in $FORGE_SPY, das echte glab/gh laeuft nie.
+# 'mr view' / 'pr view' antworten mit $GLAB_VIEW_OUT / $GH_VIEW_OUT; leer = Fehler wie ohne Netz.
+cat > "$STUBS/glab" <<'EOF'
+#!/usr/bin/env bash
+printf 'glab %s\n' "$*" >> "$FORGE_SPY"
+if [ "$1 $2" = "mr view" ] && [ -n "${GLAB_VIEW_OUT:-}" ]; then printf '%s\n' "$GLAB_VIEW_OUT"; exit 0; fi
+echo "ERROR: dial tcp: lookup gitlab.example: no such host" >&2; exit 1
+EOF
+cat > "$STUBS/gh" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >> "$FORGE_SPY"
+if [ "$1 $2" = "pr view" ] && [ -n "${GH_VIEW_OUT:-}" ]; then printf '%s\n' "$GH_VIEW_OUT"; exit 0; fi
+echo "error connecting to api.github.com" >&2; exit 1
+EOF
+chmod +x "$STUBS/glab" "$STUBS/gh"
+export PATH="$STUBS:$PATH" FZF_LOG="$TMP/fzf.log" IDE_LOG="$TMP/ide.log" FORGE_SPY="$TMP/forge-spy.log"
 
 # ---------- Wegwerf-Repo mit zwei Worktrees ----------
 REPO="$TMP/repos/demo"
@@ -186,6 +201,81 @@ err=$(env -u VIRTUAL_ENV "$WT" run 42 shell 2>&1 >/dev/null)
 if [[ "$err" == *"gibtsnicht"*"nicht ausfuehrbar"* ]]; then ok "run mit falschem RUN_PYTHON -> Fehler"
 else fail "run mit falschem RUN_PYTHON -> Fehler" "$err"; fi
 printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
+
+# ---------- Ziel = MR-Nummer eines Branch-Worktrees (Rueckfall ueber glab/gh) ----------
+# Der eigene Worktree heisst nach dem Branch (fix-pdf), gemerkt ist die MR-Nummer (938).
+cd "$REPO" || exit 1
+git -C "$REPO" worktree add -q -b fix/pdf "$BASE/fix-pdf"
+spy_clear() { : > "$FORGE_SPY"; }
+spy_clear
+out=$(GLAB_VIEW_OUT=fix/pdf "$WT" path 938 2>"$TMP/mrnr.err"); rc=$?; err=$(cat "$TMP/mrnr.err")
+expect_eq "path <MR-Nr> -> Branch-Worktree per glab (gitlab)" "$BASE/fix-pdf" "$out"
+expect_eq "path <MR-Nr> per glab -> Exit 0" "0" "$rc"
+if grep -qxF "glab mr view 938 -F json --jq .source_branch" "$FORGE_SPY"; then ok "path <MR-Nr>: fragt glab nach dem Source-Branch"
+else fail "path <MR-Nr>: fragt glab nach dem Source-Branch" "$(cat "$FORGE_SPY")"; fi
+if [[ "$err" == *"glab mr view 938"* && "$err" == *"MR 938"*"fix/pdf"*"$BASE/fix-pdf"* ]]; then ok "path <MR-Nr>: kuendigt die Abfrage an und nennt MR, Branch und Ordner"
+else fail "path <MR-Nr>: kuendigt die Abfrage an und nennt MR, Branch und Ordner" "$err"; fi
+# Lokale Ordner gehen vor - ohne jede Forge-Abfrage
+spy_clear
+expect_eq "path <nr> mit Ordner mr-42 -> lokal" "$BASE/mr-42" "$(GLAB_VIEW_OUT=fix/pdf "$WT" path 42 2>/dev/null)"
+git -C "$REPO" worktree add -q --detach "$BASE/mr-938"
+expect_eq "path 938 mit Ordner mr-938 -> Review-Worktree gewinnt" "$BASE/mr-938" "$(GLAB_VIEW_OUT=fix/pdf "$WT" path 938 2>/dev/null)"
+git -C "$REPO" worktree remove "$BASE/mr-938"
+"$WT" path gibtsnicht >/dev/null 2>&1
+if [ ! -s "$FORGE_SPY" ]; then ok "lokale Treffer und Namen ohne Ziffern -> kein glab/gh-Aufruf"
+else fail "lokale Treffer und Namen ohne Ziffern -> kein glab/gh-Aufruf" "$(cat "$FORGE_SPY")"; fi
+# MR bekannt, Branch aber nirgends ausgecheckt
+err=$(GLAB_VIEW_OUT=feat/nirgends "$WT" path 939 2>&1 >/dev/null); rc=$?
+expect_eq "path <MR-Nr>, Branch ohne Worktree -> Exit 1" "1" "$rc"
+if [[ "$err" == *"939"*"feat/nirgends"*"kein Worktree"* && "$err" == *"wt new --branch feat/nirgends"* && "$err" == *"wt new --mr 939"* ]]; then ok "path <MR-Nr>, Branch ohne Worktree -> nennt MR, Branch und beide new-Befehle"
+else fail "path <MR-Nr>, Branch ohne Worktree -> nennt MR, Branch und beide new-Befehle" "$err"; fi
+# glab scheitert (kein Netz/Login): klare Meldung, kein Shell-Fehler
+err=$("$WT" path 940 2>&1 >/dev/null); rc=$?
+expect_eq "path <MR-Nr>, glab scheitert -> Exit 1" "1" "$rc"
+if [[ "$err" == *"Fehler: "*"940"*"glab"*"Netz"* && "$err" != *"line "* && "$err" != *"unbound"* ]]; then ok "path <MR-Nr>, glab scheitert -> klare Meldung"
+else fail "path <MR-Nr>, glab scheitert -> klare Meldung" "$err"; fi
+# Antwort mit Sonderzeichen landet nie in einem Befehl
+err=$(GLAB_VIEW_OUT="x;touch $TMP/PWNED-MR" "$WT" path 941 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [ ! -e "$TMP/PWNED-MR" ] && [[ "$err" == *"unerwartet"* ]]; then ok "path <MR-Nr>: Antwort mit Sonderzeichen -> abgelehnt"
+else fail "path <MR-Nr>: Antwort mit Sonderzeichen -> abgelehnt" "rc=$rc $err"; fi
+# glab nicht installiert
+NOGLAB="$TMP/noglab-bin"; mkdir -p "$NOGLAB"
+IFS=: read -ra pathdirs <<<"$PATH"
+for d in "${pathdirs[@]}"; do for f in "$d"/*; do
+  n=${f##*/}; case "$n" in glab|gh) continue ;; esac
+  [ -x "$f" ] && [ ! -e "$NOGLAB/$n" ] && ln -s "$f" "$NOGLAB/$n"
+done; done
+err=$(PATH="$NOGLAB" "$WT" path 938 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$err" == *"glab"*"nicht gefunden"* ]]; then ok "path <MR-Nr> ohne glab -> klare Meldung"
+else fail "path <MR-Nr> ohne glab -> klare Meldung" "rc=$rc $err"; fi
+# wt run <MR-Nr>: der Port kommt aus der Nummer, wie bei --mr <nr>
+out=$(env -u VIRTUAL_ENV GLAB_VIEW_OUT=fix/pdf "$WT" run 938 2>"$TMP/mrnr.err"); err=$(cat "$TMP/mrnr.err")
+expect_eq "run <MR-Nr> -> Branch-Worktree, Port 8938" "PATH-PYTHON manage.py runserver 127.0.0.1:8938" "$out"
+if [[ "$err" == *"Port 8938"*"MR 938"* ]]; then ok "run <MR-Nr> nennt die Herkunft des Ports"; else fail "run <MR-Nr> nennt die Herkunft des Ports" "$err"; fi
+out=$(env -u VIRTUAL_ENV GLAB_VIEW_OUT=fix/pdf "$WT" run 938 --port 9123 2>/dev/null)
+expect_eq "run <MR-Nr> --port 9123 -> --port gewinnt" "PATH-PYTHON manage.py runserver 127.0.0.1:9123" "$out"
+# GitHub: gh pr view
+printf 'IDE_CMD="fake-ide"\nFORGE="github"\n' > "$HOME/.config/wt/demo.conf"
+spy_clear
+out=$(GH_VIEW_OUT=fix/pdf "$WT" path 938 2>/dev/null)
+expect_eq "path <PR-Nr> -> Branch-Worktree per gh (github)" "$BASE/fix-pdf" "$out"
+if grep -qxF "gh pr view 938 --json headRefName --jq .headRefName" "$FORGE_SPY" && ! grep -q '^glab' "$FORGE_SPY"; then ok "path <PR-Nr>: fragt gh nach dem Head-Branch"
+else fail "path <PR-Nr>: fragt gh nach dem Head-Branch" "$(cat "$FORGE_SPY")"; fi
+err=$(GH_VIEW_OUT=feat/nirgends "$WT" path 939 2>&1 >/dev/null)
+if [[ "$err" == *"PR 939"*"feat/nirgends"* && "$err" == *"wt new --mr 939"* ]]; then ok "path <PR-Nr>, Branch ohne Worktree -> Meldung mit PR"
+else fail "path <PR-Nr>, Branch ohne Worktree -> Meldung mit PR" "$err"; fi
+printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
+# drop und setup fragen nie die Forge: eine Nummer entfernt nie einen Branch-Worktree
+spy_clear
+err=$(GLAB_VIEW_OUT=fix/pdf "$WT" setup 938 2>&1 >/dev/null); rc=$?
+expect_eq "setup <MR-Nr> mit Branch-Worktree -> Exit 1" "1" "$rc"
+err=$(GLAB_VIEW_OUT=fix/pdf "$WT" drop 938 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ -d "$BASE/fix-pdf" ] && git -C "$REPO" worktree list | grep -qF "$BASE/fix-pdf"; then ok "drop <MR-Nr> mit Branch-Worktree -> Abbruch, nichts entfernt"
+else fail "drop <MR-Nr> mit Branch-Worktree -> Abbruch, nichts entfernt" "rc=$rc $err"; fi
+if [[ "$err" == *"wt path 938"* ]]; then ok "drop <MR-Nr> -> Hinweis auf Branch/Ordner und wt path"; else fail "drop <MR-Nr> -> Hinweis auf Branch/Ordner und wt path" "$err"; fi
+if [ ! -s "$FORGE_SPY" ]; then ok "drop/setup <MR-Nr> -> kein glab/gh-Aufruf"
+else fail "drop/setup <MR-Nr> -> kein glab/gh-Aufruf" "$(cat "$FORGE_SPY")"; fi
+git -C "$REPO" worktree remove "$BASE/fix-pdf"; git -C "$REPO" branch -q -D fix/pdf
 
 # ---------- Hauptordner nicht auf TARGET_BRANCH ----------
 cd "$REPO" || exit 1

@@ -48,10 +48,14 @@ Every command with the shell commands it runs, on one page: [CHEATSHEET.md](CHEA
 | `@`, the main folder's name, the `WT_PREFIX` tag | the main checkout |
 | `721`, `mr-721`, `abc-mr-721`, `feat-x` | a worktree folder in the sibling folder `<repo>-worktrees/` |
 | `feat/x` | a branch: the worktree where it is checked out, wherever it lives and however its folder is named (worktrees made by an IDE or plain `git worktree add`) |
+| `938` without a folder `mr-938` | your branch worktree for MR/PR 938: `wt` asks the forge for the MR's branch (`glab mr view` / `gh pr view`, needs network and login), then finds the worktree that has it checked out. `path`, `cd`, `ide` and `run` only; `wt run 938` gets port 8938 |
 | `/abs/path` | a worktree of this repo |
 
-A folder name wins over a branch of the same name. Every target must be a
-worktree of this repo; anything else is refused. The picker lists folder
+A folder name wins over a branch of the same name, and both win over the
+forge lookup: a review worktree `mr-938` is found without network. `drop` and
+`setup` never ask the forge — a mistyped number could point to another of your
+own worktrees — so give them the folder or the branch (`wt path 938` shows it).
+Every target must be a worktree of this repo; anything else is refused. The picker lists folder
 names with the branch currently checked out there in brackets, so a worktree
 for the branch `main` (`wt new --branch main`) is simply `wt cd main`.
 Branch and folder names typed for `wt new` may contain letters, digits and `. _ - /` only;
@@ -99,7 +103,9 @@ and prints the `dropdb` commands; it never drops anything.
 
 For `runserver`, the first match wins: `--port N`; the main checkout gets
 `PORT_BASE` (8000); an `mr-<nr>` folder gets `PORT_BASE + nr mod 1000`;
-`--mr <nr>` gives the same without network; plain `--mr` asks `glab`
+`--mr <nr>` gives the same without network; a number as target that was
+resolved through the MR's branch (`wt run 938`) gives the same for that
+number; plain `--mr` asks `glab`
 (GitLab) or `gh` (GitHub) for the open MR/PR of the checked-out branch;
 otherwise a fixed port 9000-9999 from the folder name — the same on every
 start. A lookup that finds nothing, or a missing tool, is a note, never an

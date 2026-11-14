@@ -19,6 +19,7 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 | `@` · `abc` · Name des Hauptordners | der Hauptordner |
 | `813` · `mr-813` · `abc-mr-813` · `abc-feature-x` | ein Worktree-Ordner in `<repo>-worktrees/` |
 | `feature/x` | ein Branch: der Worktree, in dem er ausgecheckt ist, egal wo (auch von der IDE oder `git worktree add` angelegt); ein gleichnamiger Ordner geht vor |
+| `938` ohne Ordner `mr-938` | der eigene Branch-Worktree zu MR/PR 938: `wt` fragt `glab mr view 938` bzw. `gh pr view 938` nach dem Branch (Netz nötig). Nur `path`, `cd`, `ide`, `run` (Port 8938) – `drop` und `setup` fragen nie nach, dort Ordner oder Branch angeben |
 | `/absoluter/pfad` | ein Worktree dieses Repos |
 
 ## Befehle
@@ -36,7 +37,7 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 
 | Befehl | Was er tut |
 |---|---|
-| `wt run .` | `manage.py runserver` im Worktree, in dem du stehst. Port: Hauptordner `PORT_BASE` (8000), MR-Ordner 8000 + nr mod 1000, sonst fest 9xxx aus dem Ordnernamen; belegt → Abbruch. DB: Shim da → Kopie, sonst Stamm-DB (wt sagt es vorher) |
+| `wt run .` | `manage.py runserver` im Worktree, in dem du stehst. Port: Hauptordner `PORT_BASE` (8000), MR-Ordner 8000 + nr mod 1000, `wt run 938` über den MR-Branch ebenso 8938, sonst fest 9xxx aus dem Ordnernamen; belegt → Abbruch. DB: Shim da → Kopie, sonst Stamm-DB (wt sagt es vorher) |
 | `wt run . --mr` | dasselbe, Port vom offenen MR/PR zum Branch (`glab`/`gh`-Abfrage); `--mr <nr>` ohne Netz, `--port <n>` fest, `runserver 0.0.0.0:9000` eigene Adresse |
 | `wt run . migrate` | beliebiger `manage.py`-Befehl mit denselben Settings: `migrate`, `makemigrations`, `shell`, `showmigrations`, `test` … Ohne DB-Kopie warnt wt vor `migrate` auf der Stamm-DB |
 | `wt run @` | Server im Hauptordner (Port 8000, Stamm-DB) |
@@ -173,6 +174,17 @@ cd H && P app/manage.py runserver 127.0.0.1:8000 --settings=app.settings_local
 cd H && glab mr list --source-branch <branch> -F json --jq '.[0].iid'
 cd H && gh pr list --head <branch> --json number --jq '.[0].number'   # GitHub
 # --mr 813 ohne Abfrage: Port 8813; --port 9123: Port 9123; eigene Adresse: kein Port von wt
+```
+
+### `wt path 938` ohne Ordner `mr-938` (auch `wt cd`, `wt ide`, `wt run`)
+
+```bash
+# erst lokal: Ordner abc-mr-938, mr-938, ein Branch namens 938 - Treffer: keine Abfrage
+cd H && glab mr view 938 -F json --jq .source_branch                  # -> fix/pdf
+cd H && gh pr view 938 --json headRefName --jq .headRefName           # GitHub
+git -C H worktree list --porcelain                                   # Worktree mit Branch fix/pdf
+# kein Worktree damit: wt nennt 'wt new --branch fix/pdf' und 'wt new --mr 938'
+# wt run 938 auf diesem Weg: Port 8938; wt drop 938 / wt setup 938 fragen nie nach
 ```
 
 ### `wt run 813`, `wt run . migrate`, `wt run . shell`

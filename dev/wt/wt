@@ -88,6 +88,9 @@ wt - Worktrees mit erklaerten Schritten
         721, mr-721, abc-mr-721, feat-x   ein Worktree-Ordner
         feat/x   ein Branch: der Worktree, in dem er ausgecheckt ist (auch ausserhalb
                  des Sammelordners); der Ordnername geht vor
+        938      gibt es keinen Ordner dazu: der Worktree, in dem der Branch von
+                 MR/PR 938 ausgecheckt ist (fragt glab/gh, braucht Netz); nur path,
+                 cd, ide, run - drop und setup nehmen dafuer Ordner oder Branch
         /pfad    ein Worktree dieses Repos
 
 Erklaerungen gehen auf stderr, Ergebnisse auf stdout.
@@ -174,6 +177,7 @@ mr_refspec() { # $1 = nr -> Refspec der Forge; lokal heisst der Ref immer refs/m
 }
 
 mr_word() { case "$FORGE" in github) printf 'PR\n' ;; *) printf 'MR\n' ;; esac; }
+forge_tool() { case "$FORGE" in github) printf 'gh\n' ;; *) printf 'glab\n' ;; esac; }
 
 # ---------- gemeinsame Bausteine ----------
 resolve_slug() { # $1 = nr|kuerzel|branch -> Slug (Schluessel fuer Ordner, Port, DB; Ordnername siehe wt_dir)
@@ -200,8 +204,17 @@ find_wt() { # $1 = nr|kuerzel|branch|ordnername, $2 = --no-hint -> existierender
     p=$(branch_worktree "$1")
     if [ -n "$p" ]; then printf '%s\n' "$p"; return 0; fi
     p="$WT_BASE/$(wt_dir "$slug")"
-    if [ "$p" = "$WT_BASE/$slug" ]; then die "Worktree nicht gefunden: $p (auch kein Worktree mit Branch '$1')"; fi
-    die "Worktree nicht gefunden: $p (auch nicht $WT_BASE/$slug, auch kein Worktree mit Branch '$1')"
+    local msg hint=""
+    if [ "$p" = "$WT_BASE/$slug" ]; then msg="Worktree nicht gefunden: $p (auch kein Worktree mit Branch '$1')"
+    else msg="Worktree nicht gefunden: $p (auch nicht $WT_BASE/$slug, auch kein Worktree mit Branch '$1')"; fi
+    if re_ascii "$1" '^[0-9]+$'; then
+      # Letzter Rueckfall nur fuer reine Nummern: der Branch des MR/PR laut Forge (siehe TARGET_ASK_FORGE)
+      if [ "$TARGET_ASK_FORGE" -eq 1 ]; then mr_branch_worktree "$1" "$msg"; return 0; fi
+      hint="
+  ! ein Branch-Worktree zu MR/PR $1? Hier zaehlen nur Ordner und Branches, glab/gh werden nicht gefragt:
+  ! 'wt path $1' zeigt den Ordner, dann ihn oder den Branch angeben"
+    fi
+    die "$msg$hint"
   fi
   [ "${2:-}" = "--no-hint" ] || legacy_hint "$slug"
   printf '%s\n' "$WT_BASE/$slug"
@@ -220,6 +233,51 @@ worktree_records() { # je Worktree 'pfad<TAB>branch' (branch leer bei detached),
 
 branch_worktree() { # $1 = branch -> Pfad des Worktrees, in dem er ausgecheckt ist, sonst leer (Git checkt einen Branch nie doppelt aus)
   worktree_records | awk -F'\t' -v b="$1" '$2 == b { print $1; exit }'
+}
+
+# Ziel = reine Nummer ohne passenden Ordner: nur Befehle, die nichts entfernen oder einrichten, fragen
+# die Forge nach dem Branch des MR/PR (path, cd, ide, run setzen 1). drop und setup bleiben bei Ordnern
+# und Branches - eine vertippte Nummer kann auf einen anderen eigenen Worktree zeigen (siehe DESIGN.md).
+TARGET_ASK_FORGE=0
+
+mr_branch() { # $1 = nr -> Source-Branch des MR/PR laut Forge; sonst Meldung auf stderr und Rueckgabe 1
+  local tool out rc=0
+  detect_forge
+  tool=$(forge_tool)
+  if ! command -v "$tool" >/dev/null; then
+    note "'$tool' nicht gefunden - der Branch zu $(mr_word) $1 ist nicht abfragbar"
+    return 1
+  fi
+  case "$FORGE" in
+    github) out=$(run "cd $(q "$REPO_ROOT") && gh pr view $1 --json headRefName --jq .headRefName" \
+                      "kein Ordner zu $(mr_word) $1 - gh nach dessen Branch fragen (braucht Netz und gh-Login)") || rc=$? ;;
+    *)      out=$(run "cd $(q "$REPO_ROOT") && glab mr view $1 -F json --jq .source_branch" \
+                      "kein Ordner zu $(mr_word) $1 - glab nach dessen Source-Branch fragen (braucht Netz und glab-Login)") || rc=$? ;;
+  esac
+  if [ "$rc" -ne 0 ]; then
+    note "$tool konnte $(mr_word) $1 nicht abfragen (Exit $rc: kein Netz, nicht angemeldet oder unbekannte Nummer)"
+    return 1
+  fi
+  if ! re_ascii "$out" '^[A-Za-z0-9._/-]+$'; then
+    note "unerwartete Antwort von $tool fuer $(mr_word) $1 - kein Branchname: '$(printf '%s' "$out" | head -n1 | cut -c1-80)'"
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+mr_branch_worktree() { # $1 = nr, $2 = Meldung der lokalen Suche -> Worktree, in dem der Branch des MR/PR ausgecheckt ist; sonst Abbruch
+  local b p
+  detect_forge   # hier, nicht erst in mr_branch: mr_word braucht FORGE auch fuer die Meldungen unten
+  b=$(mr_branch "$1") || die "$2
+  ! und $(forge_tool) konnte den Branch zu $(mr_word) $1 nicht nennen (Netz, Login? Meldung oben) - Ordner oder Branch direkt angeben ('wt list' zeigt alle)"
+  p=$(branch_worktree "$b")
+  [ -n "$p" ] || die "$(mr_word) $1 kommt vom Branch '$b', aber kein Worktree hat ihn ausgecheckt (und es gibt keinen Ordner zu $(mr_word) $1)
+  ! Arbeits-Worktree auf dem Branch:
+  > wt new --branch $b
+  ! oder Wegwerf-Worktree vom $(mr_word)-Stand:
+  > wt new --mr $1"
+  note "$(mr_word) $1 -> Branch '$b' -> Worktree $p"
+  printf '%s\n' "$p"
 }
 
 is_worktree() { # $1 = ordner -> wahr, wenn er ein Worktree dieses Repos ist (Hauptbaum eingeschlossen)
@@ -668,6 +726,7 @@ jetbrains_open() { # $1 = worktree-pfad -> je laufender JetBrains-IDE, die ihn a
 }
 
 cmd_path() {
+  TARGET_ASK_FORGE=1   # auch fuer 'wt cd' (wt.zsh) und 'wt run', die hierueber aufloesen
   [ -n "${1:-}" ] || die "path braucht ein Ziel: . (hier), @ (Hauptordner), Nummer, Ordner oder Branch"
   resolve_path "$1"
 }
@@ -712,6 +771,7 @@ open_ide() { # $1 = pfad
 
 cmd_ide() {
   need_ide
+  TARGET_ASK_FORGE=1
   local p
   if [ -n "${1:-}" ]; then p=$(resolve_path "$1"); else p=$(cmd_pick); fi
   open_ide "$p"
@@ -745,6 +805,7 @@ wt run <ziel> [manage.py-Argumente] [--port N] [--mr [nr]]
     Hauptordner                   PORT_BASE (8000)
     Ordner mr-<nr>                PORT_BASE + (nr mod 1000)
     --mr <nr>                     PORT_BASE + (nr mod 1000), ohne Netz
+    Ziel <nr> ueber den MR-Branch PORT_BASE + (nr mod 1000)
     --mr                          offenen MR/PR zum Branch suchen (glab/gh);
                                   ohne Treffer weiter mit:
     sonst                         fest aus dem Ordnernamen, 9000-9999
@@ -832,8 +893,12 @@ cmd_run() {
   local nr="$1" wtpath; shift
   wtpath=$(cmd_path "$nr")
   local port="" port_src="" args=() a mr_flag=0 mr_arg="" has_addr=0
-  local mrnr name
+  local mrnr name target_nr=""
   name=$(basename "$wtpath")
+  # Nummer als Ziel, kein MR-Ordner, kein Branch dieses Namens: der Worktree kam ueber den Branch des MR/PR
+  if re_ascii "$nr" '^[0-9]+$' && [ -z "$(mr_number "$name")" ] && [ -z "$(branch_worktree "$nr")" ]; then
+    target_nr=$((10#$nr))
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --port) [ -n "${2:-}" ] || die "--port braucht eine Zahl"; port="$2"; port_src="aus --port"; shift 2 ;;
@@ -857,6 +922,8 @@ cmd_run() {
         port=$((PORT_BASE + 10#$mrnr % 1000)); port_src="MR $mrnr aus dem Ordnernamen"
       elif [ -n "$mr_arg" ]; then
         port=$((PORT_BASE + mr_arg % 1000)); port_src="MR $mr_arg aus --mr"; mr_flag=0
+      elif [ -n "$target_nr" ]; then
+        port=$((PORT_BASE + target_nr % 1000)); port_src="MR $target_nr aus dem Ziel, Worktree ueber dessen Branch"
       else
         if [ "$mr_flag" -eq 1 ]; then mrnr=$(lookup_mr "$wtpath"); mr_flag=0; fi
         if [ -n "$mrnr" ]; then
