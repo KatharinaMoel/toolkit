@@ -199,9 +199,10 @@ the worktree could vanish under it.
 Alternatives: keep the port check and ask `ss -p` who owns the port — still misses
 `--port`, and a container shows up as `pasta`; check every process with its cwd in
 the worktree — a second terminal standing there would block too; `lsof +D` —
-slow on big trees and not always installed. Price: Linux only (no `/proc` → no
-check), only processes of the same user are visible, and a `manage.py` started
-from outside with a path into the worktree is not found.
+slow on big trees and not always installed. Price: needs `/proc` (Linux) or
+`lsof -d cwd` (macOS; no `+D` tree walk), without either no check; only
+processes of the same user are visible, and a `manage.py` started from outside
+with a path into the worktree is not found.
 
 ### DB copy left behind by `wt drop`
 
@@ -314,8 +315,9 @@ No abort in advance.
   folders can get the same 9xxx port; only the busy-port check catches that.
 - A non-MR folder named only by digits gets the DB name of an MR copy.
 - `shim_db` reads only the exact line `settings_shim` writes.
-- The server check in `wt drop` needs `/proc` (Linux); elsewhere it finds nothing
-  and does not block. The same holds for the IDE and process warnings.
+- The server check in `wt drop` reads `/proc` (Linux) or asks `lsof` (macOS);
+  with neither it finds nothing and does not block. The same holds for the
+  process warning. The IDE warning needs `/proc`.
 - The open-IDE warning knows JetBrains IDEs only and lags behind the IDE by
   its save interval (minutes).
 - `has_addr` does not recognise `localhost:8001` or `[::]:8000`.
