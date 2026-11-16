@@ -341,6 +341,10 @@ window first, otherwise the IDE writes the folder once more.
   changed `requirements.txt`, delete the venv link in that worktree and build a
   separate venv there (after `deactivate`). Activate that venv before `wt run`;
   otherwise `RUN_PYTHON` still points at the main venv.
+- **Your own MR by number.** A worktree you work in is named after its branch
+  (`abc-fix-x`), not after the MR. `wt cd 938`, `wt path 938` and `wt run 938`
+  still find it: with no folder `mr-938`, `wt` asks `glab`/`gh` for the MR's
+  branch. `wt drop 938` and `wt setup 938` do not; give them the folder or branch.
 - **Existing worktrees.** Worktrees made by an IDE or `git worktree add` lack
   the copied files and links. `wt setup <folder-or-branch> [--db]` adds them and
   never overwrites anything.

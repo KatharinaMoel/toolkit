@@ -31,11 +31,41 @@ Success: from any worktree, `wt setup .` once, then `wt run .` and
 | main folder name, `WT_PREFIX` tag | the main checkout as before; the tag is new |
 | `721`, `mr-721`, `abc-mr-721`, `feat-x` | a worktree folder as before |
 | a branch name | the worktree where that branch is checked out — fallback after the folder lookup |
+| a number without a folder (`938`) | the worktree where the source branch of MR/PR 938 is checked out, asked from the forge — last fallback; `path`, `cd`, `ide`, `run` only |
 
 - **Lookup order:** folder first (as `find_wt` did), then the worktree that has
   the branch checked out (`git worktree list --porcelain`, wherever the folder
   is; unique, git never checks a branch out twice). Detached MR worktrees are
   reached by number only.
+- **MR number of a branch worktree:** your own worktree is named after its
+  branch (`abc-fix-login-message`), but the number you
+  remember is the MR's (938). When the local chain finds nothing and the
+  target is digits only, `wt` asks the forge for the MR's branch
+  (GitLab `glab mr view <nr> -F json --jq .source_branch`, GitHub
+  `gh pr view <nr> --json headRefName --jq .headRefName`), shown like every
+  other step, and resolves it with the branch lookup above. A folder
+  `mr-938` / `<tag>-mr-938` or a branch named `938` wins without network.
+  No tool, no network, no login, an unknown number or an answer that is not a
+  plain branch name (letters, digits, `. _ - /`) → a note plus an error that
+  names the MR; a branch that no worktree has checked out → an error naming the
+  MR, the branch and `wt new --branch <b>` / `wt new --mr <nr>`. The tool's own
+  error message is not hidden (it goes to stderr, like in `wt run --mr`).
+- **`drop` and `setup` never ask the forge.** A mistyped number (983 for 938)
+  can belong to another MR whose branch is also checked out here, i.e. to
+  another of your own worktrees with unpushed work. For `path`, `cd`, `ide` and
+  `run` that is harmless and visible: `wt` prints MR, branch and folder before
+  anything happens. `drop` removes that worktree, and `setup` writes into it
+  (files, links, with `--db` a DB copy named after the wrong folder). Both also
+  should not depend on the network or on the forge's current state. They stop
+  with the old "not found" error plus a hint: `wt path <nr>` shows the folder,
+  then pass it or the branch. The switch is opt-in (`TARGET_ASK_FORGE`, set by
+  `path`/`ide`, `cd` and `run` resolve through `path`), so a new command does
+  not get the lookup by accident.
+  Alternatives: allow it in `drop` with a confirmation prompt — fails without
+  a terminal (`!` commands, scripts), see the DB-copy stop below; allow it in
+  `setup` only (it never overwrites) — one rule for both is easier to
+  remember, and the folder is one `wt path` away. Price: `wt drop 938` for
+  your own branch worktree needs the folder or the branch name.
 - `@` rather than another symbol: zsh leaves it alone, and `resolve_slug`
   never allows it in a folder name, so it cannot collide. `..` would suggest
   the parent folder, `^` and `~` are expanded by zsh.
@@ -55,11 +85,21 @@ Success: from any worktree, `wt setup .` once, then `wt run .` and
 2. main checkout → `PORT_BASE`; folder `mr-<nr>` / `<tag>-mr-<nr>` →
    `PORT_BASE + nr mod 1000` (unchanged)
 3. `--mr <nr>` → the same, without network
-4. `--mr` alone → ask the forge for the open MR/PR of the checked-out branch
+4. a number as target, resolved through the MR's branch (`wt run 938`) →
+   `PORT_BASE + 938 mod 1000`. The number is known and already belongs to
+   that MR, so the server gets the port a review worktree of the same MR would
+   get. Detected offline in `run` (target digits only, found folder not an MR
+   folder, no branch named like the number), no second forge call.
+   Alternative: the folder port (9000 + cksum) as for any branch worktree —
+   stable even if the same worktree is reached by branch or folder name. Price
+   of the choice: `wt run 938` and `wt run fix/pdf` start the same worktree on
+   different ports (8938 vs 9xxx), and a review worktree `mr-938` started next to
+   it collides on 8938 (the busy-port check stops the second server).
+5. `--mr` alone → ask the forge for the open MR/PR of the checked-out branch
    (GitLab `glab mr list --source-branch <b> -F json --jq '.[0].iid'`, GitHub
    `gh pr list --head <b> --json number --jq '.[0].number'`); no hit, no tool,
-   no network → a note, then 5
-5. otherwise a fixed port `9000 + cksum(folder name) mod 1000` — offline,
+   no network → a note, then 6
+6. otherwise a fixed port `9000 + cksum(folder name) mod 1000` — offline,
    the same on every start, apart from the MR ports
 
 `wt` always says where the port came from. An address passed by the user
@@ -263,7 +303,8 @@ No abort in advance.
 ## Non-goals and anti-goals
 
 - Not: zsh completion, other ports for MR worktrees, network lookups without
-  `--mr`.
+  `--mr` — except a number target that no folder or branch matches (`path`,
+  `cd`, `ide`, `run`).
 - Never: overwrite a file in a worktree; migrate the main DB silently; run a
   step without showing it first (explain-then-run stays the principle).
 
@@ -279,6 +320,11 @@ No abort in advance.
   its save interval (minutes).
 - `has_addr` does not recognise `localhost:8001` or `[::]:8000`.
 - The `migrate` warning only fires when `migrate` is the first argument.
+- Number targets via the forge: a GitHub PR from a fork reports the fork's
+  branch name (`headRefName`); a local branch with another name is not found.
+  Only the remote `REMOTE` points to is asked (`cd <main checkout> && glab …`).
+  A closed or merged MR still reports its branch, so an old number can lead to
+  a worktree that now holds other work on that branch.
 - `wt drop` on a worktree with submodules or a locked one (`git worktree
   lock`): `git status` is clean, so the links go before `git worktree remove`
   refuses (a locked one even with `--force`). `wt setup .` brings the links back.
@@ -287,7 +333,10 @@ No abort in advance.
 
 `bash dev/wt/test_wt.sh` covers targets (`.` from subfolders and linked
 folders, `@`, tag, branch lookup outside the worktree folder, non-worktree
-paths), ports (fixed, `--mr` with and without number, glab/gh stubs and a
+paths, a number resolved through `glab`/`gh` spy stubs — GitLab and GitHub,
+local folders first without any forge call, no worktree for the branch, a
+failing or missing tool, an answer with shell characters, the port of
+`wt run <nr>`, and `drop`/`setup` refusing without a forge call), ports (fixed, `--mr` with and without number, glab/gh stubs and a
 PATH without them), settings choice, `wt setup` (paths with spaces, no
 overwrite, idempotence, DB ownership, template and prefix guards, dangling
 symlink shim, session cookie line in new and existing shims), `wt drop --db`, the server check of `wt drop` (fake `manage.py`
