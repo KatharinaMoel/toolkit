@@ -119,7 +119,7 @@ git -C H worktree add ~/src/myproject-worktrees/abc-feature-x feature/x
 # sonst vom Remote, mit lokalem Tracking-Branch:
 git -C H fetch -q origin feature/x
 git -C H worktree add --track -b feature/x ~/src/myproject-worktrees/abc-feature-x origin/feature/x
-# dann die Schritte von wt setup; mit --db wie wt setup . --db; mit --ide am Ende: setsid -f pycharm W
+# dann die Schritte von wt setup; mit --db wie wt setup . --db; mit --ide am Ende: setsid -f pycharm W (macOS: nohup pycharm W &)
 ```
 
 ### `wt setup .`

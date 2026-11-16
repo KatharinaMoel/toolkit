@@ -9,7 +9,7 @@
 set -uo pipefail
 
 WT="$(cd "$(dirname "$0")" && pwd)/wt"
-TMP=$(mktemp -d)
+TMP=$(cd "$(mktemp -d)" && pwd -P)   # echter Pfad: unter macOS ist /var ein Symlink auf /private/var, wt gibt echte Pfade aus
 trap 'rm -rf "$TMP"' EXIT
 
 export HOME="$TMP/home" NO_COLOR=1 COLUMNS=10000 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -22,7 +22,8 @@ mkdir -p "$STUBS"
 cat > "$STUBS/fzf" <<'EOF'
 #!/usr/bin/env bash
 # Stub: Eingabe merken, Zeile mit $FZF_PICK ausgeben; ohne Treffer wie Esc (130).
-tee "$FZF_LOG" | grep -m1 -F -- "${FZF_PICK:-}" || exit 130
+# Erst ganz lesen, dann suchen: 'tee | grep -m1' kuerzte das Protokoll, sobald grep frueh endete.
+cat > "$FZF_LOG"; grep -m1 -F -- "${FZF_PICK:-}" "$FZF_LOG" || exit 130
 EOF
 cat > "$STUBS/fake-ide" <<'EOF'
 #!/usr/bin/env bash
@@ -73,6 +74,7 @@ git -C "$REPO" fetch -q origin
 git -C "$REPO" remote set-head origin dev          # origin/HEAD -> dev, wie nach einem clone
 
 # ---------- Mini-Testrahmen ----------
+sed_i() { sed "$1" "$2" > "$2.sed-tmp" && mv "$2.sed-tmp" "$2"; }   # sed -i ohne GNU/BSD-Unterschied (macOS: sed -i '')
 fails=0
 ok()   { printf 'ok    %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n      %s\n' "$1" "$2"; fails=$((fails + 1)); }
@@ -382,18 +384,20 @@ printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
 # ---------- drop: ein laufender manage.py im Worktree blockiert, nicht der Port ----------
 # Ein Server kann mit --port woanders lauschen, und auf PORT_BASE + nr kann ein fremder
 # Dienst laufen. Gesucht wird darum nach manage.py-Prozessen, deren Arbeitsordner im
-# Worktree liegt (/proc, also nur unter Linux).
-if [ -d /proc/self ]; then
+# Worktree liegt (/proc unter Linux, sonst lsof wie unter macOS).
+start_fake() { # Ordner argv0 -> PID eines sleep, der unter argv0 im Ordner laeuft
+  ( cd "$1" && exec -a "$2" sleep 300 ) >/dev/null 2>&1 &
+  local pid=$! _ want
+  want=$(cd "$1" && pwd -P)
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -d /proc/self ]; then [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$want" ] && break
+    else [ "$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$want" ] && break; fi
+    sleep 0.1
+  done
+  echo "$pid"
+}
+if [ -d /proc/self ] || command -v lsof >/dev/null 2>&1; then
   cd "$REPO" || exit 1
-  start_fake() { # Ordner argv0 -> PID eines sleep, der unter argv0 im Ordner laeuft
-    ( cd "$1" && exec -a "$2" sleep 300 ) >/dev/null 2>&1 &
-    local pid=$! _
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$(cd "$1" && pwd -P)" ] && break
-      sleep 0.1
-    done
-    echo "$pid"
-  }
   git -C "$REPO" worktree add -q --detach "$BASE/mr-61"
   git -C "$REPO" worktree add -q --detach "$BASE/mr-62"
   srv=$(start_fake "$BASE/mr-61" "python manage.py runserver 127.0.0.1:8999")
@@ -416,7 +420,11 @@ if [ -d /proc/self ]; then
   if [[ "$err" == *"arbeiten noch Prozesse (PID $other (sleep))"* ]]; then ok "drop: anderer Prozess im Worktree -> Hinweis mit PID und Name"
   else fail "drop: anderer Prozess im Worktree -> Hinweis mit PID und Name" "$err"; fi
   kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
+else
+  ok "drop: Serverpruefung uebersprungen (weder /proc noch lsof)"
+fi
 
+if [ -d /proc/self ]; then
   # JetBrains-IDE hat den Worktree noch offen: recentProjects.xml mit opened="true", und die IDE
   # dieser Version laeuft (ein Prozess haelt eine Datei in ihrem Konfig-Ordner offen). Nur Warnung.
   JB="$HOME/.config/JetBrains"
@@ -488,7 +496,7 @@ XML
   else fail "drop: opened=\"true\", aber keine IDE laeuft -> keine Warnung" "rc=$rc $err"; fi
   rm -rf "$JB" "$TMP/jb-echt" "$HOME/wts"
 else
-  ok "drop: Serverpruefung uebersprungen (kein /proc)"
+  ok "drop: IDE-Warnung uebersprungen (kein /proc)"
 fi
 
 # ---------- drop: IDE-Reste (Ordner nur mit .idea/ oder .vscode/) ----------
@@ -913,7 +921,7 @@ else fail "createdb scheitert -> Hinweis auf Server an der Haupt-DB" "rc=$rc $er
 : > "$DOCKER_LOG"
 err=$(dk new --branch feat/c --db 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 0 ] && grep -q 'createdb .*review_feat_c' "$DOCKER_LOG"; then ok "new --branch --db -> Kopie review_feat_c"; else fail "new --branch --db -> Kopie review_feat_c" "rc=$rc $(cat "$DOCKER_LOG") $err"; fi
-sed -i "s/'review_feat_x'/'review_custom'/" "$PXB/abc-feat-x/app/settings_review.py"
+sed_i "s/'review_feat_x'/'review_custom'/" "$PXB/abc-feat-x/app/settings_review.py"
 : > "$DOCKER_LOG"
 DB_EXISTING="review_custom review_feat_x" dk drop abc-feat-x --db --force >/dev/null 2>&1
 if grep -q 'dropdb .*review_custom' "$DOCKER_LOG" && ! grep -q 'dropdb .*review_feat_x' "$DOCKER_LOG"; then ok "drop --db loescht die DB aus dem Shim"
@@ -1019,11 +1027,11 @@ rm "$PXB/abc-feat-ck2/app/settings_review.py"; ln -s "$TMP/ausserhalb/ck.py" "$P
 DB_EXISTING=review_feat_ck2 dk setup abc-feat-ck2 --db >/dev/null 2>&1
 if ! grep -q COOKIE "$TMP/ausserhalb/ck.py"; then ok "cookies: kein Anhaengen durch einen Symlink"; else fail "cookies: kein Anhaengen durch einen Symlink" "$(cat "$TMP/ausserhalb/ck.py")"; fi
 git -C "$PX" worktree remove --force "$PXB/abc-feat-ck2"
-sed -i '/^SETTINGS_SHIM_COOKIES=/d' "$CONF"
+sed_i '/^SETTINGS_SHIM_COOKIES=/d' "$CONF"
 printf 'SETTINGS_SHIM_COOKIES=ja\n' >> "$CONF"
 err=$("$WT" path @ 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 1 ] && [[ "$err" == *"0 oder 1"* ]]; then ok "cookies: SETTINGS_SHIM_COOKIES=ja -> Abbruch"; else fail "cookies: SETTINGS_SHIM_COOKIES=ja -> Abbruch" "rc=$rc $err"; fi
-sed -i '/^SETTINGS_SHIM_COOKIES=/d' "$CONF"
+sed_i '/^SETTINGS_SHIM_COOKIES=/d' "$CONF"
 err=$("$WT" link 42 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 1 ] && [[ "$err" == *"wt setup"* ]]; then ok "link -> Wegweiser auf wt setup"; else fail "link -> Wegweiser auf wt setup" "rc=$rc $err"; fi
 for w in "$SP" "$PXB/$LONG" "$PXB/abc-feat-c"; do git -C "$PX" worktree remove --force "$w"; done
@@ -1201,7 +1209,7 @@ git clone -q "$REMOTE_BARE" "$MRR"
 git -C "$MRR" worktree add -q --detach "$MRB/mr-5"
 printf 'WT_PREFIX="mr"\n' > "$HOME/.config/wt/mrrepo.conf"
 cd "$MRR" || exit 1
-if [ -d /proc/self ]; then
+if [ -d /proc/self ] || command -v lsof >/dev/null 2>&1; then
   srv=$(start_fake "$MRB/mr-5" "python manage.py runserver")
   err=$("$WT" drop 5 2>&1 >/dev/null); rc=$?
   expect_eq "prefix mr: drop 5 (Ordner mr-5) -> Exit 1 bei laufendem Server" "1" "$rc"
@@ -1243,6 +1251,93 @@ rm -f "$IDE_LOG"
 expect_eq "ide mit ungueltigem Namen -> Exit 1" "1" "$rc"
 sleep 0.5   # open_ide startet per setsid -f, also asynchron
 if [ ! -e "$IDE_LOG" ]; then ok "ide mit ungueltigem Namen startet die IDE nicht"; else fail "ide mit ungueltigem Namen startet die IDE nicht" "$(cat "$IDE_LOG")"; fi
+
+# ---------- macOS-Ersatzwege: realpath ohne -e, kein setsid, kein ss, kein /proc ----------
+# PATH wie auf einem Mac: alle Befehle als Links, aber ohne setsid und ss, dazu ein realpath, das -e
+# ablehnt wie das BSD-realpath. WT_NO_PROC=1 laesst wt so tun, als gaebe es kein /proc (dann lsof).
+# Laeuft unter Linux; auf einem Mac prueft derselbe Block die echten Werkzeuge.
+MACBIN="$TMP/mac-bin"
+mkdir -p "$MACBIN"
+IFS=: read -r -a path_dirs <<<"$PATH"
+for d in "${path_dirs[@]}"; do
+  [ -d "$d" ] || continue
+  for c in "$d"/*; do
+    n=${c##*/}
+    case "$n" in setsid|ss|realpath) continue ;; esac
+    [ -x "$c" ] && [ ! -e "$MACBIN/$n" ] && ln -s "$c" "$MACBIN/$n"
+  done
+done
+REAL_REALPATH=$(command -v realpath || true)
+cat > "$MACBIN/realpath" <<STUB
+#!/usr/bin/env bash
+# wie BSD-realpath: kennt -e nicht
+case "\$1" in -e) echo "realpath: illegal option -- e" >&2; exit 64 ;; esac
+[ -n "$REAL_REALPATH" ] && exec "$REAL_REALPATH" "\$@"
+exit 1
+STUB
+chmod +x "$MACBIN/realpath"
+REAL_LSOF=$(command -v lsof || true)
+if [ -n "$REAL_LSOF" ]; then   # lsof-Spion: Port-Abfragen beantwortet \$LSOF_BUSY_PORT, alles andere das echte lsof
+  rm -f "$MACBIN/lsof"
+  cat > "$MACBIN/lsof" <<STUB
+#!/usr/bin/env bash
+printf 'lsof %s\n' "\$*" >> "$TMP/lsof-spy.log"
+case " \$* " in *" -iTCP:"*) [ "\$*" = "-nP -iTCP:\${LSOF_BUSY_PORT:-0} -sTCP:LISTEN" ]; exit ;; esac
+exec "$REAL_LSOF" "\$@"
+STUB
+  chmod +x "$MACBIN/lsof"
+fi
+mac() { PATH="$MACBIN" WT_NO_PROC=1 "$WT" "$@"; }
+if PATH="$MACBIN" command -v setsid >/dev/null || PATH="$MACBIN" command -v ss >/dev/null; then
+  fail "mac: Test-PATH ohne setsid/ss" "setsid oder ss noch erreichbar"
+fi
+
+cd "$REPO" || exit 1
+printf 'IDE_CMD="fake-ide"\n' > "$HOME/.config/wt/demo.conf"
+expect_eq "mac: path @ (realpath ohne -e)"           "$REPO"           "$(mac path @ 2>/dev/null)"
+expect_eq "mac: path <nr>"                           "$BASE/mr-42"     "$(mac path 42 2>/dev/null)"
+expect_eq "mac: path <Symlink auf Hauptordner> -> echter Pfad" "$REPO" "$(mac path "$TMP/link-auf-demo" 2>/dev/null)"
+mkdir -p "$BASE/mr-42/sub2" && cd "$BASE/mr-42/sub2" || exit 1
+expect_eq "mac: path . aus Worktree-Unterordner"     "$BASE/mr-42"     "$(mac path . 2>/dev/null)"
+cd "$REPO" || exit 1; rmdir "$BASE/mr-42/sub2"
+if mac path "$TMP/gibtsnicht" >/dev/null 2>&1; then fail "mac: path <fehlender Pfad>" "Exit 0"; else ok "mac: path <fehlender Pfad> -> Fehler"; fi
+mkdir -p "$TMP/kein-worktree"
+if mac path "$TMP/kein-worktree" >/dev/null 2>&1; then fail "mac: path <Ordner, kein Worktree>" "Exit 0"; else ok "mac: path <Ordner, kein Worktree> -> Fehler"; fi
+rmdir "$TMP/kein-worktree"
+
+rm -f "$IDE_LOG"
+err=$(mac ide 42 2>&1 >/dev/null); rc=$?
+wait_for_ide
+expect_eq "mac: ide <nr> ohne setsid oeffnet Worktree" "$BASE/mr-42" "$(cat "$IDE_LOG" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && [[ "$err" == *"> nohup fake-ide"* ]]; then ok "mac: ide zeigt nohup statt setsid"
+else fail "mac: ide zeigt nohup statt setsid" "rc=$rc $err"; fi
+
+if [ -n "$REAL_LSOF" ]; then
+  cd "$BASE/mr-42" || exit 1
+  : > "$TMP/lsof-spy.log"
+  err=$(LSOF_BUSY_PORT=8042 mac run 42 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 1 ] && [[ "$err" == *"auf Port 8042 lauscht schon"* ]]; then ok "mac: run ohne ss -> lsof meldet belegten Port"
+  else fail "mac: run ohne ss -> lsof meldet belegten Port" "rc=$rc $err"; fi
+  out=$(LSOF_BUSY_PORT=9 mac run 42 2>/dev/null)
+  expect_eq "mac: run ohne ss, Port frei -> startet" "PATH-PYTHON manage.py runserver 127.0.0.1:8042" "$out"
+  if grep -qF -- '-iTCP:8042 -sTCP:LISTEN' "$TMP/lsof-spy.log"; then ok "mac: Port-Pruefung fragt lsof"
+  else fail "mac: Port-Pruefung fragt lsof" "$(cat "$TMP/lsof-spy.log")"; fi
+
+  cd "$REPO" || exit 1
+  git -C "$REPO" worktree add -q --detach "$BASE/mr-63"
+  srv=$(start_fake "$BASE/mr-63" "python manage.py runserver 127.0.0.1:8999")
+  err=$(mac drop 63 --force 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -ne 0 ] && [ -d "$BASE/mr-63" ] && [[ "$err" == *"$srv"* ]]; then ok "mac: drop ohne /proc findet laufenden manage.py (lsof)"
+  else fail "mac: drop ohne /proc findet laufenden manage.py (lsof)" "rc=$rc $err"; fi
+  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+  other=$(start_fake "$BASE/mr-63" "sleep 300")
+  err=$(mac drop 63 2>&1 >/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -e "$BASE/mr-63" ] && [[ "$err" == *"arbeiten noch Prozesse (PID $other (sleep))"* ]]; then ok "mac: drop ohne /proc nennt anderen Prozess (lsof)"
+  else fail "mac: drop ohne /proc nennt anderen Prozess (lsof)" "rc=$rc $err"; fi
+  kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
+else
+  printf 'skip  mac: lsof nicht installiert - Port- und Prozess-Ersatzweg ungeprueft\n'
+fi
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'alle Tests gruen' || echo "$fails Test(s) rot")"
 [ "$fails" -eq 0 ]

@@ -70,7 +70,7 @@ shell stands in, however they are named (`.`, folder or branch), and a
 worktree with uncommitted changes or untracked files — before it removes
 anything, listing the files; `--force` removes them too. A `manage.py` still
 running inside the worktree (any port) stops it even with `--force` (Linux:
-read from `/proc`). Before removing, it warns when a JetBrains IDE still has
+read from `/proc`; macOS: from `lsof`). Before removing, it warns when a JetBrains IDE still has
 the worktree open or other processes (terminals, agents) still work inside it,
 see [PyCharm](#pycharm-and-other-ides).
 
@@ -282,9 +282,10 @@ If `WT_PREFIX` is unset in every config, `wt` uses plain folder names and `wt ne
 
 ## Requirements
 
-- Bash, Git ≥ 2.23
-- Linux for the process checks of `wt drop` (running server, open IDE, other
-  processes): they read `/proc`; elsewhere they find nothing and do not block
+- Bash ≥ 3.2, Git ≥ 2.31 (`wt` uses `git rev-parse --path-format`)
+- The process checks of `wt drop` (running server, other processes) read `/proc`
+  on Linux and ask `lsof` elsewhere; with neither they find nothing and do not
+  block. The open-IDE warning needs `/proc` (Linux only)
 - `wt pick` and argument-less `wt cd` / `wt ide` need [fzf](https://github.com/junegunn/fzf)
 - `--db` steps additionally need Docker **or** Podman (docker CLI emulation)
   with a running Postgres container
@@ -298,3 +299,43 @@ ln -s "$(pwd)/wt" ~/.local/bin/wt                  # from this directory; ~/.loc
 echo "source $(pwd)/wt.zsh" >> ~/.zshrc            # optional: auto-cd + `wt cd`
 sudo dnf install fzf                               # optional: the picker
 ```
+
+## macOS
+
+`wt` runs with the stock macOS tools: Apple's `/bin/bash` 3.2, BSD `realpath`,
+`sed`, `grep`, and no GNU coreutils. **Not yet tested on real Mac hardware** —
+the stand-ins below are covered by `test_wt.sh`, which simulates a Mac `PATH`
+on Linux, and the test suite also passes under bash 3.2. Steps for a first
+check on a Mac: [MACOS-TEST.md](./MACOS-TEST.md).
+
+Where Linux and macOS differ, `wt` uses the Linux tool when it is there and
+the stand-in only when the tool or option is missing — on Linux nothing changes:
+
+| Linux | macOS stand-in | Used for |
+|---|---|---|
+| `realpath -e` | `cd -P` + `pwd -P` | resolving symlinks in targets |
+| `setsid -f` | `nohup … &` | `wt ide`: start the IDE in the background |
+| `ss -tln` | `lsof -nP -iTCP:<port> -sTCP:LISTEN` | `wt run`: is the port taken? |
+| `/proc/<pid>/cwd` | `lsof -d cwd` + `ps -o args=` | `wt drop`: processes inside the worktree |
+
+Requirements on a Mac:
+
+- Git ≥ 2.31 (the Xcode command line tools or Homebrew `git`); `lsof` ships
+  with macOS
+- bash: the stock 3.2 is enough; a newer one from Homebrew (`brew install bash`)
+  works too and is picked when it comes first on `PATH` (`#!/usr/bin/env bash`)
+- zsh is the default login shell, so `wt.zsh` works as described above
+- optional: `brew install fzf`; Docker Desktop or Podman for `--db`
+- `~/.local/bin` is not on `PATH` by default: link `wt` into a directory that
+  is, or add it in `~/.zshrc`
+
+Known gaps on macOS (untested unless stated otherwise):
+
+- The open-IDE warning of `wt drop` is off: it reads `/proc`, and JetBrains keeps
+  its config under `~/Library/Application Support/JetBrains/` there.
+- `wt ide`: `IDE_CMD="pycharm"` needs the launcher script from JetBrains Toolbox
+  (*Settings | Tools | Shell scripts*). Without it, `IDE_CMD="open -a PyCharm"`
+  should work — check the app name in `/Applications`.
+- `lsof` as a normal user only sees your own processes — the same limit as `/proc`
+  on Linux.
+- `--db` with Docker Desktop and the real `glab`/`gh` calls were not tried.

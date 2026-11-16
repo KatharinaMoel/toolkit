@@ -43,6 +43,29 @@ note() { printf '\n%s* %s%s\n' "$C_NOTE" "$1" "$C_OFF" >&2; }
 die()  { printf '\n%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 re_ascii() { local LC_ALL=C; [[ "$1" =~ $2 ]]; }   # $1 passt auf Regex $2, Zeichenklassen nur ASCII (unter de_DE treffen [A-Za-z0-9] und [0-9] sonst auch Umlaute und fremde Ziffern)
 
+# ---------- Portabilitaet (macOS): GNU-Werkzeug, wenn es die Option kann, sonst ein Ersatzweg ----------
+# Unter Linux laufen dieselben Befehle wie immer; die Ersatzwege greifen nur, wenn das Werkzeug fehlt
+# oder die Option nicht kennt (macOS: BSD-realpath ohne -e, kein setsid, kein ss, kein /proc).
+if realpath -e -- / >/dev/null 2>&1; then RP_E=1; else RP_E=0; fi
+realpath_e() { # $1 = pfad -> echter Pfad ohne Symlinks; Fehler, wenn er nicht existiert (wie realpath -e)
+  if [ "$RP_E" -eq 1 ]; then realpath -e -- "$1"; return; fi
+  [ -e "$1" ] || return 1
+  if [ -d "$1" ]; then (CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P); return; fi
+  local f="$1" dir n=0   # Datei: Symlink-Kette der letzten Stufe verfolgen, den Ordner per cd -P aufloesen
+  while [ -L "$f" ]; do
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    case "$(readlink -- "$f")" in /*) f=$(readlink -- "$f") ;; *) f="$(dirname -- "$f")/$(readlink -- "$f")" ;; esac
+  done
+  [ -e "$f" ] || return 1
+  dir=$(CDPATH='' cd -P -- "$(dirname -- "$f")" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "${dir%/}" "$(basename -- "$f")"
+}
+port_listening() { # $1 = port -> wahr, wenn dort ein TCP-Server lauscht (ss, sonst lsof; ohne beide: falsch)
+  if command -v ss >/dev/null 2>&1; then ss -tln 2>/dev/null | grep -q ":$1 "
+  elif command -v lsof >/dev/null 2>&1; then lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else return 1; fi
+}
+
 usage() {
   cat <<'EOF'
 wt - Worktrees mit erklaerten Schritten
@@ -282,9 +305,9 @@ mr_branch_worktree() { # $1 = nr, $2 = Meldung der lokalen Suche -> Worktree, in
 
 is_worktree() { # $1 = ordner -> wahr, wenn er ein Worktree dieses Repos ist (Hauptbaum eingeschlossen)
   local real path _b
-  real=$(realpath -e -- "$1" 2>/dev/null) || return 1
+  real=$(realpath_e "$1" 2>/dev/null) || return 1
   while IFS=$'\t' read -r path _b; do
-    [ "$(realpath -e -- "$path" 2>/dev/null)" = "$real" ] && return 0
+    [ "$(realpath_e "$path" 2>/dev/null)" = "$real" ] && return 0
   done < <(worktree_records)
   return 1
 }
@@ -324,7 +347,7 @@ refuse_legacy_twin() { # $1 = slug; neben einem Ordner ohne Repo-Kuerzel keinen 
 
 copy_project_files() { # $1 = worktree-pfad; was im Worktree schon liegt, bleibt unangetastet
   local f
-  for f in "${COPY_FILES[@]}"; do
+  for f in ${COPY_FILES[@]+"${COPY_FILES[@]}"}; do   # leeres Array: bash 3.2 meldet unter set -u sonst "unbound variable"
     if [ -e "$1/$f" ] || [ -L "$1/$f" ]; then
       note "'$f' ist im Worktree schon vorhanden - nicht ueberschrieben."
     elif [ -f "$REPO_ROOT/$f" ]; then
@@ -640,12 +663,12 @@ resolve_path() { # $1 = .|@|reponame|kuerzel|absoluter pfad|nr|ordner|branch -> 
   fi
   [ -d "$p" ] || die "Worktree nicht gefunden: $p"
   is_worktree "$p" || die "$p ist kein Worktree von $REPO_NAME ('git -C $(q "$REPO_ROOT") worktree list' zeigt alle)"
-  p=$(realpath -e -- "$p")   # Symlinks aufloesen: Vergleiche mit dem Hauptordner und cd landen am echten Ort
+  p=$(realpath_e "$p")   # Symlinks aufloesen: Vergleiche mit dem Hauptordner und cd landen am echten Ort
   if is_main_path "$p"; then check_main_branch; fi
   printf '%s\n' "$p"
 }
 
-is_main_path() { [ "$(realpath -e -- "$1" 2>/dev/null)" = "$(realpath -e -- "$REPO_ROOT")" ]; } # $1 = ordner -> wahr fuer den Hauptordner
+is_main_path() { [ "$(realpath_e "$1" 2>/dev/null)" = "$(realpath_e "$REPO_ROOT")" ]; } # $1 = ordner -> wahr fuer den Hauptordner
 
 here_worktree() { # -> Worktree, in dem die Shell steht
   # Nach dem logischen $PWD (laengster passender Worktree-Pfad): in einem verlinkten Ordner wie .reviews
@@ -661,12 +684,15 @@ here_worktree() { # -> Worktree, in dem die Shell steht
 is_here() { # $1 = ordner -> wahr, wenn die Shell in diesem Worktree steht (auch in einem Unterordner)
   local top
   top=$(here_worktree) || return 1
-  [ "$(realpath -e -- "$top")" = "$(realpath -e -- "$1" 2>/dev/null)" ]
+  [ "$(realpath_e "$top")" = "$(realpath_e "$1" 2>/dev/null)" ]
 }
 
-procs_in() { # $1 = ordner -> 'pid<TAB>name<TAB>befehlszeile' je Prozess, dessen Arbeitsordner darin liegt (Linux: /proc)
+procs_in() { # $1 = ordner -> 'pid<TAB>name<TAB>befehlszeile' je Prozess, dessen Arbeitsordner darin liegt (/proc, sonst lsof)
   local dir p cwd name
-  dir=$(realpath -e -- "$1" 2>/dev/null) || return 0
+  dir=$(realpath_e "$1" 2>/dev/null) || return 0
+  if [ -n "${WT_NO_PROC:-}" ] || [ ! -d /proc/self ]; then   # macOS; WT_NO_PROC=1 erzwingt den Weg zum Testen
+    procs_in_lsof "$dir"; return 0
+  fi
   for p in /proc/[0-9]*; do
     cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
     case "$cwd/" in
@@ -675,6 +701,20 @@ procs_in() { # $1 = ordner -> 'pid<TAB>name<TAB>befehlszeile' je Prozess, dessen
         printf '%s\t%s\t%s\n' "${p#/proc/}" "$name" "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")" ;;
     esac
   done
+}
+
+procs_in_lsof() { # $1 = echter ordner -> wie procs_in, ohne /proc: lsof nennt je Prozess den Arbeitsordner, ps die Befehlszeile
+  local pid name
+  command -v lsof >/dev/null 2>&1 || return 0
+  # -F pcn: Zeilen 'p<pid>', 'c<name>', 'n<pfad>'; +c 0: Name nicht auf 9 Zeichen kuerzen; -w: keine Warnungen
+  { lsof -w -n -P +c 0 -d cwd -F pcn 2>/dev/null || true; } \
+    | awk -v dir="$1" '
+        /^p/ { pid = substr($0, 2) }
+        /^c/ { name = substr($0, 2) }
+        /^n/ { if (index(substr($0, 2) "/", dir "/") == 1) print pid "\t" name }' \
+    | while IFS=$'\t' read -r pid name; do
+        printf '%s\t%s\t%s\n' "$pid" "$name" "$(ps -o args= -p "$pid" 2>/dev/null || true)"
+      done
 }
 
 server_pids() { # $1 = ordner -> PIDs der manage.py-Prozesse, deren Arbeitsordner darin liegt
@@ -708,7 +748,7 @@ jetbrains_open() { # $1 = worktree-pfad -> je laufender JetBrains-IDE, die ihn a
   # Prozess eine Datei offen haelt (= die IDE dieser Version laeuft). Eine Heuristik: wt warnt damit nur.
   local base="${XDG_CONFIG_HOME:-$HOME/.config}/JetBrains" f d real opened
   [ -d /proc/self/fd ] || return 0
-  real=$(realpath -e -- "$1" 2>/dev/null) || real="$1"
+  real=$(realpath_e "$1" 2>/dev/null) || real="$1"
   for f in "$base"/*/options/recentProjects.xml; do
     [ -f "$f" ] || continue
     d="${f%/options/recentProjects.xml}"
@@ -719,7 +759,7 @@ jetbrains_open() { # $1 = worktree-pfad -> je laufender JetBrains-IDE, die ihn a
       /<RecentProjectMetaInfo/ && /opened="true"/ { print k }
     ' "$f" 2>/dev/null) || continue
     grep -qxF -e "$1" -e "$real" <<<"$opened" || continue
-    d=$(realpath -e -- "$d" 2>/dev/null) || continue   # /proc/*/fd zeigt echte Pfade (~/.config kann ein Symlink sein)
+    d=$(realpath_e "$d" 2>/dev/null) || continue   # /proc/*/fd zeigt echte Pfade (~/.config kann ein Symlink sein)
     [ -n "$(find /proc/[0-9]*/fd -maxdepth 1 -lname "$d/*" -print -quit 2>/dev/null)" ] || continue
     printf '%s\n' "${d##*/}"
   done
@@ -749,7 +789,7 @@ pick_lines() { # Hauptrepo + alle Worktrees als 'name<TAB>branch<TAB>pfad', Haup
 }
 
 cmd_pick() { # Auswahl per fzf; Erklaerung auf stderr, nur der Pfad auf stdout
-  command -v fzf >/dev/null || die "fzf nicht gefunden - installieren (Fedora: sudo dnf install fzf) oder Nummer/Kuerzel angeben"
+  command -v fzf >/dev/null || die "fzf nicht gefunden - installieren (Fedora: sudo dnf install fzf, macOS: brew install fzf) oder Nummer/Kuerzel angeben"
   show "git -C $(q "$REPO_ROOT") worktree list --porcelain | fzf" \
        "Hauptrepo und Worktrees zur Auswahl zeigen (Tippen filtert, Enter waehlt, Esc bricht ab)"
   local sel
@@ -765,8 +805,13 @@ need_ide() {
 }
 
 open_ide() { # $1 = pfad
-  run "setsid -f $IDE_CMD $(q "$1") >/dev/null 2>&1" \
-      "$(basename "$1") in der IDE oeffnen, vom Terminal abgekoppelt (neues oder selbes Fenster regelt PyCharm: 'Open project in')"
+  if command -v setsid >/dev/null 2>&1; then
+    run "setsid -f $IDE_CMD $(q "$1") >/dev/null 2>&1" \
+        "$(basename "$1") in der IDE oeffnen, vom Terminal abgekoppelt (neues oder selbes Fenster regelt PyCharm: 'Open project in')"
+  else   # macOS: kein setsid; nohup im Hintergrund uebersteht das Schliessen des Terminals
+    run "nohup $IDE_CMD $(q "$1") >/dev/null 2>&1 &" \
+        "$(basename "$1") in der IDE oeffnen, im Hintergrund (kein setsid: nohup; neues oder selbes Fenster regelt PyCharm: 'Open project in')"
+  fi
 }
 
 cmd_ide() {
@@ -936,7 +981,7 @@ cmd_run() {
     note "Port $port ($port_src)"
     if [ "$mr_flag" -eq 1 ]; then note "--mr ${mr_arg:+$mr_arg }wird ignoriert - Port: $port_src"; fi
     args+=("127.0.0.1:$port")
-    if ss -tln 2>/dev/null | grep -q ":$port "; then
+    if port_listening "$port"; then
       die "auf Port $port lauscht schon ein Server - erst beenden oder --port waehlen"
     fi
   fi
