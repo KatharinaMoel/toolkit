@@ -209,3 +209,74 @@ Each entry: the options, the choice, why, and what it costs.
 
 - Members are stored as `members.ndjson` (glab's paginated output unchanged), not
   `members.json` as the spec wrote; Part C reads that file.
+
+---
+
+# v3 — outages and the label priority order
+
+## Stop a run when GitLab stops answering
+
+- Options: (a) keep the per-request timeout only; (b) one deadline for the whole run in
+  Python; (c) stop after a number of timeouts in a row; (d) only a time limit in the
+  systemd unit.
+- Choice: (c) with three timeouts in a row, plus (d) with `TimeoutStartSec=30min` as a
+  second net. The runner reports a timeout as `CommandTimeout`, a kind of `CommandError`,
+  so other errors keep their per-MR handling; any answer, also an error, resets the count.
+  The count covers MR reads and upload downloads. The stopped run keeps its folder with
+  `complete: false` and `aborted: <reason>` in `meta.json`; `latest` does not move.
+- Why: with a server that accepts connections but never answers, each request waited
+  180 s and failed on its own, so a run over 75 MRs could take hours and block the
+  timer. Three in a row is unlikely on a merely slow server and costs at most nine
+  minutes on a silent one. A whole-run deadline would also cut a slow but working run.
+- Checked before relying on (d), with a throwaway user timer on systemd 262: a oneshot
+  stopped by `TimeoutStartSec` ends as `failed (Result: timeout)`, and `OnUnitActiveSec`
+  still plans the next run from the start of the stopped one. So the timer stays on
+  `OnUnitActiveSec`; `OnCalendar` + `Persistent` was the fallback, not needed.
+- A run stopped by SIGTERM (the systemd limit, or `kill`) is turned into an exception,
+  so the attempt is still recorded (next section).
+
+## Every attempt leaves a trace: last-run.json
+
+- Options: (a) only `meta.json` per snapshot (as before); (b) a growing log file;
+  (c) one small file with the newest attempt next to the snapshots.
+- Choice: (c) `<out_dir>/<repo>/last-run.json` with time, status
+  (`complete | partial | aborted | unreachable`), snapshot name, count, gaps, reason;
+  written on every attempt, also when no folder was made, replaced atomically.
+- Why: an attempt that left no usable snapshot was invisible - `latest` stayed old
+  without a word. The journal has the history; one file is enough to answer "can I
+  rely on the copy now?".
+- After a failed attempt, `fetch` renders the current snapshot's overview again, so it
+  says on top which attempt failed and which snapshot it shows instead. Only `.html` is
+  rewritten, which is never shared between snapshots.
+- `mr-export check` instead of more output in `schedule --status`: it reads only local
+  files, needs no systemd and has an exit code for scripts (0 = `latest` complete, last
+  attempt complete, read younger than `stale_after_hours`). `schedule --status` prints
+  the same lines at its end.
+
+## Order from GitLab's label priorities
+
+- Options: (a) team rules in the code; (b) a list in the config (`top_labels`);
+  (c) the priority GitLab keeps per label (`projects/:id/labels`, field `priority`).
+- Choice: (c). Each run saves `labels.json`; the overview sorts non-drafts first, then
+  by the smallest label priority (none last), then by the earliest milestone due date
+  (none last), then by the most recent update. `top_labels` stays as the fallback for
+  snapshots without `labels.json`, with its old default, so old configs keep working.
+- Why: the tool is public and must not carry one team's rules. When the team changes a
+  priority in GitLab, the next run follows. GitLab's own tie rule is not documented; the
+  order after the priority is ours and named in the README. Drafts first is kept from v2
+  and differs from GitLab.
+- A failing labels call is a note, not a gap: no MR data is missing, so it must not turn
+  `check` red or mark the run partial.
+
+## Filters in the URL hash, plain script
+
+- Options: a table library; state in `localStorage`; state in the URL hash.
+- Choice: about 80 lines of plain JavaScript in the page; sort, author, reviewer, text and
+  chips go into the hash (`#sort=updated&reviewer=bob&f=label%3AHot`). Rows carry their
+  server rank, update time, author and reviewers as `data-` attributes; the script only
+  reorders and hides rows. Values from a bookmark that the snapshot does not know are
+  ignored.
+- Why: a bookmark like "my reviews" works offline and per view; `localStorage` would hold
+  one state per browser and is not shareable. No library keeps the page a single offline
+  file.
+- Not done: groups by label prefix, label colors, drift between labels and Git state.

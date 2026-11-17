@@ -52,8 +52,9 @@ mr-export open                                               # opens latest/inde
 
 ```bash
 mr-export schedule --every 1h     # shows both unit files, asks, then enables the timer
-mr-export schedule --status       # next run, last run, the last 20 journal lines
+mr-export schedule --status       # next run, last run, the last 20 journal lines, mr-export check
 mr-export schedule --off          # stop and remove
+mr-export check                   # is the local copy complete and current? exit code 0 or 1
 ```
 
 - The timer runs `mr-export fetch --yes --quiet --repo <clone>` only while you are
@@ -63,6 +64,19 @@ mr-export schedule --off          # stop and remove
 - Two fetches never run at once for the same repository; the second one stops
   with a message.
 - When GitLab does not answer, no folder is made and `latest` stays where it was.
+  When it stops answering during a run (three requests in a row time out after
+  180 s each), the run stops: its folder stays unfinished, `latest` does not move,
+  the exit code is 1 and the message says "GitLab does not answer". As a second
+  net, systemd stops a timer run after 30 minutes (`TimeoutStartSec`); the timer
+  still plans the next run.
+- Every attempt writes `last-run.json` next to the snapshots: time, status
+  (`complete`, `partial`, `aborted` or `unreachable`), number of MRs, number of gaps
+  and the reason. After an attempt that left no usable snapshot, the overview of
+  `latest` is written again and says on top that the last attempt failed and which
+  snapshot it shows instead. `mr-export check` prints the latest snapshot, the last
+  complete one, the last attempt and the gaps; exit code 0 only when `latest` is
+  complete, the last attempt was complete and the read is younger than
+  `stale_after_hours`. Run it before relying on the copy.
   A run that finishes with gaps (say the API answered but SSH did not, or one image
   failed) is marked **partial**: it becomes `latest` when it is the newest run. The
   newest `keep` complete snapshots always stay; partial runs newer than them are kept
@@ -79,8 +93,9 @@ Snapshot layout:
 ```
 <out_dir>/<repo>/
   latest -> 2026-01-14_1100/              newest finished snapshot
+  last-run.json                           outcome of the newest attempt
   2026-01-14_1100/
-    meta.json  mrs.ndjson  members.ndjson  git.json  index.html
+    meta.json  mrs.ndjson  members.ndjson  labels.json  git.json  index.html
     mr/<iid>.json  mr/<iid>-discussions.ndjson  mr/<iid>-approvals.json
     mr/<iid>.diff  mr/<iid>.html
     uploads/<secret>/<file>
@@ -101,10 +116,20 @@ flatpak override --user --reset com.google.Chrome     # to take it back
 
 ## What the overview shows
 
-- **Order:** non-drafts before drafts; within each, MRs with a label from
-  `top_labels` (default `Approval ready`) first; then the most recently updated.
-- **Filters:** a chip per label with its count, plus *drafts*, *already merged* and
-  *open threads*; chips combine with each other and with the text box.
+- **Order** (like GitLab's *Sort by: Label priority*, with the priorities set in
+  GitLab on the project's Labels page): non-drafts before drafts; then the smallest
+  priority among an MR's labels (MRs without a prioritized label last); then the
+  earliest milestone due date (MRs without one last); then the most recently
+  updated. GitLab does not document how it breaks ties, so this order may differ
+  from GitLab's within one priority. Snapshots without `labels.json` (older ones, or
+  when the labels could not be read) put MRs with a label from `top_labels` first
+  instead. A switch sorts by *Updated* only.
+- **Filters:** author and reviewer selects; a chip per label with its count, in
+  priority order, plus *drafts*, *already merged* and *open threads*; the text box
+  also finds milestones. All filters combine, and the page keeps them in the URL
+  hash (`index.html#reviewer=alice&f=label%3AHot`), so a bookmark brings the same
+  view back.
+- **Milestone** with its due date, on the overview and on each MR page.
 - **In target**, read from Git: `yes` (the MR's commits are in the target branch),
   `yes (squashed)` (the target already holds the same changes), `in notfall/dev`
   (not in the target, but in its emergency branch), `no`, `unclear (conflict)`, or
@@ -112,7 +137,8 @@ flatpak override --user --reset com.google.Chrome     # to take it back
   usually it is not merged yet, but a change that was squashed and then edited again
   on the target looks the same.
 - **Age:** "read 40 min ago", computed in the browser when you open the page; red
-  after `stale_after_hours` — set it to about three times your timer interval. Gaps of a partial run are listed on top.
+  after `stale_after_hours` — set it to about three times your timer interval. Gaps of a partial run are listed on top,
+  with the number of incomplete MRs; a failed newer attempt is named on top as well.
 
 Each MR page has the description with its images, the threads (with file and
 line), the system activity, the `git` commands to look at the code without GitLab,
@@ -134,7 +160,7 @@ name>"]` table overrides them for one repository.
 | `state` | `opened` | which MRs to read (`opened`, `merged`, `closed`, `locked`, `all`) |
 | `images` | `true` | download files uploaded to texts |
 | `keep` | `15` | complete snapshots kept (and at most as many newer partial ones) |
-| `top_labels` | `["Approval ready"]` | labels sorted to the top |
+| `top_labels` | `["Approval ready"]` | labels sorted to the top, only for snapshots without label priorities |
 | `emergency_branches` | `{ dev = "notfall/dev", main = "notfall/main" }` | also checked for "in target" |
 | `stale_after_hours` | `3` | when the age turns red |
 
@@ -145,10 +171,11 @@ mr-export fetch [--state …] [--no-images] [--no-render] [--yes] [--quiet] [--r
 mr-export render [SNAPSHOT_DIR] [--repo DIR]
 mr-export open [--repo DIR]
 mr-export schedule --every 30min|1h|2h [--yes] [--repo DIR] | --off | --status
+mr-export check [--repo DIR]
 ```
 
 `fetch` prints the path of `index.html` on stdout; exit code 1 when anything could
-not be read. `render` also reads a flat folder made by hand with plain `glab api`
+not be read. `check` reads only local files and prints its findings on stdout. `render` also reads a flat folder made by hand with plain `glab api`
 calls (`mrs-list.ndjson`, `mr-<iid>.json`, `mr-<iid>-discussions.ndjson`).
 
 ## Limits
