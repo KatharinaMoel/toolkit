@@ -119,3 +119,15 @@ def test_cli_schedule_without_terminal_writes_nothing(home, tmp_path, monkeypatc
     assert cli.main(["schedule", "--every", "1h"]) == 1
     assert not (home / ".config" / "systemd").exists()
     assert "--yes" in capsys.readouterr().err
+
+
+def test_cli_status_ends_with_the_check_lines(home, tmp_path, monkeypatch, capsys):
+    from mr_export import cli
+    fake = FakeSystemd()
+    orig = cli.Runner.__init__
+    monkeypatch.setattr(cli.Runner, "__init__",
+                        lambda self, repo, console, run=None, timeout=180: orig(self, repo, console, run=fake))
+    monkeypatch.setattr(cli, "repo_root", lambda runner: tmp_path / "app")
+    assert cli.main(["schedule", "--status"]) == 0
+    out = capsys.readouterr().out
+    assert "NEXT LEFT LAST" in out and "Verdict:        NOT OK - no snapshot" in out
