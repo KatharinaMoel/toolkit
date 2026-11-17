@@ -14,7 +14,7 @@ def test_demo_snapshot_renders(tmp_path):
     assert out.returncode == 0, out.stderr
     html = (tmp_path / "index.html").read_text()
     assert len(re.findall(r'<tr data-iid="\d+"', html)) == 6
-    assert "yes (squashed)" in html and "Approval ready" in html
+    assert "yes (squashed)" in html and "Ready" in html
     pages = list((tmp_path / "mr").glob("*.html"))
     assert len(pages) == 6
     assert any("<h2>Changes" in p.read_text() for p in pages)

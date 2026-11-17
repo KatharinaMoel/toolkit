@@ -37,14 +37,23 @@ def person(name):
     return {"username": name}
 
 
-def mr(iid, title, author, labels, draft=False, pipeline="success", hours_ago=2, desc="", reviewers=()):
+SPRING = {"title": "Before spring sowing", "due_date": "2026-03-01"}
+SUMMER = {"title": "Summer release", "due_date": "2026-06-15"}
+
+# Label priorities as GitLab keeps them per project (lower comes first; Docs has none).
+LABELS = [{"name": "Hot", "priority": 1}, {"name": "Ready", "priority": 2},
+          {"name": "Release", "priority": 3}, {"name": "Docs", "priority": None}]
+
+
+def mr(iid, title, author, labels, draft=False, pipeline="success", hours_ago=2, desc="", reviewers=(),
+       milestone=None):
     updated = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
     return {"iid": iid, "title": ("Draft: " if draft else "") + title, "draft": draft, "state": "opened",
             "source_branch": f"feat/{iid}-{title.split()[0].lower()}", "target_branch": "dev",
             "author": person(author), "assignees": [], "reviewers": [person(r) for r in reviewers],
             "labels": labels, "head_pipeline": {"status": pipeline}, "web_url": f"{WEB}/-/merge_requests/{iid}",
             "created_at": updated, "updated_at": updated, "description": desc, "sha": f"{iid:040x}",
-            "detailed_merge_status": "draft_status" if draft else "not_approved"}
+            "detailed_merge_status": "draft_status" if draft else "not_approved", "milestone": milestone}
 
 
 def diff(path, added, removed=0):
@@ -56,21 +65,23 @@ def diff(path, added, removed=0):
 
 MRS = [
     (mr(106, "Seed calendar shows frost dates per region", "dan", ["Release"], reviewers=["alice"],
+        milestone=SPRING,
         desc="Adds frost dates from the regional table.\n\n## How to test\n1. Open **Calendar**\n2. Pick a region"),
      {"target": "no", "emergency": "yes", "emergency_branch": "notfall/dev"}, diff("calendar/frost.py", 14, 3)),
-    (mr(101, "Watering reminders respect rain forecast", "alice", ["Approval ready", "Urgent"],
-        reviewers=["bob"], hours_ago=1,
+    (mr(101, "Watering reminders respect rain forecast", "alice", ["Ready", "Hot"],
+        reviewers=["bob"], hours_ago=1, milestone=SPRING,
         desc="Skips a reminder when more than 5 mm of rain are forecast.\n\n```python\nif rain_mm > 5:\n    skip()\n```"),
      {"target": "no", "emergency": None, "emergency_branch": None},
      diff("reminders/watering.py", 6, 2) + diff("reminders/tests/test_watering.py", 9)),
-    (mr(104, "Plant list export as CSV", "bob", ["Approval ready"], hours_ago=5, reviewers=["carol"]),
+    (mr(104, "Plant list export as CSV", "bob", ["Ready"], hours_ago=5, reviewers=["carol"],
+        milestone=SUMMER),
      {"target": "content", "emergency": None, "emergency_branch": None}, diff("export/csv.py", 21)),
     (mr(102, "Bed planner: drag plants between beds", "carol", ["Docs"], pipeline="running",
         reviewers=["alice", "dan"], hours_ago=3,
         desc=f"Plants can now be moved between beds.\n\n![Bed planner](/uploads/{UPLOAD}/bed-planner.png)"),
      {"target": "no", "emergency": None, "emergency_branch": None},
      diff("planner/static/drag.js", 8, 4) + diff("docs/planner.md", 5)),
-    (mr(103, "Harvest log keeps photos", "dan", ["Urgent"], draft=True, pipeline="failed", hours_ago=7),
+    (mr(103, "Harvest log keeps photos", "dan", ["Hot"], draft=True, pipeline="failed", hours_ago=7),
      {"target": "no", "emergency": None, "emergency_branch": None}, diff("harvest/photos.py", 4)),
     (mr(105, "Rewrite the soil database import", "alice", [], draft=True, hours_ago=26),
      {"target": "unknown", "emergency": None, "emergency_branch": None}, diff("soil/import.py", 1800, 900)),
@@ -108,6 +119,7 @@ def write_demo(out: Path) -> Path:
         (out / "mr" / f"{iid}.diff").write_text(text)
         states[str(iid)] = state
     (out / "git.json").write_text(json.dumps(states))
+    (out / "labels.json").write_text(json.dumps(LABELS))
     (out / "uploads" / UPLOAD).mkdir(parents=True, exist_ok=True)
     (out / "uploads" / UPLOAD / "bed-planner.png").write_bytes(png(480, 220))
     fetched = (datetime.now() - timedelta(minutes=40)).isoformat(timespec="seconds")
