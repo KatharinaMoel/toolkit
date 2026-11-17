@@ -41,7 +41,12 @@ die() {
 # Any failed exit - die, or a command stopped by set -e - waits for a key,
 # so a hotkey window does not close before the message can be read.
 RUN_OWNED=""                # set only in the process that runs the list
-trap 'rc=$?; [ -z "$RUN_OWNED" ] || rm -rf "$RUN_OWNED"; [ "$rc" -eq 0 ] || pause' EXIT
+remove_run() { # wait for the background list build first: it still writes into the run dir
+  [ -n "$RUN_OWNED" ] || return 0
+  wait                      # without arguments: always 0, so set -e cannot end the trap
+  rm -rf "$RUN_OWNED"
+}
+trap 'rc=$?; remove_run; [ "$rc" -eq 0 ] || pause' EXIT
 
 need() { # need <command> <fedora-package>
   command -v "$1" >/dev/null 2>&1 || die "'$1' is missing - install it with: sudo dnf install $2"
@@ -872,7 +877,7 @@ ask() {
   IFS= read -rsn1 key || return 10
   printf '\n' >&2
   case "$key" in
-    n) [ -z "$RUN_OWNED" ] || rm -rf "$RUN_OWNED"    # exec skips the EXIT trap
+    n) remove_run                                    # exec skips the EXIT trap
        cd "$dir" && exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude --resume "$id" ;;
     $'\e') return 10 ;;
     *) return 0 ;;

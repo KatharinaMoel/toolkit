@@ -20,7 +20,7 @@ mkdir -p "$HOME/.config/recall"
 SYS="$TMP/sysbin"
 mkdir -p "$SYS"
 for t in bash env cat sed awk sort cut stat realpath basename dirname mkdir \
-         printf grep head tail tr jq touch ln wc mv mktemp date setsid git sleep cp paste find seq; do
+         printf grep head tail tr jq touch ln wc mv mktemp date setsid git sleep cp paste find seq chmod; do
   p=$(command -v "$t") || { echo "missing tool for tests: $t"; exit 1; }
   ln -s "$p" "$SYS/$t"
 done
@@ -988,6 +988,45 @@ expect_has "TEXT_SHOW_MAX=4x: enter on '… more' still works" "+wait+pos(6)" \
   "$(RECALL_RUN="$RUN" "$RECALL" --key enter "$more" 2>&1)"
 sed -i '$d' "$HOME/.config/recall/recall.conf"
 expect_has "double-click on '… more': the list comes back still capped" "… 2 more" "$(display "$FZF_IN.2")"
+
+# ---------- leaving waits for the background list build ----------
+# A slow stat keeps the background build of the other view busy. Leaving must
+# wait for it: otherwise it still writes into the run directory while that is
+# removed, rm -rf can fail, and set -e turns the exit code into 1.
+slow_stat() { # slow_stat on|off
+  if [ "$1" = on ]; then
+    mv "$SYS/stat" "$TMP/stat.real"
+    # shellcheck disable=SC2016  # $@ and $rc belong to the stub, not to this shell
+    printf '#!%s\nprintf "start\\n" >> "%s/stat.log"\n%s 0.5\n"%s/stat.real" "$@"; rc=$?\nprintf "end\\n" >> "%s/stat.log"\nexit $rc\n' \
+      "$(command -v bash)" "$TMP" "$(command -v sleep)" "$TMP" "$TMP" > "$SYS/stat"
+    chmod +x "$SYS/stat"; : > "$TMP/stat.log"
+  else
+    rm -f "$SYS/stat"; mv "$TMP/stat.real" "$SYS/stat"
+  fi
+}
+# Own config with one text, so every list build calls stat.
+mv "$HOME/.config/recall/recall.conf" "$TMP/conf.slow.bak"
+mkdir -p "$TMP/slowroot/repo/.reviews"
+printf 'x\n' > "$TMP/slowroot/repo/.reviews/slow.txt"
+printf 'TEXT_ROOTS=("%s")\nCOMMANDS_FILE=""\nPROCEDURE_GLOBS=()\n' "$TMP/slowroot" > "$HOME/.config/recall/recall.conf"
+quiet_after() { # quiet_after <name>: no stat starts or ends once recall has returned
+  local at_return; at_return=$(cat "$TMP/stat.log")
+  sleep 1.2
+  expect_eq "$1: nothing runs on after leaving" "$at_return" "$(cat "$TMP/stat.log")"
+}
+slow_stat on
+reset ESC
+"$RECALL" </dev/null >/dev/null 2>&1; rc=$?
+quiet_after "leave (esc)"
+expect_eq "leave (esc): exit 0" 0 "$rc"
+: > "$TMP/stat.log"
+reset "ALT kurze frage"
+mkdir -p "$TMP/tmpdir2"
+printf 'n' | TMPDIR="$TMP/tmpdir2" "$RECALL" >/dev/null 2>&1
+quiet_after "ask, n"
+expect_eq "ask, n: no run directory behind" "" "$(find "$TMP/tmpdir2" -mindepth 1 -maxdepth 1)"
+slow_stat off
+mv "$TMP/conf.slow.bak" "$HOME/.config/recall/recall.conf"
 
 # ---------- result ----------
 if [ "$fails" -eq 0 ]; then printf '\nall tests passed\n'; else printf '\n%s test(s) failed\n' "$fails"; fi
