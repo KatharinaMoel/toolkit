@@ -179,3 +179,63 @@ def test_quiet_console_prints_only_notes():
     c.line("header")
     c.note("problem")
     assert buf.getvalue().strip() == "! problem"
+
+
+def mrs_of(gitlab, n):
+    from conftest import mr
+    gitlab.mrs[:] = [mr(i) for i in range(1, n + 1)]
+
+
+def test_three_timeouts_in_a_row_stop_the_run(gitlab, tmp_path):
+    from mr_export.fetch import FetchAborted
+    mrs_of(gitlab, 6)
+    gitlab.hang = lambda ep: ep.startswith("projects/:id/merge_requests/") and not ep.startswith(
+        "projects/:id/merge_requests/1")
+    with pytest.raises(FetchAborted, match="GitLab does not answer"):
+        run_fetch(gitlab, tmp_path)
+    snap = tmp_path / "2026-10-23_1005"
+    meta = json.loads((snap / "meta.json").read_text())
+    assert meta["complete"] is False and "does not answer" in meta["aborted"]
+    assert meta["failed_iids"] == [2, 3, 4]
+    asked = [c[-1] for c in gitlab.calls if c[0] == "glab"]
+    assert not any("merge_requests/5" in ep for ep in asked)   # stopped after the third
+    assert not any("members" in ep for ep in asked)
+
+
+def test_timeouts_with_answers_in_between_do_not_stop(gitlab, tmp_path):
+    mrs_of(gitlab, 6)
+    gitlab.hang = lambda ep: ep in ("projects/:id/merge_requests/1", "projects/:id/merge_requests/2",
+                                    "projects/:id/merge_requests/4", "projects/:id/merge_requests/5")
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert len(result.failures) == 4
+    assert json.loads((result.path / "meta.json").read_text())["complete"] is True
+
+
+def test_other_errors_reset_the_timeout_count(gitlab, tmp_path):
+    mrs_of(gitlab, 5)
+    gitlab.hang = lambda ep: ep in ("projects/:id/merge_requests/1", "projects/:id/merge_requests/2",
+                                    "projects/:id/merge_requests/4", "projects/:id/merge_requests/5")
+    gitlab.fail.add("projects/:id/merge_requests/3")
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert len(result.failures) == 5
+
+
+def test_hanging_upload_downloads_stop_the_run(gitlab, tmp_path):
+    from mr_export.fetch import FetchAborted
+    gitlab.mrs[:] = [gitlab.mrs[1]]
+    gitlab.mrs[0]["description"] = " ".join(f"![{i}](/uploads/{UPLOAD_ID}/{i}.png)" for i in range(5))
+    gitlab.hang = lambda ep: ep.startswith("projects/:id/uploads/")
+    with pytest.raises(FetchAborted):
+        run_fetch(gitlab, tmp_path)
+    assert sum(1 for c in gitlab.calls if "uploads/" in c[-1]) == 3
+
+
+def test_runner_reports_a_timeout_as_its_own_error(tmp_path):
+    import subprocess
+    from mr_export.runner import CommandError, CommandTimeout
+
+    def silent(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+    with pytest.raises(CommandTimeout, match="no answer within"):
+        Runner(tmp_path, Console(StringIO()), run=silent).glab_get("projects/:id", None)
+    assert issubclass(CommandTimeout, CommandError)

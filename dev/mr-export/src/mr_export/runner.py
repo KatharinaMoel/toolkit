@@ -24,6 +24,10 @@ class CommandError(Exception):
     """An external command failed; the message carries its stderr."""
 
 
+class CommandTimeout(CommandError):
+    """An external command gave no answer within the runner's timeout."""
+
+
 class Console:
     def __init__(self, err: TextIO | None = None, quiet: bool = False):
         self.err = err or sys.stderr
@@ -127,7 +131,7 @@ class Runner:
         except FileNotFoundError as e:
             raise CommandError(f"{cmd[0]} is not installed") from e
         except subprocess.TimeoutExpired as e:
-            raise CommandError(f"no answer within {self.timeout} s: {shlex.join(cmd)}") from e
+            raise CommandTimeout(f"no answer within {self.timeout} s: {shlex.join(cmd)}") from e
 
     def _exec(self, cmd: list[str]) -> bytes:
         res = self._call(cmd)

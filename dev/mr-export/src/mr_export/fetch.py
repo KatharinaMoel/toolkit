@@ -8,12 +8,40 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import gitstate, share
-from .runner import CommandError, Console, Runner
+from .runner import CommandError, CommandTimeout, Console, Runner
 from .snapshot import MergeRequest, mr_number, parse_ndjson, upload_refs
 
 
 class FetchLocked(Exception):
     """Another fetch for the same repository is running."""
+
+
+class FetchAborted(CommandError):
+    """GitLab stopped answering during a run; the snapshot stays unfinished."""
+
+
+# A GitLab that accepts connections but never answers would otherwise cost the full
+# runner timeout per request, for every MR and every upload.
+TIMEOUTS_IN_A_ROW = 3
+
+
+class TimeoutGuard:
+    """Counts requests that timed out one after the other; any answer, even an error,
+    resets the count."""
+
+    def __init__(self, limit: int = TIMEOUTS_IN_A_ROW):
+        self.limit = limit
+        self.in_a_row = 0
+
+    def answered(self) -> None:
+        self.in_a_row = 0
+
+    def failed(self, error: Exception) -> str | None:
+        """Returns the reason to stop the run, or None to go on."""
+        self.in_a_row = self.in_a_row + 1 if isinstance(error, CommandTimeout) else 0
+        if self.in_a_row < self.limit:
+            return None
+        return f"GitLab does not answer: {self.in_a_row} requests in a row timed out"
 
 
 @dataclass
@@ -111,8 +139,9 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
     console.result(f"{len(items)} merge requests -> {snap / 'mrs.ndjson'}")
     result = FetchResult(path=snap, count=len(items))
     failed_iids: list[int] = []
+    guard = TimeoutGuard()
 
-    def write_meta(complete: bool) -> None:
+    def write_meta(complete: bool, aborted: str | None = None) -> None:
         """Written first with complete=false, so an interrupted read never looks finished."""
         meta = {
             "project": project["path_with_namespace"],
@@ -125,9 +154,18 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
             "failures": result.failures,
             "failed_iids": failed_iids,
         }
+        if aborted:
+            meta["aborted"] = aborted
         (snap / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
     write_meta(False)
+
+    def give_up_if_unanswered(error: Exception) -> None:
+        reason = guard.failed(error)
+        if reason:
+            write_meta(False, aborted=reason)
+            console.note(f"{reason} - stopping; this snapshot stays unfinished, 'latest' does not move")
+            raise FetchAborted(reason)
 
     mrs: list[MergeRequest] = []
     for i, item in enumerate(items):
@@ -160,7 +198,9 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
             failed_iids.append(iid)
             result.failures.append(f"!{iid}: {e}")
             console.note(f"!{iid} failed: {e}")
+            give_up_if_unanswered(e)
             continue
+        guard.answered()
         notes = sum(len(d.get("notes", [])) for d in discussions)
         result.notes += notes
         mrs.append(MergeRequest(data=data, discussions=discussions, approvals=approvals))
@@ -206,7 +246,9 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
             except (CommandError, OSError) as e:
                 result.failures.append(f"upload {secret}/{name}: {e}")
                 console.note(f"upload {name} failed: {e}")
+                give_up_if_unanswered(e)
                 continue
+            guard.answered()
             result.images += 1
             console.result(f"{secret[:8]}…/{name} ({len(data) // 1024} KB)")
         if not refs:

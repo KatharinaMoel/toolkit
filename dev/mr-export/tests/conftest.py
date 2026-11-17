@@ -66,6 +66,7 @@ class FakeGitLab:
         self.uploads = uploads or {}
         self.repo = repo
         self.fail: set[str] = set()
+        self.hang = lambda endpoint: False   # True: the call times out like a silent server
         self.members = [{"username": "alice", "access_level": 40}, {"username": "bob", "access_level": 30}]
 
     def answer(self, cmd):
@@ -99,6 +100,8 @@ class FakeGitLab:
 
     def __call__(self, cmd, cwd=None, capture_output=True, timeout=None):
         self.calls.append(list(cmd))
+        if cmd[0] == "glab" and self.hang(cmd[-1]):
+            raise subprocess.TimeoutExpired(cmd, timeout)
         out = self.answer(cmd)
         if out is None:
             return subprocess.CompletedProcess(cmd, 1, b"", b"404 Not Found")
