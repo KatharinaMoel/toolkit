@@ -2,15 +2,16 @@
 it; `mr-export render` renders an existing snapshot again."""
 import argparse
 import json
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from . import render as render_mod
-from . import browser, retention, schedule
+from . import browser, lastrun, retention, schedule
 from . import snapshot
 from .config import STATES, ConfigError, default_path, load_config
-from .fetch import FetchLocked, fetch
+from .fetch import FetchLocked, Stopped, fetch
 from .runner import CommandError, Console, Runner
 
 USAGE = """mr-export - GitLab merge requests as a local snapshot with an offline overview
@@ -26,6 +27,9 @@ USAGE = """mr-export - GitLab merge requests as a local snapshot with an offline
         Flatpak browser that cannot see the folder.
   mr-export render [SNAPSHOT_DIR] [--repo DIR]
         Write the HTML pages again; without a folder: the newest snapshot of the repo.
+  mr-export check [--repo DIR]
+        Is the local copy complete and current? Latest snapshot, last attempt, gaps;
+        exit code 0 when it can be relied on, 1 when not. Reads only local files.
 
 Every external command is shown with a one-line explanation before it runs.
 Config (optional, TOML): ~/.config/mr-export/mr-export.conf - keys out_dir, state, images.
@@ -55,6 +59,8 @@ def _parser() -> argparse.ArgumentParser:
     r = sub.add_parser("render", add_help=False)
     r.add_argument("snapshot", nargs="?", type=Path)
     r.add_argument("--repo", type=Path)
+    c = sub.add_parser("check", add_help=False)
+    c.add_argument("--repo", type=Path)
     return p
 
 
@@ -106,7 +112,17 @@ def cmd_fetch(args, console: Console) -> int:
         console.line("\nStopped. Nothing was read and nothing was written.")
         return 1
 
-    result = fetch(runner, console, root, state, images, datetime.now(), cfg.emergency_branches)
+    def stop(signum, frame):
+        raise Stopped("stopped by SIGTERM (for a timer run: its time limit)")
+    previous = signal.signal(signal.SIGTERM, stop)
+    try:
+        result = fetch(runner, console, root, state, images, datetime.now(), cfg.emergency_branches)
+    except (CommandError, ValueError, Stopped):
+        if not args.no_render:
+            show_failed_attempt(root, cfg, console)
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     console.step(f"Write the overview pages into {result.path}")
     index = (render_mod.render(snapshot.load(result.path), cfg.top_labels, cfg.stale_after_hours)
              if not args.no_render else None)
@@ -135,6 +151,19 @@ def cmd_fetch(args, console: Console) -> int:
         console.note(f"{len(result.failures)} item(s) missing - the overview says so at the top.")
     print(index or result.path)   # stdout: only the path, for scripts
     return 1 if result.failures else 0
+
+
+def show_failed_attempt(root: Path, cfg, console: Console) -> None:
+    """Writes the overview of the current snapshot again, so it says on top that the
+    newest attempt failed and which snapshot is shown instead."""
+    current = retention.current(root)
+    if current is None:
+        return
+    try:
+        render_mod.render(snapshot.load(current), cfg.top_labels, cfg.stale_after_hours)
+        console.note(f"The overview of {current.name} now says that this attempt failed.")
+    except (OSError, ValueError) as e:
+        console.note(f"Could not update the overview of {current.name}: {e}")
 
 
 def finished(p: Path) -> bool:
@@ -187,6 +216,9 @@ def cmd_schedule(args, console: Console) -> int:
     runner.repo = top
     if args.status:
         print(schedule.status(runner, console, top))
+        cfg, _ = load_config(repo=top.name)
+        lines, _ = lastrun.check(cfg.out_dir / top.name, cfg.stale_after_hours, datetime.now())
+        print("\n" + "\n".join(lines))
         return 0
     name = schedule.unit_name(top)
     if args.off:
@@ -214,6 +246,15 @@ def cmd_schedule(args, console: Console) -> int:
     schedule.install(runner, console, LAUNCHER, top, every)
     console.line(f"\n  Check later with: mr-export schedule --status")
     return 0
+
+
+def cmd_check(args, console: Console) -> int:
+    runner = Runner((args.repo or Path.cwd()).resolve(), console)
+    top = repo_root(runner)
+    cfg, _ = load_config(repo=top.name)
+    lines, ok = lastrun.check(cfg.out_dir / top.name, cfg.stale_after_hours, datetime.now())
+    print("\n".join(lines))
+    return 0 if ok else 1
 
 
 def cmd_open(args, console: Console) -> int:
@@ -249,11 +290,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if args.help else 2
     console = Console(quiet=bool(getattr(args, "quiet", False)))
     try:
-        commands = {"fetch": cmd_fetch, "render": cmd_render, "open": cmd_open, "schedule": cmd_schedule}
+        commands = {"fetch": cmd_fetch, "render": cmd_render, "open": cmd_open, "schedule": cmd_schedule,
+                    "check": cmd_check}
         return commands[args.cmd](args, console)
     except ConfigError as e:
         print(f"Error in config: {e}", file=sys.stderr)
         return 2
-    except (CommandError, FileNotFoundError, FetchLocked) as e:
+    except (CommandError, FileNotFoundError, FetchLocked, Stopped) as e:
         print(f"\nError: {e}", file=sys.stderr)
         return 1

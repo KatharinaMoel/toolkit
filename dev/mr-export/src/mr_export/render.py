@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import diffview
+from . import diffview, lastrun
 from .snapshot import UPLOAD_RE, MergeRequest, Snapshot, file_name, keep_locally, safe_upload
 
 CSS = """
@@ -291,7 +291,22 @@ def chips_html(mrs: list[MergeRequest]) -> str:
     return f'<div class="chips" role="group" aria-label="Filter">{"".join(buttons)}</div>'
 
 
-def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_after_hours: int = 3) -> str:
+def attempt_banner(snap: Snapshot, last: dict | None) -> str:
+    """A warning on top when the newest fetch attempt is not the snapshot shown here
+    and did not finish: the page would otherwise look current while it is not."""
+    if not last or last.get("snapshot") == snap.path.name or last.get("status") in ("complete", "partial"):
+        return ""
+    what = {"aborted": "stopped before it finished", "unreachable": "could not reach GitLab"}[last["status"]]
+    reason = f": {esc(last['reason'])}" if last.get("reason") else ""
+    shown = when(snap.meta.get("fetched_at")) or snap.path.name
+    return (f'<div class="panel attempt"><strong class="bad">The last attempt ({esc(when(last.get("time")))}) '
+            f"{what}{reason}.</strong>"
+            f'<div class="small">Shown here is the snapshot read {esc(shown)}. '
+            "Check with: mr-export check</div></div>")
+
+
+def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_after_hours: int = 3,
+                 last_run: dict | None = None) -> str:
     top_labels = ["Approval ready"] if top_labels is None else top_labels
     md = Markdown(snap, "")
     rows = []
@@ -328,7 +343,9 @@ def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_afte
             + (f" · {link(snap, snap.web_url + '/-/merge_requests', 'open in GitLab')}" if snap.web_url else "")
             + " · a snapshot: changes made on GitLab after the read are not in here</p>")
     failures = meta.get("failures") or []
-    warn = (f'<div class="panel"><strong class="bad">Some data could not be read:</strong>'
+    failed = len(meta.get("failed_iids") or [])
+    missing = f" ({failed} of {meta.get('count', len(snap.mrs))} merge requests incomplete)" if failed else ""
+    warn = (f'<div class="panel"><strong class="bad">Some data could not be read{missing}:</strong>'
             f'<div class="small">{"<br>".join(esc(f) for f in failures)}</div></div>') if failures else ""
     if snap.complete is False:
         warn = ('<div class="panel"><strong class="bad">This read did not finish.</strong>'
@@ -340,6 +357,7 @@ def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_afte
              "<th>Open threads</th>"
              f'<th>Updated</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
     search = '<input type="search" id="filter" placeholder="Filter: title, branch, person, label …" aria-label="Filter">'
+    warn = attempt_banner(snap, last_run) + warn
     return page(f"MRs {meta.get('project', '')}", head + warn + search + chips_html(snap.mrs) + table, FILTER_JS)
 
 
@@ -428,5 +446,6 @@ def render(snap: Snapshot, top_labels: list[str] | None = None, stale_after_hour
     for mr in snap.mrs:
         (snap.path / "mr" / f"{mr.iid}.html").write_text(render_mr(snap, mr), encoding="utf-8")
     index = snap.path / "index.html"
-    index.write_text(render_index(snap, top_labels, stale_after_hours), encoding="utf-8")
+    last_run = lastrun.read(snap.path.parent)   # <out_dir>/<repo>/last-run.json, when there is one
+    index.write_text(render_index(snap, top_labels, stale_after_hours, last_run), encoding="utf-8")
     return index

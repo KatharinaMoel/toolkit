@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import gitstate, share
+from . import gitstate, lastrun, share
 from .runner import CommandError, CommandTimeout, Console, Runner
 from .snapshot import MergeRequest, mr_number, parse_ndjson, upload_refs
 
@@ -18,6 +18,11 @@ class FetchLocked(Exception):
 
 class FetchAborted(CommandError):
     """GitLab stopped answering during a run; the snapshot stays unfinished."""
+
+
+class Stopped(Exception):
+    """The run was told to stop (SIGTERM, e.g. by the timer's time limit). Not a
+    CommandError, so no per-item handler swallows it."""
 
 
 # A GitLab that accepts connections but never answers would otherwise cost the full
@@ -118,11 +123,24 @@ def fetch(runner: Runner, console: Console, root: Path, state: str, images: bool
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise FetchLocked(f"another mr-export fetch is running for {root}") from None
-        return _fetch(runner, console, root, state, images, now, emergency or {})
+        progress: dict = {}
+        try:
+            result = _fetch(runner, console, root, state, images, now, emergency or {}, progress)
+        except BaseException as e:
+            done: FetchResult | None = progress.get("result")
+            unreachable = done is None and isinstance(e, (CommandError, ValueError))
+            lastrun.write(root, now, "unreachable" if unreachable else "aborted",
+                          done.path if done else None, done.count if done else 0,
+                          len(done.failures) if done else 0,
+                          str(e) or ("interrupted" if isinstance(e, KeyboardInterrupt) else type(e).__name__))
+            raise
+        lastrun.write(root, now, "partial" if result.failures else "complete", result.path, result.count,
+                      len(result.failures))
+        return result
 
 
 def _fetch(runner: Runner, console: Console, root: Path, state: str, images: bool,
-           now: datetime, emergency: dict[str, str]) -> FetchResult:
+           now: datetime, emergency: dict[str, str], progress: dict) -> FetchResult:
     project = json.loads(runner.glab_get(
         "projects/:id", "Ask GitLab which project this repository belongs to (also tests that the API answers)"))
     console.result(f"{project['path_with_namespace']} ({project['web_url']})")
@@ -138,6 +156,7 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
     (snap / "mrs.ndjson").write_bytes(listing)
     console.result(f"{len(items)} merge requests -> {snap / 'mrs.ndjson'}")
     result = FetchResult(path=snap, count=len(items))
+    progress["result"] = result
     failed_iids: list[int] = []
     guard = TimeoutGuard()
 
