@@ -43,6 +43,7 @@ def test_unit_files_content(tmp_path):
     name = schedule.unit_name(repo)
     service, timer = files[f"{name}.service"], files[f"{name}.timer"]
     assert "Type=oneshot" in service
+    assert "TimeoutStartSec=30min" in service   # a run hanging on a silent server is stopped
     assert 'ExecStart="/opt/tools/mr-export" fetch --yes --quiet --repo "/work/Garden Planner"' in service
     assert "OnUnitActiveSec=1h" in timer and "OnBootSec=5min" in timer
     assert "WantedBy=timers.target" in timer and f"Unit={name}.service" in timer
