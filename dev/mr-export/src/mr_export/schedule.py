@@ -9,6 +9,10 @@ from pathlib import Path
 from .runner import CommandError, Console, Runner
 
 EVERY = re.compile(r"([1-9]\d*)(min|h)")
+# A oneshot service has no start timeout by default; a run hanging on a silent GitLab
+# would block the timer. systemd stops a run after this long; the timer still plans
+# the next one (OnUnitActiveSec counts from the start of the stopped run).
+RUN_LIMIT = "30min"
 
 
 def unit_dir() -> Path:
@@ -44,6 +48,7 @@ def unit_files(launcher: Path, repo: Path, every: str) -> dict[str, str]:
         f"Description=mr-export: read the merge requests of {repo.name}\n\n"
         "[Service]\n"
         "Type=oneshot\n"
+        f"TimeoutStartSec={RUN_LIMIT}\n"
         f"ExecStart={_quote(launcher)} fetch --yes --quiet --repo {_quote(repo)}\n")
     timer = (
         "[Unit]\n"

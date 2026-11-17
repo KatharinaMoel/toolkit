@@ -269,3 +269,90 @@ def test_conflict_state_is_shown_as_unclear(tmp_path):
     render(with_meta(tmp_path, [mr(1)], git=git))
     html = (tmp_path / "index.html").read_text()
     assert "unclear" in html and 'data-intarget="0"' in html
+
+
+def prioritized(tmp_path, items, labels):
+    (tmp_path / "labels.json").write_text(json.dumps(labels))
+    return legacy(tmp_path, items, items)
+
+
+def order(html):
+    import re
+    return [int(x) for x in re.findall(r'<tr data-iid="(\d+)"', html)]
+
+
+LABELS = [{"name": "Hot", "priority": 1}, {"name": "Warm", "priority": 5}, {"name": "Plain", "priority": None}]
+
+
+def test_sort_by_label_priority_then_milestone_then_updated(tmp_path):
+    soon = {"title": "Sprint 7", "due_date": "2026-11-19"}
+    later = {"title": "Sprint 8", "due_date": "2026-11-30"}
+    items = [
+        mr(1, labels=["Plain"], updated_at="2026-10-09T00:00:00Z"),             # no prioritized label
+        mr(2, labels=["Warm"], milestone=later),
+        mr(3, labels=["Warm"], milestone=soon),
+        mr(4, labels=["Warm"], updated_at="2026-10-05T00:00:00Z"),               # no milestone
+        mr(5, labels=["Warm"], updated_at="2026-10-06T00:00:00Z"),
+        mr(6, labels=["Hot", "Plain"]),
+        mr(7, labels=["Hot"], draft=True),                                       # drafts last
+        mr(8, labels=["Plain", "Warm"], milestone=soon, updated_at="2026-10-08T00:00:00Z"),
+    ]
+    render(prioritized(tmp_path, items, LABELS))
+    html = (tmp_path / "index.html").read_text()
+    assert order(html) == [6, 8, 3, 2, 5, 4, 1, 7]
+    assert 'data-prio="5" data-due="2026-11-19"' in html
+    assert '<option value="priority">Label priority</option>' in html
+
+
+def test_without_labels_json_top_labels_decide(tmp_path):
+    items = [mr(1, labels=["Plain"]), mr(2, labels=["Hot"], updated_at="2026-09-01T00:00:00Z")]
+    render(legacy(tmp_path, items, items), top_labels=["Hot"])
+    html = (tmp_path / "index.html").read_text()
+    assert order(html) == [2, 1]
+    assert "No label priorities in this snapshot" in html and ">Top labels</option>" in html
+
+
+def test_rows_carry_filter_and_sort_data(tmp_path):
+    items = [mr(1, author={"username": "dan"}, reviewers=[{"username": "erin"}, {"username": "bob"}],
+                labels=["Hot"], updated_at="2026-10-02T09:30:00Z")]
+    render(prioritized(tmp_path, items, LABELS))
+    html = (tmp_path / "index.html").read_text()
+    assert ('data-author="dan" data-reviewers="erin|bob" data-prio="1" data-due="" '
+            'data-updated="1790933400"') in html
+    assert 'data-rank="0"' in html
+    assert '<select id="author"><option value="">anyone</option><option value="dan">dan</option>' in html
+    assert '<option value="bob">bob</option><option value="erin">erin</option>' in html
+
+
+def test_label_chips_follow_the_priority(tmp_path):
+    items = [mr(1, labels=["Plain", "Warm"]), mr(2, labels=["Plain", "Hot"]), mr(3, labels=["Plain"])]
+    render(prioritized(tmp_path, items, LABELS))
+    html = (tmp_path / "index.html").read_text()
+    assert html.index('data-filter="label:Hot"') < html.index('data-filter="label:Warm"') \
+        < html.index('data-filter="label:Plain"')
+
+
+def test_milestone_on_index_and_mr_page(tmp_path):
+    items = [mr(1, milestone={"title": "Sprint 7", "due_date": "2026-11-19"}), mr(2)]
+    render(legacy(tmp_path, items, items))
+    index = (tmp_path / "index.html").read_text()
+    assert "<th>Milestone</th>" in index and 'Sprint 7<div class="small muted">2026-11-19</div>' in index
+    page = (tmp_path / "mr" / "1.html").read_text()
+    assert '<dt>Milestone</dt><dd>Sprint 7 <span class="muted small">(due 2026-11-19)</span></dd>' in page
+    assert "<dt>Milestone</dt><dd>—</dd>" in (tmp_path / "mr" / "2.html").read_text()
+
+
+def test_filter_state_lives_in_the_url_hash(tmp_path):
+    render(legacy(tmp_path, [mr(1)], [mr(1)]))
+    html = (tmp_path / "index.html").read_text()
+    for needle in ("URLSearchParams(location.hash.slice(1))", "history.replaceState", "'hashchange'",
+                   "dataset.reviewers", "dataset.updated", "dataset.rank"):
+        assert needle in html, needle
+    assert "<script src" not in html                                  # no library, nothing from elsewhere
+
+
+def test_label_names_are_escaped_in_data_and_chips(tmp_path):
+    items = [mr(1, labels=['x" onclick="alert(1)'])]
+    render(prioritized(tmp_path, items, [{"name": 'x" onclick="alert(1)', "priority": 2}]))
+    html = (tmp_path / "index.html").read_text()
+    assert 'onclick="alert' not in html

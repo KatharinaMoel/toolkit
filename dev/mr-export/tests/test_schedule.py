@@ -43,6 +43,7 @@ def test_unit_files_content(tmp_path):
     name = schedule.unit_name(repo)
     service, timer = files[f"{name}.service"], files[f"{name}.timer"]
     assert "Type=oneshot" in service
+    assert "TimeoutStartSec=30min" in service   # a run hanging on a silent server is stopped
     assert 'ExecStart="/opt/tools/mr-export" fetch --yes --quiet --repo "/work/Garden Planner"' in service
     assert "OnUnitActiveSec=1h" in timer and "OnBootSec=5min" in timer
     assert "WantedBy=timers.target" in timer and f"Unit={name}.service" in timer
@@ -118,3 +119,15 @@ def test_cli_schedule_without_terminal_writes_nothing(home, tmp_path, monkeypatc
     assert cli.main(["schedule", "--every", "1h"]) == 1
     assert not (home / ".config" / "systemd").exists()
     assert "--yes" in capsys.readouterr().err
+
+
+def test_cli_status_ends_with_the_check_lines(home, tmp_path, monkeypatch, capsys):
+    from mr_export import cli
+    fake = FakeSystemd()
+    orig = cli.Runner.__init__
+    monkeypatch.setattr(cli.Runner, "__init__",
+                        lambda self, repo, console, run=None, timeout=180: orig(self, repo, console, run=fake))
+    monkeypatch.setattr(cli, "repo_root", lambda runner: tmp_path / "app")
+    assert cli.main(["schedule", "--status"]) == 0
+    out = capsys.readouterr().out
+    assert "NEXT LEFT LAST" in out and "Verdict:        NOT OK - no snapshot" in out

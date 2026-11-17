@@ -78,7 +78,8 @@ def test_no_folder_when_the_list_cannot_be_read(gitlab, tmp_path):
     gitlab.fail.add("projects/:id/merge_requests?state=opened&per_page=100")
     with pytest.raises(Exception):
         run_fetch(gitlab, tmp_path)
-    assert [p.name for p in tmp_path.iterdir()] == [".fetch.lock"]   # no snapshot folder
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".fetch.lock", "last-run.json"]   # no snapshot folder
+    assert json.loads((tmp_path / "last-run.json").read_text())["status"] == "unreachable"
 
 
 def test_explains_each_call_once_with_the_command(gitlab, tmp_path):
@@ -120,7 +121,8 @@ def test_bad_list_answer_leaves_no_folder(gitlab, tmp_path):
     gitlab.answer = lambda cmd: "not json\n" if "merge_requests?" in cmd[-1] else gitlab.answer_orig(cmd)
     with pytest.raises(json.JSONDecodeError):
         run_fetch(gitlab, tmp_path)
-    assert [p.name for p in tmp_path.iterdir()] == [".fetch.lock"]   # no snapshot folder
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".fetch.lock", "last-run.json"]   # no snapshot folder
+    assert json.loads((tmp_path / "last-run.json").read_text())["status"] == "unreachable"
 
 
 def test_uploads_of_other_projects_are_not_requested(gitlab, tmp_path):
@@ -179,3 +181,127 @@ def test_quiet_console_prints_only_notes():
     c.line("header")
     c.note("problem")
     assert buf.getvalue().strip() == "! problem"
+
+
+def mrs_of(gitlab, n):
+    from conftest import mr
+    gitlab.mrs[:] = [mr(i) for i in range(1, n + 1)]
+
+
+def test_three_timeouts_in_a_row_stop_the_run(gitlab, tmp_path):
+    from mr_export.fetch import FetchAborted
+    mrs_of(gitlab, 6)
+    gitlab.hang = lambda ep: ep.startswith("projects/:id/merge_requests/") and not ep.startswith(
+        "projects/:id/merge_requests/1")
+    with pytest.raises(FetchAborted, match="GitLab does not answer"):
+        run_fetch(gitlab, tmp_path)
+    snap = tmp_path / "2026-10-23_1005"
+    meta = json.loads((snap / "meta.json").read_text())
+    assert meta["complete"] is False and "does not answer" in meta["aborted"]
+    assert meta["failed_iids"] == [2, 3, 4]
+    asked = [c[-1] for c in gitlab.calls if c[0] == "glab"]
+    assert not any("merge_requests/5" in ep for ep in asked)   # stopped after the third
+    assert not any("members" in ep for ep in asked)
+
+
+def test_timeouts_with_answers_in_between_do_not_stop(gitlab, tmp_path):
+    mrs_of(gitlab, 6)
+    gitlab.hang = lambda ep: ep in ("projects/:id/merge_requests/1", "projects/:id/merge_requests/2",
+                                    "projects/:id/merge_requests/4", "projects/:id/merge_requests/5")
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert len(result.failures) == 4
+    assert json.loads((result.path / "meta.json").read_text())["complete"] is True
+
+
+def test_other_errors_reset_the_timeout_count(gitlab, tmp_path):
+    mrs_of(gitlab, 5)
+    gitlab.hang = lambda ep: ep in ("projects/:id/merge_requests/1", "projects/:id/merge_requests/2",
+                                    "projects/:id/merge_requests/4", "projects/:id/merge_requests/5")
+    gitlab.fail.add("projects/:id/merge_requests/3")
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert len(result.failures) == 5
+
+
+def test_hanging_upload_downloads_stop_the_run(gitlab, tmp_path):
+    from mr_export.fetch import FetchAborted
+    gitlab.mrs[:] = [gitlab.mrs[1]]
+    gitlab.mrs[0]["description"] = " ".join(f"![{i}](/uploads/{UPLOAD_ID}/{i}.png)" for i in range(5))
+    gitlab.hang = lambda ep: ep.startswith("projects/:id/uploads/")
+    with pytest.raises(FetchAborted):
+        run_fetch(gitlab, tmp_path)
+    assert sum(1 for c in gitlab.calls if "uploads/" in c[-1]) == 3
+
+
+def test_runner_reports_a_timeout_as_its_own_error(tmp_path):
+    import subprocess
+    from mr_export.runner import CommandError, CommandTimeout
+
+    def silent(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+    with pytest.raises(CommandTimeout, match="no answer within"):
+        Runner(tmp_path, Console(StringIO()), run=silent).glab_get("projects/:id", None)
+    assert issubclass(CommandTimeout, CommandError)
+
+
+def last_run(root):
+    return json.loads((root / "last-run.json").read_text())
+
+
+def test_last_run_complete(gitlab, tmp_path):
+    result, _ = run_fetch(gitlab, tmp_path)
+    assert last_run(tmp_path) == {"time": "2026-10-23T10:05:00", "status": "complete",
+                                  "snapshot": result.path.name, "count": 2, "gaps": 0, "reason": None}
+
+
+def test_last_run_partial(gitlab, tmp_path):
+    gitlab.fail.add("projects/:id/merge_requests/2/approvals")
+    run_fetch(gitlab, tmp_path)
+    lr = last_run(tmp_path)
+    assert lr["status"] == "partial" and lr["gaps"] == 1 and lr["count"] == 2
+
+
+def test_last_run_aborted_after_timeouts(gitlab, tmp_path):
+    from mr_export.fetch import FetchAborted
+    mrs_of(gitlab, 4)
+    gitlab.hang = lambda ep: ep.startswith("projects/:id/merge_requests/")
+    with pytest.raises(FetchAborted):
+        run_fetch(gitlab, tmp_path)
+    lr = last_run(tmp_path)
+    assert lr["status"] == "aborted" and lr["snapshot"] == "2026-10-23_1005" and lr["gaps"] == 3
+    assert "does not answer" in lr["reason"]
+
+
+def test_last_run_unreachable_when_gitlab_times_out_at_once(gitlab, tmp_path):
+    gitlab.hang = lambda ep: True
+    with pytest.raises(Exception):
+        run_fetch(gitlab, tmp_path)
+    lr = last_run(tmp_path)
+    assert lr["status"] == "unreachable" and lr["snapshot"] is None and "no answer within" in lr["reason"]
+
+
+def test_last_run_aborted_when_interrupted(gitlab, tmp_path):
+    gitlab.answer_orig = gitlab.answer
+
+    def answer(cmd):
+        if cmd[-1].endswith("/2"):
+            raise KeyboardInterrupt
+        return gitlab.answer_orig(cmd)
+    gitlab.answer = answer
+    with pytest.raises(KeyboardInterrupt):
+        run_fetch(gitlab, tmp_path)
+    assert last_run(tmp_path)["status"] == "aborted" and last_run(tmp_path)["reason"] == "interrupted"
+
+
+def test_labels_are_saved_with_their_priority(gitlab, tmp_path):
+    result, err = run_fetch(gitlab, tmp_path)
+    assert json.loads((result.path / "labels.json").read_text()) == [
+        {"name": "Small", "priority": None}, {"name": "Ready", "priority": 1}]
+    assert "2 labels, 1 with a priority" in err
+
+
+def test_failing_labels_do_not_break_the_run(gitlab, tmp_path):
+    gitlab.fail.add("projects/:id/labels?per_page=100")
+    result, err = run_fetch(gitlab, tmp_path)
+    assert not result.failures and not (result.path / "labels.json").exists()
+    assert "labels could not be read" in err
+    assert last_run(tmp_path)["status"] == "complete"

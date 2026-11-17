@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import diffview
+from . import diffview, lastrun
 from .snapshot import UPLOAD_RE, MergeRequest, Snapshot, file_name, keep_locally, safe_upload
 
 CSS = """
@@ -69,37 +69,77 @@ pre.diff .hunk { color:var(--muted); }
 details.file { border-top:1px solid var(--line); padding-top:.4rem; }
 details.file summary { cursor:pointer; color:var(--fg); }
 ul.files { margin:0; padding-left:1.1rem; columns:2 18rem; }
+.controls { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; }
+.controls label { font-size:.85rem; color:var(--muted); display:flex; gap:.35rem; align-items:center; }
+select { font:inherit; font-size:.85rem; padding:.3rem .4rem; border:1px solid var(--line); border-radius:4px;
+  background:var(--surface); color:var(--fg); max-width:14rem; }
 input[type=search] { font:inherit; padding:.4rem .6rem; border:1px solid var(--line); border-radius:4px;
   background:var(--surface); color:var(--fg); width:min(28rem,100%); }
 """
 
 FILTER_JS = """
 (function () {
-  var active = {};
-  var input = document.getElementById('filter');
+  var input = document.getElementById('filter'), tbody = document.querySelector('tbody');
+  var sel = { sort: document.getElementById('sort'), author: document.getElementById('author'),
+              reviewer: document.getElementById('reviewer') };
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+  function has(list, value) { return list.split('|').indexOf(value) >= 0; }
+  function pressed() { return chips.filter(function (b) { return b.getAttribute('aria-pressed') === 'true'; }); }
   function matches(tr, key) {
     if (key === 'draft') return tr.dataset.draft === '1';
     if (key === 'intarget') return tr.dataset.intarget === '1';
     if (key === 'threads') return tr.dataset.threads !== '0';
-    return tr.dataset.labels.split('|').indexOf(key.slice(6)) >= 0;
+    return has(tr.dataset.labels, key.slice(6));
+  }
+  function save() {   // the state goes into the URL hash, so a bookmark brings it back
+    var p = new URLSearchParams();
+    if (sel.sort.value !== 'priority') p.set('sort', sel.sort.value);
+    if (sel.author.value) p.set('author', sel.author.value);
+    if (sel.reviewer.value) p.set('reviewer', sel.reviewer.value);
+    if (input.value) p.set('q', input.value);
+    pressed().forEach(function (b) { p.append('f', b.dataset.filter); });
+    var hash = p.toString();
+    if (hash === location.hash.slice(1)) return;
+    try { history.replaceState(null, '', hash ? '#' + hash : location.pathname + location.search); }
+    catch (e) { location.replace('#' + hash); }
   }
   function apply() {
-    var q = input.value.toLowerCase();
-    document.querySelectorAll('tbody tr').forEach(function (tr) {
-      var ok = !q || tr.textContent.toLowerCase().indexOf(q) >= 0;
-      Object.keys(active).forEach(function (k) { ok = ok && matches(tr, k); });
-      tr.hidden = !ok;
+    var rows = Array.prototype.slice.call(tbody.rows), byUpdated = sel.sort.value === 'updated';
+    rows.sort(function (a, b) {
+      return byUpdated ? b.dataset.updated - a.dataset.updated : a.dataset.rank - b.dataset.rank;
     });
+    var q = input.value.toLowerCase(), au = sel.author.value, rv = sel.reviewer.value, keys = pressed();
+    rows.forEach(function (tr) {
+      tbody.appendChild(tr);
+      tr.hidden = !((!q || tr.textContent.toLowerCase().indexOf(q) >= 0)
+        && (!au || tr.dataset.author === au) && (!rv || has(tr.dataset.reviewers, rv))
+        && keys.every(function (b) { return matches(tr, b.dataset.filter); }));
+    });
+    save();
+  }
+  function choose(select, value) {   // a value that is not in this snapshot falls back to the first
+    select.value = value;
+    if (select.selectedIndex < 0) select.selectedIndex = 0;
+  }
+  function restore() {
+    var p = new URLSearchParams(location.hash.slice(1)), on = p.getAll('f');
+    choose(sel.sort, p.get('sort') || 'priority');
+    choose(sel.author, p.get('author') || '');
+    choose(sel.reviewer, p.get('reviewer') || '');
+    input.value = p.get('q') || '';
+    chips.forEach(function (b) { b.setAttribute('aria-pressed', on.indexOf(b.dataset.filter) >= 0 ? 'true' : 'false'); });
+    apply();
   }
   input.addEventListener('input', apply);
-  document.querySelectorAll('.chip').forEach(function (b) {
+  [sel.sort, sel.author, sel.reviewer].forEach(function (s) { s.addEventListener('change', apply); });
+  chips.forEach(function (b) {
     b.addEventListener('click', function () {
-      var k = b.dataset.filter;
-      if (active[k]) { delete active[k]; } else { active[k] = true; }
-      b.setAttribute('aria-pressed', active[k] ? 'true' : 'false');
+      b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
       apply();
     });
   });
+  window.addEventListener('hashchange', restore);
+  restore();
   var age = document.getElementById('age');
   if (age) {
     var then = new Date(age.dataset.fetched), hours = (Date.now() - then) / 36e5;
@@ -268,34 +308,94 @@ def in_target_html(mr: MergeRequest) -> tuple[str, bool]:
     return (f'<span class="pill {cls}">{text}</span>' if cls else text), cls == "ok"
 
 
-def sort_key(mr: MergeRequest, top_labels: list[str]) -> tuple:
-    """Non-drafts first, then MRs with a top label, then the most recently updated."""
-    d = mr.data
+def updated_ts(mr: MergeRequest) -> float:
     try:
-        updated = datetime.fromisoformat((d.get("updated_at") or "").replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat((mr.data.get("updated_at") or "").replace("Z", "+00:00")).timestamp()
     except ValueError:
-        updated = 0.0
-    top = any(lb in top_labels for lb in d.get("labels") or [])
-    return (bool(d.get("draft")), not top, -updated)
+        return 0.0
 
 
-def chips_html(mrs: list[MergeRequest]) -> str:
+def mr_priority(mr: MergeRequest, priorities: dict[str, int]) -> int | None:
+    """The smallest priority among the MR's labels, None when none of them has one."""
+    return min((priorities[lb] for lb in mr.data.get("labels") or [] if lb in priorities), default=None)
+
+
+def milestone(mr: MergeRequest) -> tuple[str, str]:
+    """(title, due date as YYYY-MM-DD) of the MR's milestone; empty strings when absent."""
+    m = mr.data.get("milestone") or {}
+    return str(m.get("title") or ""), str(m.get("due_date") or "")
+
+
+def sort_key(mr: MergeRequest, top_labels: list[str], priorities: dict[str, int] | None = None) -> tuple:
+    """Non-drafts first; then the smallest label priority (MRs without a prioritized label
+    last), or - for snapshots without label priorities - MRs with a top label first; then
+    the earliest milestone due date (none last); then the most recently updated."""
+    labels = mr.data.get("labels") or []
+    if priorities is not None:
+        prio = mr_priority(mr, priorities)
+        rank = (prio is None, prio or 0)
+    else:
+        rank = (not any(lb in top_labels for lb in labels), 0)
+    due = milestone(mr)[1]
+    return (bool(mr.data.get("draft")), rank, (not due, due), -updated_ts(mr))
+
+
+def chips_html(mrs: list[MergeRequest], priorities: dict[str, int] | None = None) -> str:
+    """Filter chips; labels in GitLab's priority order, the rest by how often they occur."""
     counts: dict[str, int] = {}
     for mr in mrs:
         for lb in mr.data.get("labels") or []:
             counts[lb] = counts.get(lb, 0) + 1
+    prio = priorities or {}
+    order = sorted(counts.items(), key=lambda x: (x[0] not in prio, prio.get(x[0], 0), -x[1], x[0]))
     special = [("draft", "drafts"), ("intarget", "already merged"), ("threads", "open threads")]
     buttons = [f'<button type="button" class="chip" data-filter="{f}">{t}</button>' for f, t in special]
     buttons += [f'<button type="button" class="chip" data-filter="label:{esc(lb)}">{esc(lb)} '
-                f'<span class="count">{n}</span></button>' for lb, n in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+                f'<span class="count">{n}</span></button>' for lb, n in order]
     return f'<div class="chips" role="group" aria-label="Filter">{"".join(buttons)}</div>'
 
 
-def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_after_hours: int = 3) -> str:
+def select_html(sid: str, label: str, options: list[tuple[str, str]]) -> str:
+    opts = "".join(f'<option value="{esc(v)}">{esc(t)}</option>' for v, t in options)
+    return f'<label for="{sid}">{esc(label)} <select id="{sid}">{opts}</select></label>'
+
+
+def controls_html(snap: Snapshot) -> str:
+    """Text filter, sort order, author and reviewer; the script keeps them in the URL hash."""
+    authors = sorted({str((m.data.get("author") or {}).get("username") or "") for m in snap.mrs} - {""})
+    reviewers = sorted({str((r or {}).get("username") or "") for m in snap.mrs
+                        for r in m.data.get("reviewers") or []} - {""})
+    first = "Label priority" if snap.label_priorities is not None else "Top labels"
+    return ('<div class="controls">'
+            '<input type="search" id="filter" placeholder="Filter: title, branch, person, label, milestone …" '
+            'aria-label="Filter">'
+            + select_html("sort", "Sort", [("priority", first), ("updated", "Updated")])
+            + select_html("author", "Author", [("", "anyone")] + [(a, a) for a in authors])
+            + select_html("reviewer", "Reviewer", [("", "anyone")] + [(r, r) for r in reviewers])
+            + "</div>")
+
+
+def attempt_banner(snap: Snapshot, last: dict | None) -> str:
+    """A warning on top when the newest fetch attempt is not the snapshot shown here
+    and did not finish: the page would otherwise look current while it is not."""
+    if not last or last.get("snapshot") == snap.path.name or last.get("status") in ("complete", "partial"):
+        return ""
+    what = {"aborted": "stopped before it finished", "unreachable": "could not reach GitLab"}[last["status"]]
+    reason = f": {esc(last['reason'])}" if last.get("reason") else ""
+    shown = when(snap.meta.get("fetched_at")) or snap.path.name
+    return (f'<div class="panel attempt"><strong class="bad">The last attempt ({esc(when(last.get("time")))}) '
+            f"{what}{reason}.</strong>"
+            f'<div class="small">Shown here is the snapshot read {esc(shown)}. '
+            "Check with: mr-export check</div></div>")
+
+
+def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_after_hours: int = 3,
+                 last_run: dict | None = None) -> str:
     top_labels = ["Approval ready"] if top_labels is None else top_labels
     md = Markdown(snap, "")
     rows = []
-    for mr in sorted(snap.mrs, key=lambda m: sort_key(m, top_labels)):
+    prios = snap.label_priorities
+    for rank, mr in enumerate(sorted(snap.mrs, key=lambda m: sort_key(m, top_labels, prios))):
         d = mr.data
         appr, appr_cls = approval_text(mr)
         labels = "".join(f'<span class="pill">{esc(lb)}</span>' for lb in d.get("labels") or [])
@@ -303,8 +403,16 @@ def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_afte
         threads = open_threads(mr)
         threads_html = f'<span class="pill warn">{threads}</span>' if threads else "0"
         target_html, merged = in_target_html(mr)
-        data = (f'data-iid="{mr.iid}" data-labels="{esc("|".join(d.get("labels") or []))}" '
-                f'data-draft="{int(bool(d.get("draft")))}" data-intarget="{int(merged)}" data-threads="{threads}"')
+        ms_title, due = milestone(mr)
+        prio = mr_priority(mr, prios) if prios is not None else None
+        reviewers = "|".join(str((r or {}).get("username") or "") for r in d.get("reviewers") or [])
+        data = (f'data-iid="{mr.iid}" data-rank="{rank}" data-labels="{esc("|".join(d.get("labels") or []))}" '
+                f'data-draft="{int(bool(d.get("draft")))}" data-intarget="{int(merged)}" data-threads="{threads}" '
+                f'data-author="{username(d.get("author"))}" data-reviewers="{esc(reviewers)}" '
+                f'data-prio="{"" if prio is None else prio}" data-due="{esc(due)}" '
+                f'data-updated="{int(updated_ts(mr))}"')
+        ms_html = (f'{esc(ms_title)}<div class="small muted">{esc(due)}</div>' if ms_title
+                   else '<span class="muted">—</span>')
         rows.append(
             f'<tr {data}><td class="num"><a href="mr/{mr.iid}.html">!{mr.iid}</a></td>'
             f'<td>{draft}<a href="mr/{mr.iid}.html">{md.inline(d.get("title") or "")}</a>'
@@ -312,6 +420,7 @@ def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_afte
             f'<td>{username(d.get("author"))}</td>'
             f'<td>{users(d.get("reviewers"))}</td>'
             f'<td>{labels}</td>'
+            f'<td>{ms_html}</td>'
             f'<td><span class="pill {appr_cls}">{esc(appr)}</span></td>'
             f"<td>{pipeline_pill(mr)}</td>"
             f'<td class="intarget">{target_html}</td>'
@@ -328,19 +437,31 @@ def render_index(snap: Snapshot, top_labels: list[str] | None = None, stale_afte
             + (f" · {link(snap, snap.web_url + '/-/merge_requests', 'open in GitLab')}" if snap.web_url else "")
             + " · a snapshot: changes made on GitLab after the read are not in here</p>")
     failures = meta.get("failures") or []
-    warn = (f'<div class="panel"><strong class="bad">Some data could not be read:</strong>'
+    failed = len(meta.get("failed_iids") or [])
+    missing = f" ({failed} of {meta.get('count', len(snap.mrs))} merge requests incomplete)" if failed else ""
+    warn = (f'<div class="panel"><strong class="bad">Some data could not be read{missing}:</strong>'
             f'<div class="small">{"<br>".join(esc(f) for f in failures)}</div></div>') if failures else ""
     if snap.complete is False:
         warn = ('<div class="panel"><strong class="bad">This read did not finish.</strong>'
                 '<div class="small">It was interrupted; merge requests without their own data show only '
                 "what the list had. Run mr-export fetch again for a full snapshot.</div></div>") + warn
     table = ('<div class="tablewrap"><table><thead><tr><th>MR</th><th>Title · branches</th><th>Author</th>'
-             "<th>Reviewers</th><th>Labels</th><th>Approvals</th><th>Pipeline</th>"
+             "<th>Reviewers</th><th>Labels</th><th>Milestone</th><th>Approvals</th><th>Pipeline</th>"
              '<th title="Is the change already in the target branch on the server? Read from Git, not from labels.">In target</th>'
              "<th>Open threads</th>"
              f'<th>Updated</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
-    search = '<input type="search" id="filter" placeholder="Filter: title, branch, person, label …" aria-label="Filter">'
-    return page(f"MRs {meta.get('project', '')}", head + warn + search + chips_html(snap.mrs) + table, FILTER_JS)
+    if prios is None:
+        warn += ('<p class="small muted">No label priorities in this snapshot: MRs with a label from '
+                 "top_labels come first.</p>")
+    warn = attempt_banner(snap, last_run) + warn
+    return page(f"MRs {meta.get('project', '')}", head + warn + controls_html(snap) + chips_html(snap.mrs, prios) + table, FILTER_JS)
+
+
+def milestone_text(mr: MergeRequest) -> str:
+    title, due = milestone(mr)
+    if not title:
+        return "—"
+    return esc(title) + (f' <span class="muted small">(due {esc(due)})</span>' if due else "")
 
 
 def render_note(md: Markdown, note: dict) -> str:
@@ -370,6 +491,7 @@ def render_mr(snap: Snapshot, mr: MergeRequest) -> str:
         f"<dt>Author</dt><dd>{username(d.get('author'))}</dd>"
         f"<dt>Assignees</dt><dd>{users(d.get('assignees')) or '—'}</dd>"
         f"<dt>Reviewers</dt><dd>{users(d.get('reviewers')) or '—'}</dd>"
+        f"<dt>Milestone</dt><dd>{milestone_text(mr)}</dd>"
         f"<dt>Labels</dt><dd>{''.join(f'<span class=pill>{esc(lb)}</span>' for lb in d.get('labels') or []) or '—'}</dd>"
         f'<dt>Approvals</dt><dd><span class="pill {appr_cls}">{esc(appr)}</span></dd>'
         f"<dt>Pipeline</dt><dd>{pipeline_pill(mr)}</dd>"
@@ -428,5 +550,6 @@ def render(snap: Snapshot, top_labels: list[str] | None = None, stale_after_hour
     for mr in snap.mrs:
         (snap.path / "mr" / f"{mr.iid}.html").write_text(render_mr(snap, mr), encoding="utf-8")
     index = snap.path / "index.html"
-    index.write_text(render_index(snap, top_labels, stale_after_hours), encoding="utf-8")
+    last_run = lastrun.read(snap.path.parent)   # <out_dir>/<repo>/last-run.json, when there is one
+    index.write_text(render_index(snap, top_labels, stale_after_hours, last_run), encoding="utf-8")
     return index

@@ -66,7 +66,10 @@ class FakeGitLab:
         self.uploads = uploads or {}
         self.repo = repo
         self.fail: set[str] = set()
+        self.hang = lambda endpoint: False   # True: the call times out like a silent server
         self.members = [{"username": "alice", "access_level": 40}, {"username": "bob", "access_level": 30}]
+        self.labels = [{"name": "Small", "priority": None, "color": "#428bca"},
+                       {"name": "Ready", "priority": 1, "color": "#69d100"}]
 
     def answer(self, cmd):
         if cmd[0] == "git":
@@ -80,6 +83,8 @@ class FakeGitLab:
             return None
         if ep.startswith("projects/:id/members/all"):
             return "".join(json.dumps(m) + "\n" for m in self.members)
+        if ep.startswith("projects/:id/labels"):
+            return "".join(json.dumps(lb) + "\n" for lb in self.labels)
         if ep == "projects/:id":
             return json.dumps({"path_with_namespace": "team/app", "web_url": "https://git.example.org/team/app"})
         if ep.startswith("projects/:id/merge_requests?"):
@@ -99,6 +104,8 @@ class FakeGitLab:
 
     def __call__(self, cmd, cwd=None, capture_output=True, timeout=None):
         self.calls.append(list(cmd))
+        if cmd[0] == "glab" and self.hang(cmd[-1]):
+            raise subprocess.TimeoutExpired(cmd, timeout)
         out = self.answer(cmd)
         if out is None:
             return subprocess.CompletedProcess(cmd, 1, b"", b"404 Not Found")

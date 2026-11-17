@@ -184,3 +184,47 @@ def test_quiet_fetch_prints_nothing_on_success(fake, home, capsys):
     assert main(["fetch", "--yes", "--quiet"]) == 0
     out, err = capsys.readouterr()
     assert err == "" and out.strip().endswith("index.html")
+
+
+def test_check_exit_codes(fake, home, capsys):
+    assert main(["check"]) == 1                      # nothing read yet
+    assert main(["fetch", "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["check"]) == 0
+    assert "Verdict:        OK" in capsys.readouterr().out
+    fake.hang = lambda ep: True
+    assert main(["fetch", "--yes"]) == 1
+    capsys.readouterr()
+    assert main(["check"]) == 1
+    assert "the last attempt was unreachable" in capsys.readouterr().out
+
+
+def test_failed_fetch_marks_the_current_overview(fake, home, capsys):
+    from conftest import mr as make_mr
+    assert main(["fetch", "--yes"]) == 0
+    index = capsys.readouterr().out.strip()
+    fake.mrs[:] = [make_mr(i) for i in range(1, 6)]
+    fake.hang = lambda ep: ep.startswith("projects/:id/merge_requests/")
+    assert main(["fetch", "--yes", "--quiet"]) == 1
+    err = capsys.readouterr().err
+    assert "GitLab does not answer" in err
+    root = home / "mr-export" / "app"
+    assert (root / "latest").resolve() == __import__("pathlib").Path(index).parent   # latest did not move
+    assert "stopped before it finished" in open(index).read()
+
+
+def test_sigterm_during_fetch_is_recorded(fake, home, capsys):
+    import signal
+    from conftest import mr as make_mr
+    fake.mrs[:] = [make_mr(1), make_mr(2)]
+    fake.answer_orig = fake.answer
+
+    def answer(cmd):
+        if cmd[-1].endswith("merge_requests/2"):
+            signal.raise_signal(signal.SIGTERM)
+        return fake.answer_orig(cmd)
+    fake.answer = answer
+    assert main(["fetch", "--yes"]) == 1
+    lr = __import__("json").loads((home / "mr-export" / "app" / "last-run.json").read_text())
+    assert lr["status"] == "aborted" and "SIGTERM" in lr["reason"]
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
