@@ -5,6 +5,7 @@
 <snapshot>/mr/<iid>.json                one merge request with its head pipeline
 <snapshot>/mr/<iid>-discussions.ndjson  threads and system notes
 <snapshot>/mr/<iid>-approvals.json      approval state
+<snapshot>/labels.json                  the project's labels with their priority
 <snapshot>/uploads/<secret>/<file>      images referenced in texts
 
 A flat folder (mrs-list.ndjson, mr-<iid>.json, mr-<iid>-discussions.ndjson) is
@@ -49,6 +50,9 @@ class Snapshot:
     path: Path
     meta: dict
     mrs: list[MergeRequest]
+    # label name -> GitLab priority (lower comes first) for prioritized labels;
+    # None when the snapshot has no labels.json
+    label_priorities: dict[str, int] | None = None
 
     @property
     def complete(self) -> bool | None:
@@ -139,4 +143,15 @@ def load(path: Path) -> Snapshot:
     if not meta.get("project") and meta.get("web_url"):
         meta["project"] = "/".join(meta["web_url"].split("/")[3:])   # group/project
     mrs.sort(key=lambda m: m.iid, reverse=True)
-    return Snapshot(path=path, meta=meta, mrs=mrs)
+    return Snapshot(path=path, meta=meta, mrs=mrs, label_priorities=_label_priorities(path / "labels.json"))
+
+
+def _label_priorities(path: Path) -> dict[str, int] | None:
+    if not path.is_file():
+        return None
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+        return {str(lb["name"]): int(lb["priority"]) for lb in items
+                if isinstance(lb.get("priority"), int) and not isinstance(lb.get("priority"), bool)}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None

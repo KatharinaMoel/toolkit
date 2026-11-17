@@ -68,6 +68,8 @@ class FakeGitLab:
         self.fail: set[str] = set()
         self.hang = lambda endpoint: False   # True: the call times out like a silent server
         self.members = [{"username": "alice", "access_level": 40}, {"username": "bob", "access_level": 30}]
+        self.labels = [{"name": "Small", "priority": None, "color": "#428bca"},
+                       {"name": "Ready", "priority": 1, "color": "#69d100"}]
 
     def answer(self, cmd):
         if cmd[0] == "git":
@@ -81,6 +83,8 @@ class FakeGitLab:
             return None
         if ep.startswith("projects/:id/members/all"):
             return "".join(json.dumps(m) + "\n" for m in self.members)
+        if ep.startswith("projects/:id/labels"):
+            return "".join(json.dumps(lb) + "\n" for lb in self.labels)
         if ep == "projects/:id":
             return json.dumps({"path_with_namespace": "team/app", "web_url": "https://git.example.org/team/app"})
         if ep.startswith("projects/:id/merge_requests?"):

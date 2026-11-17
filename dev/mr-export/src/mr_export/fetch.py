@@ -235,6 +235,17 @@ def _fetch(runner: Runner, console: Console, root: Path, state: str, images: boo
         result.failures.append(f"members: {e}")
         console.note(f"members failed: {e}")
 
+    try:
+        raw = runner.glab_get("projects/:id/labels?per_page=100",
+                              "Read the project's labels and their priorities (for the order of the overview)",
+                              paginate=True, ndjson=True)
+        labels = [{"name": str(lb["name"]), "priority": lb.get("priority")} for lb in parse_ndjson(raw)]
+        (snap / "labels.json").write_text(json.dumps(labels, ensure_ascii=False, indent=1), encoding="utf-8")
+        console.result(f"{len(labels)} labels, {sum(1 for lb in labels if lb['priority'] is not None)} with a priority")
+    except (CommandError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+        # Not a gap: every MR is complete; the overview falls back to top_labels.
+        console.note(f"labels could not be read, the overview sorts by top_labels instead: {e}")
+
     if images:
         refs = sorted({ref for mr in mrs for ref in upload_refs(mr)})
         known = previous / "uploads" if previous else None

@@ -290,3 +290,18 @@ def test_last_run_aborted_when_interrupted(gitlab, tmp_path):
     with pytest.raises(KeyboardInterrupt):
         run_fetch(gitlab, tmp_path)
     assert last_run(tmp_path)["status"] == "aborted" and last_run(tmp_path)["reason"] == "interrupted"
+
+
+def test_labels_are_saved_with_their_priority(gitlab, tmp_path):
+    result, err = run_fetch(gitlab, tmp_path)
+    assert json.loads((result.path / "labels.json").read_text()) == [
+        {"name": "Small", "priority": None}, {"name": "Ready", "priority": 1}]
+    assert "2 labels, 1 with a priority" in err
+
+
+def test_failing_labels_do_not_break_the_run(gitlab, tmp_path):
+    gitlab.fail.add("projects/:id/labels?per_page=100")
+    result, err = run_fetch(gitlab, tmp_path)
+    assert not result.failures and not (result.path / "labels.json").exists()
+    assert "labels could not be read" in err
+    assert last_run(tmp_path)["status"] == "complete"
