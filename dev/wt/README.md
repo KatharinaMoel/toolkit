@@ -112,6 +112,9 @@ untracked files are fine unless the incoming commits add one of the same name,
 in which case git stops without changing anything. Local commits, diverged
 history or a rebase in progress make sync skip the branch and say why. When
 the new commits touch a `migrations/` folder, sync says so.
+A tracked `<repo>/.worktree.conf` is not loaded by `sync`: sync runs
+unattended and fast-forwards that very file, so it would execute code from
+the remote unreviewed. Put values for sync in `~/.config/wt/<repo>.conf`.
 
 `wt sync --install-timer [--every 30min]` writes a systemd user service and
 timer (`~/.config/systemd/user/wt-sync-<repo>-<hash>.*`) that run

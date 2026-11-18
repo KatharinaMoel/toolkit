@@ -1406,6 +1406,20 @@ out=$("$WT" sync 2>/dev/null)
 if [[ "$out" == *"dev: uebersprungen - lokal und origin/dev haben je eigene Commits"* ]]; then ok "sync: auseinandergelaufen -> uebersprungen"; else fail "sync: auseinandergelaufen -> uebersprungen" "$out"; fi
 git -C "$SREPO" reset -q --hard origin/dev
 
+cat > "$SPUSH/.worktree.conf" <<'EOF'
+touch "$HOME/sourced-marker"
+EOF
+git -C "$SPUSH" add .worktree.conf   # getrackte Repo-Konfig, die beim Laden einen Marker anlegt
+gc "$SPUSH" "repo conf"; git -C "$SPUSH" push -q origin dev
+"$WT" sync >/dev/null 2>&1; rm -f "$HOME/sourced-marker"
+"$WT" sync >/dev/null 2>&1
+if [ ! -e "$HOME/sourced-marker" ] && [ -f "$SREPO/.worktree.conf" ]; then ok "sync: getrackte .worktree.conf wird nicht geladen"
+else fail "sync: getrackte .worktree.conf wird nicht geladen" "Marker da oder Datei fehlt"; fi
+"$WT" path @ >/dev/null 2>&1
+if [ -e "$HOME/sourced-marker" ]; then ok "andere Befehle laden die Repo-Konfig weiter"; else fail "andere Befehle laden die Repo-Konfig weiter" "kein Marker"; fi
+rm -f "$HOME/sourced-marker"; git -C "$SPUSH" rm -q .worktree.conf; gc "$SPUSH" "repo conf weg"; git -C "$SPUSH" push -q origin dev
+"$WT" sync >/dev/null 2>&1
+
 push_new main app/migrations/0002_x.py
 out=$("$WT" sync 2>/dev/null)
 if [[ "$out" == *"main: neue Migrationen"* ]]; then ok "sync: neue Migration -> Hinweis"; else fail "sync: neue Migration -> Hinweis" "$out"; fi

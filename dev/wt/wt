@@ -162,6 +162,13 @@ unset WT_PREFIX   # Repo-Kuerzel vor jedem Worktree-Ordner (abc -> abc-mr-721); 
                   # ungesetzt erinnert 'wt new' daran, WT_PREFIX="" schaltet die Erinnerung ab
 
 for conf in "$REPO_ROOT/.worktree.conf" "$HOME/.config/wt/${REPO_NAME}.conf"; do
+  if [ -f "$conf" ] && [ "${1:-}" = "sync" ] && [ "$conf" = "$REPO_ROOT/.worktree.conf" ] \
+     && git -C "$REPO_ROOT" ls-files --error-unmatch -- .worktree.conf >/dev/null 2>&1; then
+    # sync laeuft auch unbeaufsichtigt (Timer) und spult genau diese Datei vor - getrackten Code
+    # aus dem Repo fuehrt es darum nie aus; Werte fuer sync gehoeren in die persoenliche Konfig.
+    note "sync: getrackte $conf wird nicht geladen (kaeme ungeprueft vom Remote) - Werte in ~/.config/wt/${REPO_NAME}.conf setzen"
+    continue
+  fi
   if [ -f "$conf" ]; then
     note "Konfig geladen: $conf"
     # shellcheck source=/dev/null
