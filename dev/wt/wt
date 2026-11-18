@@ -95,6 +95,15 @@ wt - Worktrees mit erklaerten Schritten
   wt list                     Worktrees, Review-DB-Kopien und verwaiste Kopien (kein
                               Worktree dazu), dazu Ordner nur mit IDE-Resten (.idea/,
                               .vscode/); zeigt die Loeschbefehle, loescht nie selbst
+  wt sync [--notify]          lokale Hauptbranches (SYNC_BRANCHES, Default: TARGET_BRANCH
+                              und main) auf den Stand des Remotes vorspulen - nur Fast-Forward;
+                              ein ausgecheckter Branch nur bei sauberem Baum (ungetrackte
+                              Dateien stoeren nicht) und ohne laufenden manage.py; sonst
+                              uebersprungen mit Grund; --notify meldet Uebersprungenes und
+                              neue Migrationen per Desktop-Meldung (notify-send)
+  wt sync --install-timer [--every <dauer>] | --uninstall-timer
+                              systemd-User-Timer, der 'wt sync --notify' regelmaessig
+                              ausfuehrt (Default alle 30min); nur Linux mit systemd
   wt path <ziel>              nur den Pfad ausgeben (fuer Skripte/Agenten)
   wt pick                     Auswahlliste (fzf): Hauptrepo + alle Worktrees,
                               gibt den gewaehlten Pfad aus
@@ -144,6 +153,7 @@ SETTINGS_SHIM_COOKIES=0        # 1 = Shim setzt einen eigenen Django-Session-Coo
 PORT_BASE=8000                 # Serverport = PORT_BASE + (nr mod 1000)
 RUN_HINT=""                    # Startbefehl-Vorschlag; {port} und {db} werden ersetzt
 LINK_DIRS=()                   # gitignorierte Ordner, die per Symlink aus dem Hauptbaum kommen (z.B. media)
+SYNC_BRANCHES=()               # Branches, die 'wt sync' vorspult; leer = TARGET_BRANCH und main
 RUN_MANAGE="manage.py"         # Pfad zu manage.py im Worktree (fuer 'wt run')
 RUN_SETTINGS=""                # Settings-Modul fuer 'wt run'; leer = nichts anhaengen
 RUN_PYTHON=""                  # Interpreter fuer 'wt run', wenn kein venv aktiv ist (relativ zum Hauptbaum oder absolut)
@@ -1210,6 +1220,169 @@ cmd_list() {
   fi
 }
 
+# ---------- wt sync: lokale Hauptbranches auf den Stand des Remotes vorspulen ----------
+# Ein Fetch bewegt nur <REMOTE>/*, nie die lokalen Branches - darum veraltet ein ausgechecktes dev
+# im Hauptordner unbemerkt. sync spult nur vor (Fast-Forward) und laesst alles andere stehen.
+branch_in_rebase() { # $1 = branch -> Ordner, in dem gerade ein Rebase dieses Branches laeuft (dann ist er detached)
+  local path line f
+  while IFS= read -r line; do
+    [[ "$line" == "worktree "* ]] || continue
+    path="${line#worktree }"
+    for f in rebase-merge/head-name rebase-apply/head-name; do
+      f=$(git -C "$path" rev-parse --path-format=absolute --git-path "$f" 2>/dev/null) || continue
+      if [ -f "$f" ] && [ "$(cat "$f")" = "refs/heads/$1" ]; then printf '%s\n' "$path"; return 0; fi
+    done
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+  return 1
+}
+
+sync_branch() { # $1 = branch -> eine Ergebniszeile auf stdout; Rueckgabe 0 = aktuell/vorgespult, 2 = uebersprungen
+  local b="$1" old new n wt pids
+  if ! git -C "$REPO_ROOT" show-ref --verify -q "refs/heads/$b"; then
+    printf '%s: kein lokaler Branch - nichts zu tun\n' "$b"; return 0
+  fi
+  if ! new=$(git -C "$REPO_ROOT" rev-parse -q --verify "refs/remotes/$REMOTE/$b^{commit}"); then
+    printf '%s: uebersprungen - %s/%s gibt es nicht\n' "$b" "$REMOTE" "$b"; return 2
+  fi
+  old=$(git -C "$REPO_ROOT" rev-parse "refs/heads/$b^{commit}")
+  if [ "$old" = "$new" ]; then printf '%s: aktuell\n' "$b"; return 0; fi
+  if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$old" "$new"; then
+    if git -C "$REPO_ROOT" merge-base --is-ancestor "$new" "$old"; then
+      printf '%s: uebersprungen - lokale Commits, die %s/%s nicht hat (nicht gepusht?)\n' "$b" "$REMOTE" "$b"
+    else
+      printf '%s: uebersprungen - lokal und %s/%s haben je eigene Commits (kein Fast-Forward moeglich)\n' "$b" "$REMOTE" "$b"
+    fi
+    return 2
+  fi
+  if wt=$(branch_in_rebase "$b"); then
+    printf '%s: uebersprungen - in %s laeuft gerade ein Rebase dieses Branches\n' "$b" "$wt"; return 2
+  fi
+  n=$(git -C "$REPO_ROOT" rev-list --count "$old..$new")
+  wt=$(branch_worktree "$b")
+  if [ -z "$wt" ]; then
+    # update-ref mit altem Wert: setzt nur, wenn der Branch noch auf $old steht (nichts geht verloren)
+    run "git -C $(q "$REPO_ROOT") update-ref -m 'wt sync: fast-forward' $(q "refs/heads/$b") $new $old" \
+        "$b ist nirgends ausgecheckt: Branch-Zeiger auf $REMOTE/$b vorspulen ($n Commits, keine Dateien beruehrt)" \
+      || { printf '%s: uebersprungen - update-ref abgelehnt (Branch hat sich gerade bewegt?)\n' "$b"; return 2; }
+  else
+    if [ -n "$(git -C "$wt" status --porcelain --untracked-files=no)" ]; then
+      printf '%s: uebersprungen - getrackte Aenderungen in %s (erst committen oder verwerfen)\n' "$b" "$wt"; return 2
+    fi
+    pids=$(server_pids "$wt")
+    if [ -n "$pids" ]; then
+      printf '%s: uebersprungen - in %s laeuft manage.py (PID %s); Server beenden, dann wt sync\n' "$b" "$wt" "${pids% }"; return 2
+    fi
+    run "git -C $(q "$wt") merge --ff-only -q $new" \
+        "$b ist in $wt ausgecheckt und sauber: nur vorspulen ($n Commits); bricht ohne Aenderung ab, wenn eine ungetrackte Datei im Weg liegt" \
+      || { printf '%s: uebersprungen - git merge --ff-only in %s abgebrochen (siehe Meldung oben, z.B. ungetrackte Datei im Weg)\n' "$b" "$wt"; return 2; }
+  fi
+  printf '%s: vorgespult %s..%s (%s Commits)\n' "$b" "${old:0:9}" "${new:0:9}" "$n"
+  if git -C "$REPO_ROOT" diff --name-only "$old" "$new" | grep -q '/migrations/'; then
+    printf '%s: neue Migrationen - vor dem naechsten Serverstart migrate ausfuehren\n' "$b"
+  fi
+}
+
+sync_unit_name() { # -> Name der systemd-Units fuer dieses Repo, z.B. wt-sync-demo-1a2b3c
+  local h
+  if command -v sha1sum >/dev/null 2>&1; then h=$(printf '%s' "$REPO_ROOT" | sha1sum)
+  else h=$(printf '%s' "$REPO_ROOT" | shasum); fi
+  printf 'wt-sync-%s-%s\n' "$(printf '%s' "$REPO_NAME" | tr -c 'A-Za-z0-9_.-' '_')" "${h:0:6}"
+}
+
+sync_timer_install() { # $1 = intervall (systemd-Dauer, z.B. 30min)
+  local every="$1" unit dir self
+  command -v systemctl >/dev/null 2>&1 || die "systemctl fehlt - der Timer braucht Linux mit systemd"
+  re_ascii "$every" '^[0-9]+(s|min|h|d)$' || die "--every erwartet eine Dauer wie 15min, 1h oder 90s, nicht '$every'"
+  self=$(realpath_e "${BASH_SOURCE[0]}") || die "eigener Pfad nicht ermittelbar"
+  case "$REPO_ROOT$self" in *[[:space:]\"\\%\$]*) die "Pfad enthaelt Leerzeichen, \", \\, % oder \$ - in einer systemd-Unit nicht sicher; Timer von Hand anlegen" ;; esac
+  unit=$(sync_unit_name)
+  dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  local service="[Unit]
+Description=wt sync: lokale Hauptbranches von $REPO_NAME vorspulen
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+WorkingDirectory=$REPO_ROOT
+Environment=NO_COLOR=1 GIT_TERMINAL_PROMPT=0
+Environment=\"GIT_SSH_COMMAND=ssh -o BatchMode=yes\"
+ExecStart=\"$self\" sync --notify
+"
+  local timer="[Unit]
+Description=wt sync fuer $REPO_NAME alle $every
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=$every
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"
+  note "Diese beiden Dateien werden geschrieben ($dir):"
+  printf '\n--- %s.service ---\n%s\n--- %s.timer ---\n%s\n' "$unit" "$service" "$unit" "$timer" >&2
+  run "mkdir -p $(q "$dir")" "Ordner fuer eigene systemd-User-Units anlegen (falls noch nicht da)"
+  show "printf ... > $(q "$dir/$unit.service")" "Service schreiben: fuehrt einmal 'wt sync --notify' im Hauptordner aus"
+  printf '%s' "$service" > "$dir/$unit.service"
+  show "printf ... > $(q "$dir/$unit.timer")" "Timer schreiben: 2min nach dem Start, dann alle $every; verpasste Laeufe holt er nach"
+  printf '%s' "$timer" > "$dir/$unit.timer"
+  run "systemctl --user daemon-reload" "systemd die neuen Dateien einlesen lassen"
+  run "systemctl --user enable --now $(q "$unit.timer")" "Timer einschalten (auch nach jedem Neustart) und sofort starten"
+  note "Fertig. Pruefen: systemctl --user list-timers $unit.timer  |  Protokoll: journalctl --user -u $unit.service -n 20"
+}
+
+sync_timer_uninstall() {
+  local unit dir
+  command -v systemctl >/dev/null 2>&1 || die "systemctl fehlt - hier gibt es keinen Timer"
+  unit=$(sync_unit_name)
+  dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  [ -f "$dir/$unit.timer" ] || [ -f "$dir/$unit.service" ] || die "kein Timer fuer $REPO_NAME gefunden ($dir/$unit.timer)"
+  run "systemctl --user disable --now $(q "$unit.timer")" "Timer stoppen und ausschalten" || true
+  run "rm -f $(q "$dir/$unit.timer") $(q "$dir/$unit.service")" "die beiden Unit-Dateien loeschen"
+  run "systemctl --user daemon-reload" "systemd die Aenderung einlesen lassen"
+}
+
+cmd_sync() {
+  local notify=0 every="30min" mode="sync" b rc=0 out="" line alert="" branches=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --notify) notify=1; shift ;;
+      --install-timer) mode="install"; shift ;;
+      --uninstall-timer) mode="uninstall"; shift ;;
+      --every) [ -n "${2:-}" ] || die "--every braucht eine Dauer, z.B. 30min"; every="$2"; shift 2 ;;
+      *) die "unbekannte Option fuer sync: $1 ('wt help' zeigt alle)" ;;
+    esac
+  done
+  case "$mode" in
+    install) sync_timer_install "$every"; return ;;
+    uninstall) sync_timer_uninstall; return ;;
+  esac
+
+  if [ "${#SYNC_BRANCHES[@]}" -gt 0 ]; then branches=("${SYNC_BRANCHES[@]}")
+  else
+    [ -z "$TARGET_BRANCH" ] || branches+=("$TARGET_BRANCH")
+    [ "$TARGET_BRANCH" = "main" ] || branches+=("main")
+  fi
+  [ "${#branches[@]}" -gt 0 ] || die "keine Branches zum Vorspulen - SYNC_BRANCHES in der Konfig setzen"
+  for b in "${branches[@]}"; do
+    re_ascii "$b" '^[A-Za-z0-9._/-]+$' || die "SYNC_BRANCHES: ungewoehnlicher Branchname '$b'"
+  done
+
+  run "git -C $(q "$REPO_ROOT") fetch --prune -q $(q "$REMOTE")" \
+      "neuen Stand von $REMOTE holen (bewegt nur $REMOTE/*, lokale Branches bleiben)" \
+    || note "Holen fehlgeschlagen (offline? SSH-Schluessel?) - verglichen wird mit dem zuletzt geholten Stand von $REMOTE."
+
+  for b in "${branches[@]}"; do
+    rc=0; line=$(sync_branch "$b") || rc=$?
+    out+="$line"$'\n'
+    if [ "$rc" -ne 0 ] || [[ "$line" == *"neue Migrationen"* ]]; then alert+="$line"$'\n'; fi
+  done
+  printf '%s' "$out"
+  if [ "$notify" -eq 1 ] && [ -n "$alert" ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "wt sync" "wt sync: $REPO_NAME" "${alert%$'\n'}" 2>/dev/null || true
+  fi
+}
+
 # ---------- Dispatch ----------
 case "${1:-}" in
   new)  shift; cmd_new "$@" ;;
@@ -1220,6 +1393,7 @@ case "${1:-}" in
   ide)  shift; cmd_ide "$@" ;;
   run)  shift; cmd_run "$@" ;;
   setup) shift; cmd_setup "$@" ;;
+  sync) shift; cmd_sync "$@" ;;
   link) die "'wt link' heisst jetzt 'wt setup <ziel>' - richtet Dateien und Links ein, mit --db auch die DB-Kopie" ;;
   help) shift; case "${1:-}" in run) usage_run ;; *) usage ;; esac ;;
   cd)   die "ein Skript kann das Verzeichnis der Shell nicht wechseln - 'wt cd' kommt aus der Shell-Integration: source <toolkit>/dev/wt/wt.zsh in ~/.zshrc (siehe README)" ;;

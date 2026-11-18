@@ -66,6 +66,20 @@ Gelten für `path`, `cd`, `ide`, `run`. `setup` nimmt alle außer dem Hauptordne
 `drop` warnt vorher (bricht nicht ab), wenn eine laufende JetBrains-IDE das Projekt als offen führt
 oder Prozesse im Worktree stehen; einen neu angelegten Ordner nennen `drop` und `wt list` mit `rm -rf`-Befehl.
 
+### Hauptbranches aktuell halten
+
+Ein `git fetch` holt nur `origin/dev`, nie dein lokales `dev`. Darum fehlen im Hauptordner
+oft Änderungen, die längst gemergt sind. `wt sync` spult `dev` und `main` vor.
+
+| Befehl | Was er tut |
+|---|---|
+| `wt sync` | holt `origin` und spult `TARGET_BRANCH` und `main` vor (oder `SYNC_BRANCHES`), nur per Fast-Forward. Ein ausgecheckter Branch wird nur vorgespult, wenn es keine getrackten Änderungen gibt (ungetrackte Dateien stören nicht) und dort kein `manage.py` läuft. Sonst wird er übersprungen, mit Grund. Bei neuen Migrationen ein Hinweis |
+| `wt sync --install-timer` | systemd-User-Timer: `wt sync --notify` 2 min nach dem Start, dann alle 30 min (`--every 1h` ändert das). Eine Desktop-Meldung kommt nur bei Übersprungenem oder neuen Migrationen |
+| `wt sync --uninstall-timer` | Timer wieder entfernen |
+
+Prüfen: `git -C "$(wt path @)" status -sb` zeigt `## dev...origin/dev` ohne `[behind N]`.
+Timer: `systemctl --user list-timers 'wt-sync-*'`, Protokoll: `journalctl --user -u 'wt-sync-*' -n 20`.
+
 ### Konfiguration
 
 | Eintrag | Bedeutung |

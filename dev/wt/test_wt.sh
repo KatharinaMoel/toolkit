@@ -1339,5 +1339,107 @@ else
   printf 'skip  mac: lsof nicht installiert - Port- und Prozess-Ersatzweg ungeprueft\n'
 fi
 
+# ---------- wt sync: lokale Hauptbranches vorspulen ----------
+# Eigenes Wegwerf-Repo: Remote mit dev und main, Klon mit dev im Hauptordner und lokalem main
+# (nirgends ausgecheckt). Ein zweiter Klon schiebt neue Commits auf den Remote.
+SREM="$TMP/repos/sync.git"; SREPO="$TMP/repos/sync"; SPUSH="$TMP/repos/sync-pusher"
+git init -q --bare -b dev "$SREM"
+git clone -q "$SREM" "$SPUSH" 2>/dev/null
+gc() { git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$2"; }
+gc "$SPUSH" init; git -C "$SPUSH" push -q origin HEAD:dev HEAD:main
+git clone -q -b dev "$SREM" "$SREPO"
+git -C "$SREPO" branch -q main origin/main
+push_new() { # $1 = branch, $2 = datei -> neuer Commit mit dieser Datei auf dem Remote
+  git -C "$SPUSH" fetch -q origin; git -C "$SPUSH" checkout -q -B "$1" "origin/$1"
+  mkdir -p "$(dirname "$SPUSH/$2")"; echo "$RANDOM" > "$SPUSH/$2"; git -C "$SPUSH" add "$2"
+  gc "$SPUSH" "neu $2"; git -C "$SPUSH" push -q origin "$1"
+}
+behind() { git -C "$SREPO" rev-list --count "$1..origin/$1"; }   # $1 = branch -> Commits hinter origin
+cd "$SREPO" || exit 1
+
+push_new dev a.txt; push_new main b.txt
+out=$("$WT" sync 2>/dev/null)
+if [ "$(behind dev)" = 0 ] && [ -f "$SREPO/a.txt" ] && [[ "$out" == *"dev: vorgespult"* ]]; then ok "sync: ausgechecktes dev, sauber -> vorgespult, Datei da"
+else fail "sync: ausgechecktes dev, sauber -> vorgespult, Datei da" "behind=$(behind dev) $out"; fi
+if [ "$(behind main)" = 0 ] && [[ "$out" == *"main: vorgespult"* ]] && [ "$(git -C "$SREPO" branch --show-current)" = dev ]; then ok "sync: main nirgends ausgecheckt -> Zeiger vorgespult, dev bleibt ausgecheckt"
+else fail "sync: main nirgends ausgecheckt -> Zeiger vorgespult" "behind=$(behind main) $out"; fi
+out=$("$WT" sync 2>/dev/null)
+expect_eq "sync: zweiter Lauf -> beide aktuell" $'dev: aktuell\nmain: aktuell' "$out"
+
+echo "lokal" > "$SREPO/untracked-only.txt"   # ungetrackte Datei stoert nicht
+push_new dev c.txt
+out=$("$WT" sync 2>/dev/null)
+if [ "$(behind dev)" = 0 ]; then ok "sync: ungetrackte Datei stoert nicht"; else fail "sync: ungetrackte Datei stoert nicht" "$out"; fi
+
+echo "geaendert" > "$SREPO/a.txt"; push_new dev d.txt
+out=$("$WT" sync 2>/dev/null)
+if [ "$(behind dev)" = 1 ] && [[ "$out" == *"dev: uebersprungen - getrackte Aenderungen"* ]] && [ "$(cat "$SREPO/a.txt")" = geaendert ]; then ok "sync: getrackte Aenderung -> uebersprungen, Aenderung bleibt"
+else fail "sync: getrackte Aenderung -> uebersprungen" "behind=$(behind dev) $out"; fi
+git -C "$SREPO" checkout -q -- a.txt
+
+echo "im Weg" > "$SREPO/d.txt"   # ungetrackt, aber der Remote bringt dieselbe Datei
+out=$("$WT" sync 2>/dev/null)
+if [ "$(behind dev)" = 1 ] && [[ "$out" == *"merge --ff-only"*"abgebrochen"* ]] && [ "$(cat "$SREPO/d.txt")" = "im Weg" ]; then ok "sync: ungetrackte Datei im Weg -> abgebrochen, nichts ueberschrieben"
+else fail "sync: ungetrackte Datei im Weg -> abgebrochen" "behind=$(behind dev) $out"; fi
+rm "$SREPO/d.txt"
+
+if [ -d /proc/self ] || command -v lsof >/dev/null 2>&1; then
+  srv=$(start_fake "$SREPO" "python manage.py runserver 127.0.0.1:8123")
+  out=$("$WT" sync 2>/dev/null)
+  if [ "$(behind dev)" = 1 ] && [[ "$out" == *"laeuft manage.py (PID $srv)"* ]]; then ok "sync: laufender manage.py im Hauptordner -> uebersprungen"
+  else fail "sync: laufender manage.py im Hauptordner -> uebersprungen" "$out"; fi
+  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+  shell=$(start_fake "$SREPO" "zsh")   # eine Shell im Ordner (Terminal) blockiert nicht
+  out=$("$WT" sync 2>/dev/null)
+  if [ "$(behind dev)" = 0 ]; then ok "sync: Shell im Hauptordner blockiert nicht"; else fail "sync: Shell im Hauptordner blockiert nicht" "$out"; fi
+  kill "$shell" 2>/dev/null; wait "$shell" 2>/dev/null
+else
+  git -C "$SREPO" merge -q --ff-only origin/dev
+  printf 'skip  sync: weder /proc noch lsof - Server-Pruefung ungeprueft\n'
+fi
+
+gc "$SREPO" "lokal, nicht gepusht"
+out=$("$WT" sync 2>/dev/null)
+if [[ "$out" == *"dev: uebersprungen - lokale Commits"* ]]; then ok "sync: lokaler Commit -> uebersprungen"; else fail "sync: lokaler Commit -> uebersprungen" "$out"; fi
+push_new dev e.txt
+out=$("$WT" sync 2>/dev/null)
+if [[ "$out" == *"dev: uebersprungen - lokal und origin/dev haben je eigene Commits"* ]]; then ok "sync: auseinandergelaufen -> uebersprungen"; else fail "sync: auseinandergelaufen -> uebersprungen" "$out"; fi
+git -C "$SREPO" reset -q --hard origin/dev
+
+push_new main app/migrations/0002_x.py
+out=$("$WT" sync 2>/dev/null)
+if [[ "$out" == *"main: neue Migrationen"* ]]; then ok "sync: neue Migration -> Hinweis"; else fail "sync: neue Migration -> Hinweis" "$out"; fi
+
+git -C "$SREPO" worktree add -q "$TMP/repos/sync-main" main   # main jetzt in einem Worktree ausgecheckt
+push_new main f.txt
+out=$("$WT" sync 2>/dev/null)
+if [ "$(behind main)" = 0 ] && [ -f "$TMP/repos/sync-main/f.txt" ]; then ok "sync: main in anderem Worktree ausgecheckt -> dort vorgespult"
+else fail "sync: main in anderem Worktree ausgecheckt -> dort vorgespult" "$out"; fi
+
+mkdir -p "$HOME/.config/wt"; printf 'SYNC_BRANCHES=(dev)\n' > "$HOME/.config/wt/sync.conf"
+out=$("$WT" sync 2>/dev/null)
+expect_eq "sync: SYNC_BRANCHES grenzt ein" "dev: aktuell" "$out"
+printf 'SYNC_BRANCHES=("dev;rm")\n' > "$HOME/.config/wt/sync.conf"
+err=$("$WT" sync 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [[ "$err" == *"ungewoehnlicher Branchname"* ]]; then ok "sync: Branchname mit Sonderzeichen -> Abbruch"; else fail "sync: Branchname mit Sonderzeichen -> Abbruch" "rc=$rc $err"; fi
+rm "$HOME/.config/wt/sync.conf"
+
+cat > "$STUBS/notify-send" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$NOTIFY_LOG"
+EOF
+chmod +x "$STUBS/notify-send"
+export NOTIFY_LOG="$TMP/notify.log"; : > "$NOTIFY_LOG"
+"$WT" sync --notify >/dev/null 2>&1
+if [ ! -s "$NOTIFY_LOG" ]; then ok "sync --notify: alles aktuell -> keine Meldung"; else fail "sync --notify: alles aktuell -> keine Meldung" "$(cat "$NOTIFY_LOG")"; fi
+echo "geaendert" > "$SREPO/a.txt"; push_new dev g.txt
+"$WT" sync --notify >/dev/null 2>&1
+if grep -q "dev: uebersprungen" "$NOTIFY_LOG"; then ok "sync --notify: Uebersprungenes -> Meldung"; else fail "sync --notify: Uebersprungenes -> Meldung" "$(cat "$NOTIFY_LOG")"; fi
+git -C "$SREPO" checkout -q -- a.txt
+
+err=$("$WT" sync --install-timer --every 'x; rm' 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && [ ! -d "$HOME/.config/systemd" ]; then ok "sync --install-timer: unsinnige Dauer -> Abbruch, nichts geschrieben"; else fail "sync --install-timer: unsinnige Dauer -> Abbruch" "rc=$rc $err"; fi
+cd "$REPO" || exit 1
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'alle Tests gruen' || echo "$fails Test(s) rot")"
 [ "$fails" -eq 0 ]

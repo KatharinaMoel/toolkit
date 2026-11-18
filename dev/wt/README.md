@@ -99,6 +99,28 @@ exists, and names both commands: `--db` drops it, `--keep-db` keeps it on
 purpose. `wt list` names copies that no worktree claims any more (orphaned)
 and prints the `dropdb` commands; it never drops anything.
 
+### Keeping the main branches current
+
+`git fetch` only moves `origin/*`; a local `dev` checked out in the main
+folder silently falls behind, so merged changes seem to be missing.
+`wt sync` fetches and fast-forwards `TARGET_BRANCH` and `main` (or the list in
+`SYNC_BRANCHES`). A branch that no worktree has checked out is moved with
+`git update-ref <new> <old>`, which only succeeds if it still points at the
+old commit. A checked-out branch is fast-forwarded with `git merge --ff-only`
+only when its worktree has no tracked changes and runs no `manage.py`;
+untracked files are fine unless the incoming commits add one of the same name,
+in which case git stops without changing anything. Local commits, diverged
+history or a rebase in progress make sync skip the branch and say why. When
+the new commits touch a `migrations/` folder, sync says so.
+
+`wt sync --install-timer [--every 30min]` writes a systemd user service and
+timer (`~/.config/systemd/user/wt-sync-<repo>-<hash>.*`) that run
+`wt sync --notify` two minutes after boot and then every interval;
+`--notify` sends a desktop notification only for skipped branches and new
+migrations. The service sets `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` so a
+locked SSH key fails instead of hanging; sync then compares against the last
+fetched state. `--uninstall-timer` removes both files.
+
 ### Ports and settings for `wt run`
 
 For `runserver`, the first match wins: `--port N`; the main checkout gets
