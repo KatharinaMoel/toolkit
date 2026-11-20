@@ -1,0 +1,10 @@
+{
+  "name": "FU-VPN Indicator",
+  "description": "Zeigt ein VPN-Symbol in der Leiste, solange der fu-vpn-Tunnel laeuft, mit Menue zum Verbinden, Trennen und fuer den Status.",
+  "uuid": "fu-vpn-indicator@toolkit.local",
+  "url": "https://github.com/KatharinaMoel/toolkit/tree/main/net/fu-vpn",
+  "shell-version": [
+    "50",
+    "51"
+  ]
+}

@@ -27,6 +27,7 @@ on any Linux. Each tool's README states its actual requirements.
 | [dev/wt](dev/wt/) | dev | Disposable git worktrees for parallel MR reviews and branch work — with per-review database copies |
 | [dev/mr-export](dev/mr-export/) | dev | GitLab merge requests — descriptions, threads, approvals, pipeline, images, diffs, and whether each change is already merged (read from Git) — kept as a local snapshot on a timer, with an offline overview for when the server is down |
 | [dev/recall](dev/recall/) | dev | One hotkey, one fuzzy list: copy prepared commit/MR texts and forgotten commands, read procedures — with Claude Code as a read-only fallback for fuzzy questions |
+| [net/fu-vpn](net/fu-vpn/) | net | FU Berlin VPN with the browser login via openconnect, without NetworkManager — with the MTU fix, an app icon and a GNOME top bar icon |
 | [media/transcribe](media/transcribe/) | media | Public podcast episodes (or any audio) to Markdown — the publisher's transcript when the feed has one, otherwise local CPU recognition with timestamps; resumable queue for multi-day runs |
 
 ## Development

@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=FU-VPN
+Comment=FU-VPN an- oder ausschalten (Login im Browser, danach sudo-Passwort)
+Icon=network-vpn-symbolic
+Exec=@TERMINAL@ -- @BIN@ toggle --window
+Terminal=false
+Categories=Network;
+Keywords=VPN;FU;openconnect;
+X-Toolkit-Source=net/fu-vpn
+Actions=down;status;
+
+[Desktop Action down]
+Name=Trennen
+Exec=@TERMINAL@ -- @BIN@ down --window
+
+[Desktop Action status]
+Name=Status
+Exec=@TERMINAL@ -- @BIN@ status --window
