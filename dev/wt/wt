@@ -101,6 +101,9 @@ wt - Worktrees mit erklaerten Schritten
                               Dateien stoeren nicht) und ohne laufenden manage.py; sonst
                               uebersprungen mit Grund; --notify meldet Uebersprungenes und
                               neue Migrationen per Desktop-Meldung (notify-send)
+                              scheitert der Fetch, ordnet sync die Ursache ein (SSH-,
+                              HTTPS- und Internet-Probe) und holt nur bei "SSH zu, HTTPS
+                              geht" oder "SSH-Schluessel abgelehnt" einmal ueber HTTPS
   wt sync --install-timer [--every <dauer>] | --uninstall-timer
                               systemd-User-Timer, der 'wt sync --notify' regelmaessig
                               ausfuehrt (Default alle 30min); nur Linux mit systemd
@@ -1349,6 +1352,106 @@ sync_timer_uninstall() {
   run "systemctl --user daemon-reload" "systemd die Aenderung einlesen lassen"
 }
 
+# ---------- GitLab erreichbar? Ursache einordnen, wenn ein Fetch ueber SSH scheitert ----------
+# Laeuft nur nach einem fehlgeschlagenen Fetch, kostet im Normalfall also nichts.
+# Einordnung: SSH-Probe und HTTPS-Probe (glab api), bei beiden "keine Verbindung" zusaetzlich
+# eine Internet-Probe. Nur wenn GitLab ueber HTTPS antwortet, SSH aber nicht (Port zu oder
+# Schluessel abgelehnt), wird der Fetch einmal ueber HTTPS wiederholt - nur fuer diesen einen
+# git-Aufruf, ohne eine Konfig-Datei zu aendern.
+remote_ssh_host() { # $1 = Remote-URL -> Host einer SSH-URL (git@host:pfad, ssh://[user@]host[:port]/pfad), sonst leer
+  local url="$1" h=""
+  case "$url" in
+    ssh://*) h=${url#ssh://}; h=${h%%/*}; h=${h#*@}; h=${h%%:*} ;;
+    *://*) h="" ;;
+    *@*:*) h=${url#*@}; h=${h%%:*} ;;
+  esac
+  if [ -n "$h" ] && re_ascii "$h" '^[A-Za-z0-9.-]+$'; then printf '%s\n' "$h"; fi
+}
+with_timeout() { # $1 = Sekunden, Rest = Befehl; ohne timeout-Programm (macOS ohne coreutils) laeuft er ohne Grenze
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; else "$@"; fi
+}
+reach_https_kind() { # $1 = stderr von glab api -> server-error | no-connection | error
+  if printf '%s' "$1" | grep -qE '(^|[^0-9])50[0234]([^0-9]|$)|HTTP 5'; then echo server-error
+  elif printf '%s' "$1" | grep -qiE 'no route to host|i/o timeout|timeout|connection refused|network is unreachable|dial tcp'; then echo no-connection
+  else echo error; fi
+}
+reach_ssh_kind() { # $1 = Ausgabe von ssh -T git@host -> ok | server-error | no-connection | error
+  if printf '%s' "$1" | grep -qF 'Welcome to GitLab'; then echo ok
+  elif printf '%s' "$1" | grep -qF 'Internal API unreachable'; then echo server-error
+  elif printf '%s' "$1" | grep -qiE 'no route to host|timed out|connection refused|network is unreachable|could not resolve hostname'; then echo no-connection
+  else echo error; fi
+}
+reach_diagnose() { # $1 = Remote-URL -> setzt REACH_STATE, REACH_MSG, REACH_HOST
+  local host ssh="-" https="-" out rc ssh_cmd="${GIT_SSH_COMMAND:-ssh}"
+  REACH_STATE="unknown"; REACH_HOST=""
+  host=$(remote_ssh_host "$1")
+  if [ -z "$host" ]; then
+    REACH_MSG="Ursache unklar - die Remote-URL ist keine SSH-URL, nichts zu pruefen (Fall unknown)"
+    return 0
+  fi
+  REACH_HOST="$host"
+  show "timeout 10 glab api --hostname $(q "$host") version" \
+       "HTTPS-Probe: antwortet die GitLab-API von $host?"
+  rc=0; out=$(with_timeout 10 glab api --hostname "$host" version 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" -eq 0 ]; then https=ok
+  elif [ "$rc" -eq 127 ]; then https=error   # glab fehlt; die Meldung nennt 'timeout' und saehe sonst wie ein Netzproblem aus
+  else
+    [ "$rc" -ne 124 ] || out+=" timeout"   # timeout beendet stumm mit 124
+    https=$(reach_https_kind "$out")
+  fi
+  # Dieselbe SSH-Befehlszeile wie git (GIT_SSH_COMMAND), damit die Probe prueft, was der Fetch nutzt.
+  show "timeout 10 $ssh_cmd -T -o BatchMode=yes -o ConnectTimeout=5 git@$host" \
+       "SSH-Probe: laesst $host uns per SSH herein?"
+  rc=0; out=$(with_timeout 10 sh -c "$ssh_cmd \"\$@\"" ssh -T -o BatchMode=yes -o ConnectTimeout=5 "git@$host" 2>&1) || rc=$?
+  [ "$rc" -ne 124 ] || out+=" timed out"
+  ssh=$(reach_ssh_kind "$out")
+
+  if [ "$ssh" = server-error ] || [ "$https" = server-error ]; then REACH_STATE="gitlab-down"
+  elif [ "$ssh" = ok ] && [ "$https" = ok ]; then REACH_STATE="ok"
+  elif [ "$https" = ok ] && [ "$ssh" = no-connection ]; then REACH_STATE="https-only"
+  elif [ "$https" = ok ] && [ "$ssh" = error ]; then REACH_STATE="ssh-key"
+  elif [ "$https" = no-connection ] && [ "$ssh" = no-connection ]; then
+    show "curl -sS -o /dev/null --max-time 5 https://github.com" "Internet-Probe: geht ueberhaupt etwas raus?"
+    if curl -sS -o /dev/null --max-time 5 https://github.com 2>/dev/null; then REACH_STATE="fu-unreachable"
+    else REACH_STATE="offline"; fi
+  fi
+  case "$REACH_STATE" in
+    ok) REACH_MSG="GitLab erreichbar" ;;
+    https-only) REACH_MSG="GitLab nur über HTTPS erreichbar (SSH Port 22 zu, vermutlich VPN) – weiche auf HTTPS aus" ;;
+    gitlab-down) REACH_MSG="GitLab selbst gestört (Serverfehler) – später erneut" ;;
+    fu-unreachable) REACH_MSG="GitLab nicht erreichbar, Internet geht – FU-VPN einschalten?" ;;
+    offline) REACH_MSG="Kein Netz" ;;
+    ssh-key) REACH_MSG="SSH-Anmeldung abgelehnt (Schlüssel?) – weiche auf HTTPS aus" ;;
+    *) REACH_MSG="Ursache unklar" ;;
+  esac
+  REACH_MSG+=" (Fall $REACH_STATE: SSH $ssh, HTTPS $https)"
+}
+https_fetch_prefix() { # $1 = Host -> 'GIT_TERMINAL_PROMPT=0 git -c ...' fuer genau einen git-Aufruf ueber HTTPS
+  local h="$1"
+  printf 'GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c %s -c %s -c %s' \
+    "$(q 'credential.helper=!glab auth git-credential')" \
+    "$(q "url.https://$h/.insteadOf=git@$h:")" "$(q "url.https://$h/.insteadOf=ssh://git@$h/")"
+}
+fetch_with_reach() { # $1 = Erklaerung, Rest = git-Argumente nach -C <repo> -> Fetch, bei Fehler einordnen und ggf. ueber HTTPS
+  local why="$1" gitargs="" a url
+  shift
+  for a in "$@"; do gitargs+=" $(q "$a")"; done
+  if run "git -C $(q "$REPO_ROOT")$gitargs" "$why"; then return 0; fi
+  url=$(git -C "$REPO_ROOT" remote get-url "$REMOTE" 2>/dev/null) || url=""
+  reach_diagnose "$url"
+  note "Holen fehlgeschlagen: $REACH_MSG"
+  case "$REACH_STATE" in
+    https-only|ssh-key)
+      run "$(https_fetch_prefix "$REACH_HOST") -C $(q "$REPO_ROOT")$gitargs" \
+          "dasselbe noch einmal ueber HTTPS (Anmeldung ueber glab, nur fuer diesen Aufruf, keine Konfig-Aenderung)" \
+        && { note "Ueber HTTPS geholt."; return 0; }
+      note "Auch ueber HTTPS fehlgeschlagen."
+      ;;
+  esac
+  return 1
+}
+
 cmd_sync() {
   local notify=0 every="30min" mode="sync" b rc=0 out="" line alert="" branches=()
   while [ $# -gt 0 ]; do
@@ -1375,9 +1478,9 @@ cmd_sync() {
     re_ascii "$b" '^[A-Za-z0-9._/-]+$' || die "SYNC_BRANCHES: ungewoehnlicher Branchname '$b'"
   done
 
-  run "git -C $(q "$REPO_ROOT") fetch --prune -q $(q "$REMOTE")" \
-      "neuen Stand von $REMOTE holen (bewegt nur $REMOTE/*, lokale Branches bleiben)" \
-    || note "Holen fehlgeschlagen (offline? SSH-Schluessel?) - verglichen wird mit dem zuletzt geholten Stand von $REMOTE."
+  fetch_with_reach "neuen Stand von $REMOTE holen (bewegt nur $REMOTE/*, lokale Branches bleiben)" \
+      fetch --prune -q "$REMOTE" \
+    || note "Verglichen wird mit dem zuletzt geholten Stand von $REMOTE."
 
   for b in "${branches[@]}"; do
     rc=0; line=$(sync_branch "$b") || rc=$?

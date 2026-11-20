@@ -101,6 +101,28 @@ Snapshot layout:
     uploads/<secret>/<file>
 ```
 
+## Wenn GitLab nicht erreichbar ist
+
+Scheitert Git über SSH (Zweige auflisten, Commits holen), ordnet mr-export die
+Ursache ein und schreibt den Fall in die Meldung und in die Lücken des Laufs
+(`last-run.json`, `mr-export check`). Im Normalfall läuft keine dieser Proben.
+
+- **Proben:** `timeout 10 glab api --hostname <host> version` (HTTPS) und
+  `timeout 10 ssh -T -o BatchMode=yes -o ConnectTimeout=5 git@<host>` (SSH, mit
+  `GIT_SSH_COMMAND`, wenn gesetzt). Nur wenn beide keine Verbindung bekommen,
+  prüft `curl https://github.com`, ob das Internet geht. Der Host kommt aus der
+  Remote-URL von `origin`; ist sie keine SSH-URL, gibt es keine Probe.
+- **Fälle:** `ok`, `https-only` (SSH-Port zu, HTTPS geht – oft nur mit VPN),
+  `ssh-key` (SSH-Anmeldung abgelehnt), `gitlab-down` (Serverfehler wie HTTP 502
+  oder „Internal API unreachable“), `fu-unreachable` (GitLab weg, Internet da),
+  `offline`, `unknown`.
+- **Ausweg über HTTPS:** nur bei `https-only` und `ssh-key` wiederholt mr-export
+  die Git-Schritte einmal über HTTPS, angemeldet über glab
+  (`git -c credential.helper=… -c url.https://<host>/.insteadOf=…`,
+  `GIT_TERMINAL_PROMPT=0`). Das gilt nur für diese Aufrufe; keine Konfig-Datei
+  wird geändert. In allen anderen Fällen fehlt Git im Lauf (Lauf `partial`).
+- Nicht abgedeckt: ein SSH-Port in der Remote-URL (`ssh://git@host:2222/…`).
+
 ## Open it
 
 `mr-export open` opens `latest/index.html` with your default browser, or open that

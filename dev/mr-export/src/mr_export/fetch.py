@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import gitstate, lastrun, share
+from . import gitstate, lastrun, reach, share
 from .runner import CommandError, CommandTimeout, Console, Runner
 from .snapshot import MergeRequest, mr_number, parse_ndjson, upload_refs
 
@@ -76,15 +76,36 @@ def collect_git_state(runner: Runner, console: Console, mrs: list[MergeRequest],
     """Writes git.json (per MR: is its change in the target / in the emergency branch)
     and mr/<iid>.diff. Returns failures; when Git cannot reach the server, one failure
     and no git.json."""
-    try:
+    def read_server() -> list[str]:
         on_server = gitstate.remote_heads(runner)
         targets = {m.data.get("target_branch") for m in mrs} - {None}
-        branches = sorted(b for b in targets | set(emergency.values()) if b in on_server)
-        console.result(f"{len(on_server)} branches; reading {', '.join(branches) or 'none'}")
-        gitstate.fetch_refs(runner, branches)
+        found = sorted(b for b in targets | set(emergency.values()) if b in on_server)
+        console.result(f"{len(on_server)} branches; reading {', '.join(found) or 'none'}")
+        gitstate.fetch_refs(runner, found)
+        return found
+
+    try:
+        branches = read_server()
     except CommandError as e:
         console.note(f"Git over SSH failed: {e}")
-        return [f"git: {e}"]
+        try:
+            url = runner.git(["remote", "get-url", gitstate.REMOTE], None)
+        except CommandError:
+            url = ""
+        why = reach.diagnose(runner, url)
+        console.note(why.message)
+        if not why.https_way_out:
+            return [f"git: {e} - {why.message}"]
+        runner.use_git_transport(reach.https_git_config(why.host), reach.HTTPS_ENV)
+        console.step("Same again over HTTPS (glab signs in, only for these calls, no config change)")
+        try:
+            branches = read_server()
+        except CommandError as e2:
+            console.note(f"Git over HTTPS failed too: {e2}")
+            return [f"git: {e} - {why.message}; HTTPS: {e2}"]
+        finally:
+            runner.use_git_transport([], {})
+        console.note("Read over HTTPS.")
     console.step(f"For each MR: is its change already in its target branch, and its diff ({len(mrs)} MRs)")
     states: dict[str, dict] = {}
     failures: list[str] = []

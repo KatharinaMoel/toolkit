@@ -3,6 +3,7 @@ then run. Explanations go to stderr, so stdout stays free for results.
 
 Style: '* <what happens>', then '  > <command>', then '  = <result>'; notes '  ! ...'.
 """
+import os
 import shlex
 import subprocess
 import sys
@@ -65,9 +66,19 @@ class Runner:
         self.console = console
         self._run = run
         self.timeout = timeout
+        # Extra 'git -c' settings and environment for every git call; empty by default.
+        # Set by use_git_transport (e.g. the HTTPS way out when SSH is blocked).
+        self.git_config: list[str] = []
+        self.git_env: dict[str, str] = {}
+
+    def use_git_transport(self, config: list[str], env: dict[str, str]) -> None:
+        self.git_config, self.git_env = list(config), dict(env)
+
+    def _git_cmd(self, args: list[str]) -> list[str]:
+        return ["git", "-C", str(self.repo), *self.git_config, *args]
 
     def git(self, args: list[str], explanation: str | None) -> str:
-        cmd = ["git", "-C", str(self.repo), *args]
+        cmd = self._git_cmd(args)
         if explanation:
             self.console.step(explanation, cmd)
         # Diffs may hold files in other encodings; undecodable bytes become U+FFFD.
@@ -93,7 +104,7 @@ class Runner:
     def git_ok(self, args: list[str], explanation: str | None) -> bool:
         """For git commands that answer yes/no by exit code: 0 -> True, 1 -> False,
         anything else is an error."""
-        cmd = ["git", "-C", str(self.repo), *args]
+        cmd = self._git_cmd(args)
         if explanation:
             self.console.step(explanation, cmd)
         res = self._call(cmd)
@@ -104,7 +115,7 @@ class Runner:
 
     def git_status(self, args: list[str], explanation: str | None) -> tuple[int, str]:
         """Exit code and output, for git commands where exit 1 is an answer, not an error."""
-        cmd = ["git", "-C", str(self.repo), *args]
+        cmd = self._git_cmd(args)
         if explanation:
             self.console.step(explanation, cmd)
         res = self._call(cmd)
@@ -119,6 +130,20 @@ class Runner:
             self.console.step(explanation, args)
         return self._exec(args).decode(errors="replace").strip()
 
+    def probe(self, args: list[str], explanation: str | None) -> tuple[int, str]:
+        """A diagnostic command: exit code and stdout+stderr, never raises. A missing
+        program gives 127, a timeout 124, like the shell."""
+        if explanation:
+            self.console.step(explanation, args)
+        try:
+            res = self._call(args)
+        except CommandTimeout as e:
+            return 124, str(e)
+        except CommandError as e:
+            return 127, str(e)
+        out = (res.stdout or b"") + b"\n" + (res.stderr or b"")
+        return res.returncode, out.decode(errors="replace").strip()
+
     def tool_ok(self, args: list[str], explanation: str | None) -> bool:
         """A local program asked a yes/no question by exit code (0 = yes)."""
         if explanation:
@@ -127,6 +152,9 @@ class Runner:
 
     def _call(self, cmd: list[str]) -> subprocess.CompletedProcess:
         try:
+            if cmd[0] == "git" and self.git_env:
+                return self._run(cmd, cwd=self.repo, capture_output=True, timeout=self.timeout,
+                                 env={**os.environ, **self.git_env})
             return self._run(cmd, cwd=self.repo, capture_output=True, timeout=self.timeout)
         except FileNotFoundError as e:
             raise CommandError(f"{cmd[0]} is not installed") from e

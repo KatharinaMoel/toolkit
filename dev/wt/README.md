@@ -124,6 +124,29 @@ migrations. The service sets `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` so a
 locked SSH key fails instead of hanging; sync then compares against the last
 fetched state. `--uninstall-timer` removes both files.
 
+#### Wenn GitLab nicht erreichbar ist
+
+Scheitert der Fetch über SSH, ordnet `wt sync` die Ursache ein und nennt den Fall
+in der Meldung (auch im Journal des Timers). Im Normalfall läuft keine dieser Proben.
+
+- **Proben:** `timeout 10 glab api --hostname <host> version` (HTTPS) und
+  `timeout 10 ssh -T -o BatchMode=yes -o ConnectTimeout=5 git@<host>` (SSH, mit
+  `GIT_SSH_COMMAND`, wenn gesetzt, wie git selbst). Nur wenn beide keine Verbindung
+  bekommen, prüft `curl https://github.com`, ob das Internet geht. Den Host liest
+  wt aus der Remote-URL (`git@host:…` oder `ssh://…`); bei anderen URLs gibt es
+  keine Probe.
+- **Fälle:** `ok` (GitLab erreichbar), `https-only` (SSH-Port zu, HTTPS geht –
+  oft nur mit VPN), `ssh-key` (SSH-Anmeldung abgelehnt), `gitlab-down`
+  (Serverfehler wie HTTP 502 oder „Internal API unreachable“), `fu-unreachable`
+  (GitLab weg, Internet da – VPN einschalten?), `offline`, `unknown`.
+- **Ausweg über HTTPS:** nur bei `https-only` und `ssh-key` holt wt einmal über
+  HTTPS, angemeldet über glab. Die Einstellungen gelten nur für diesen einen
+  git-Aufruf (`git -c credential.helper=… -c url.https://<host>/.insteadOf=…`,
+  `GIT_TERMINAL_PROMPT=0`); keine Konfig-Datei wird geändert. Bei allen anderen
+  Fällen vergleicht sync mit dem zuletzt geholten Stand.
+- Nicht abgedeckt: ein SSH-Port in der Remote-URL (`ssh://git@host:2222/…`) –
+  die Probe prüft dann Port 22, und der HTTPS-Ausweg schreibt die URL nicht um.
+
 ### Ports and settings for `wt run`
 
 For `runserver`, the first match wins: `--port N`; the main checkout gets
