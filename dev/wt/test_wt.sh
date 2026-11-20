@@ -1453,6 +1453,111 @@ git -C "$SREPO" checkout -q -- a.txt
 
 err=$("$WT" sync --install-timer --every 'x; rm' 2>&1 >/dev/null); rc=$?
 if [ "$rc" -ne 0 ] && [ ! -d "$HOME/.config/systemd" ]; then ok "sync --install-timer: unsinnige Dauer -> Abbruch, nichts geschrieben"; else fail "sync --install-timer: unsinnige Dauer -> Abbruch" "rc=$rc $err"; fi
+
+# ---------- wt sync: Fetch scheitert -> Ursache einordnen, nur bei https-only/ssh-key ueber HTTPS ----------
+# Kein Netz: ssh, glab und curl sind Stubs, die Ausgaben der echten Programme nachspielen.
+# Ein git-Spion vor dem echten git faengt den HTTPS-Aufruf ab (erkennbar an insteadOf) und
+# antwortet mit $FAKE_HTTPS_RC; alle anderen git-Aufrufe gehen an das echte git.
+REAL_GIT=$(command -v git)
+SPYDIR="$TMP/gitspy"; mkdir -p "$SPYDIR"
+cat > "$SPYDIR/git" <<EOF
+#!/usr/bin/env bash
+case "\$*" in *insteadOf*) printf 'PROMPT=%s %s\n' "\${GIT_TERMINAL_PROMPT:-}" "\$*" >> "\$GIT_SPY"; exit "\${FAKE_HTTPS_RC:-0}" ;; esac
+exec $(printf '%q' "$REAL_GIT") "\$@"
+EOF
+cat > "$STUBS/fake-ssh" <<'EOF'
+#!/usr/bin/env bash
+printf 'ssh %s\n' "$*" >> "$FORGE_SPY"
+printf '%b\n' "$FAKE_SSH_OUT" >&2; exit 255
+EOF
+cp "$STUBS/fake-ssh" "$STUBS/ssh"   # falls doch etwas ssh direkt ruft: nie das echte
+cat > "$STUBS/glab" <<'EOF'
+#!/usr/bin/env bash
+printf 'glab %s\n' "$*" >> "$FORGE_SPY"
+if [ "$1" = api ] && [ "${FAKE_GLAB_API:-}" = ok ]; then echo '{"version":"18.0.0"}'; exit 0; fi
+printf '%s\n' "${FAKE_GLAB_API:-ERROR: dial tcp: lookup gitlab.example: no such host}" >&2; exit 1
+EOF
+cat > "$STUBS/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >> "$FORGE_SPY"; exit "${FAKE_CURL_RC:-6}"
+EOF
+chmod +x "$SPYDIR/git" "$STUBS/fake-ssh" "$STUBS/ssh" "$STUBS/glab" "$STUBS/curl"
+export GIT_SPY="$TMP/git-spy.log"
+
+: > "$FORGE_SPY"
+"$WT" sync >/dev/null 2>&1
+if ! grep -q 'glab api' "$FORGE_SPY" && ! grep -q '^ssh' "$FORGE_SPY"; then ok "reach: Fetch klappt -> keine Probe"
+else fail "reach: Fetch klappt -> keine Probe" "$(cat "$FORGE_SPY")"; fi
+
+git -C "$SREPO" remote set-url origin "git@git.example.org:team/sync.git"
+reach() { # $1 = SSH-Ausgabe, $2 = glab-Ausgabe (ok = Erfolg), $3 = curl-Exitcode -> stderr von wt sync in $out
+  : > "$FORGE_SPY"; : > "$GIT_SPY"
+  out=$(PATH="$SPYDIR:$PATH" GIT_SSH_COMMAND=fake-ssh FAKE_SSH_OUT="$1" FAKE_GLAB_API="$2" FAKE_CURL_RC="${3:-6}" \
+        "$WT" sync 2>&1 >/dev/null); rc=$?
+}
+NOROUTE="ssh: connect to host git.example.org port 22: No route to host"
+
+reach "$NOROUTE" ok
+if [ "$rc" -eq 0 ] && [[ "$out" == *"GitLab nur über HTTPS erreichbar"*"(Fall https-only: SSH no-connection, HTTPS ok)"* ]] \
+   && [[ "$out" == *"Ueber HTTPS geholt"* ]] \
+   && grep -q '^PROMPT=0 ' "$GIT_SPY" \
+   && grep -qF 'credential.helper= -c credential.helper=!glab auth git-credential' "$GIT_SPY" \
+   && grep -qF 'url.https://git.example.org/.insteadOf=git@git.example.org:' "$GIT_SPY" \
+   && grep -qF 'url.https://git.example.org/.insteadOf=ssh://git@git.example.org/' "$GIT_SPY" \
+   && grep -qF 'fetch --prune -q origin' "$GIT_SPY"; then ok "reach: SSH zu, HTTPS geht -> https-only, Fetch ueber HTTPS"
+else fail "reach: SSH zu, HTTPS geht -> https-only, Fetch ueber HTTPS" "rc=$rc $out | $(cat "$GIT_SPY")"; fi
+if grep -qF 'glab api --hostname git.example.org version' "$FORGE_SPY" \
+   && grep -qF 'ssh -T -o BatchMode=yes -o ConnectTimeout=5 git@git.example.org' "$FORGE_SPY" \
+   && ! grep -q '^curl' "$FORGE_SPY"; then ok "reach: Proben mit Host aus der Remote-URL, ohne Internet-Probe"
+else fail "reach: Proben mit Host aus der Remote-URL" "$(cat "$FORGE_SPY")"; fi
+if [ "$(git -C "$SREPO" config --get-all url.https://git.example.org/.insteadof)" = "" ] \
+   && [ "$(git -C "$SREPO" config --get-all credential.helper)" = "" ]; then ok "reach: HTTPS-Ausweg schreibt nichts in die Konfig"
+else fail "reach: HTTPS-Ausweg schreibt nichts in die Konfig" "$(git -C "$SREPO" config --list --local)"; fi
+
+reach "git@git.example.org: Permission denied (publickey)." ok
+if [[ "$out" == *"SSH-Anmeldung abgelehnt (Schlüssel?)"*"(Fall ssh-key: SSH error, HTTPS ok)"* ]] && [ -s "$GIT_SPY" ]; then ok "reach: Schluessel abgelehnt -> ssh-key, Fetch ueber HTTPS"
+else fail "reach: Schluessel abgelehnt -> ssh-key, Fetch ueber HTTPS" "$out"; fi
+
+reach 'remote:\nremote: ========\nremote: Internal API unreachable' ok
+if [[ "$out" == *"GitLab selbst gestört"*"(Fall gitlab-down: SSH server-error, HTTPS ok)"* ]] && [ ! -s "$GIT_SPY" ]; then ok "reach: SSH meldet Internal API unreachable -> gitlab-down, kein HTTPS-Ausweg"
+else fail "reach: SSH meldet Internal API unreachable -> gitlab-down" "$out | $(cat "$GIT_SPY")"; fi
+
+reach "$NOROUTE" "glab: 502 Bad Gateway (HTTP 502)"
+if [[ "$out" == *"(Fall gitlab-down: SSH no-connection, HTTPS server-error)"* ]] && [ ! -s "$GIT_SPY" ]; then ok "reach: HTTPS 502 -> gitlab-down, kein HTTPS-Ausweg"
+else fail "reach: HTTPS 502 -> gitlab-down" "$out | $(cat "$GIT_SPY")"; fi
+
+reach "ssh: Could not resolve hostname git.example.org: Name or service not known" \
+      "ERROR: dial tcp: lookup git.example.org: no such host" 6
+if [[ "$out" == *"Kein Netz (Fall offline: SSH no-connection, HTTPS no-connection)"* ]] && [ ! -s "$GIT_SPY" ] \
+   && grep -qF 'curl -sS -o /dev/null --max-time 5 https://github.com' "$FORGE_SPY"; then ok "reach: nichts geht -> offline, kein HTTPS-Ausweg"
+else fail "reach: nichts geht -> offline" "$out | $(cat "$FORGE_SPY")"; fi
+if [[ "$out" == *"Verglichen wird mit dem zuletzt geholten Stand"* ]] && [ "$rc" -eq 0 ]; then ok "reach: offline -> sync laeuft mit altem Stand weiter"
+else fail "reach: offline -> sync laeuft mit altem Stand weiter" "rc=$rc $out"; fi
+
+reach "$NOROUTE" "Get \"https://git.example.org/api/v4/version\": dial tcp 1.2.3.4:443: i/o timeout" 0
+if [[ "$out" == *"Internet geht – FU-VPN einschalten?"*"(Fall fu-unreachable"* ]] && [ ! -s "$GIT_SPY" ]; then ok "reach: GitLab weg, Internet da -> fu-unreachable"
+else fail "reach: GitLab weg, Internet da -> fu-unreachable" "$out"; fi
+
+reach "$NOROUTE" "HTTP 401 Unauthorized"
+if [[ "$out" == *"Ursache unklar (Fall unknown: SSH no-connection, HTTPS error)"* ]] && [ ! -s "$GIT_SPY" ]; then ok "reach: unbekannte Kombination -> unknown, kein HTTPS-Ausweg"
+else fail "reach: unbekannte Kombination -> unknown" "$out"; fi
+
+export FAKE_HTTPS_RC=128
+reach "$NOROUTE" ok
+if [[ "$out" == *"Auch ueber HTTPS fehlgeschlagen"*"Verglichen wird mit dem zuletzt geholten Stand"* ]] && [ "$rc" -eq 0 ]; then ok "reach: auch HTTPS scheitert -> gemeldet, sync laeuft weiter"
+else fail "reach: auch HTTPS scheitert -> gemeldet" "rc=$rc $out"; fi
+unset FAKE_HTTPS_RC
+
+git -C "$SREPO" remote set-url origin "ssh://git@git.example.org:2222/team/sync.git"
+reach "$NOROUTE" ok
+if grep -qF 'git@git.example.org' "$FORGE_SPY" && [[ "$out" == *"Fall https-only"* ]]; then ok "reach: ssh://-URL mit Port -> Host erkannt"
+else fail "reach: ssh://-URL mit Port -> Host erkannt" "$out"; fi
+
+git -C "$SREPO" remote set-url origin "$TMP/repos/gibt-es-nicht.git"
+reach "$NOROUTE" ok
+if [[ "$out" == *"keine SSH-URL"*"(Fall unknown)"* ]] && ! grep -q 'glab api' "$FORGE_SPY" && [ ! -s "$GIT_SPY" ]; then ok "reach: lokale Remote-URL -> keine Probe, unknown"
+else fail "reach: lokale Remote-URL -> keine Probe, unknown" "$out | $(cat "$FORGE_SPY")"; fi
+git -C "$SREPO" remote set-url origin "$SREM"
 cd "$REPO" || exit 1
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'alle Tests gruen' || echo "$fails Test(s) rot")"

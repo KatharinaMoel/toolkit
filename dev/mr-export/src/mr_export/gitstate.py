@@ -16,7 +16,7 @@ def mr_ref(iid: int) -> str:
 
 
 def remote_heads(runner: Runner) -> set[str]:
-    out = runner.git(["ls-remote", "--heads", REMOTE], "List the branches on the server (over SSH)")
+    out = runner.git(["ls-remote", "--heads", REMOTE], "List the branches on the server (Git: SSH, or HTTPS as the way out)")
     return {line.split("refs/heads/", 1)[1] for line in out.splitlines() if "refs/heads/" in line}
 
 
