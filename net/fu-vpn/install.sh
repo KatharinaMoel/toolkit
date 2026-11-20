@@ -66,8 +66,8 @@ link() {
     run "Symlink anlegen" ln -s "$source" "$target"
 }
 
-if [ "$(git -C "$HERE" rev-parse --git-dir 2>/dev/null)" != \
-     "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null)" ]; then
+if [ "$(git -C "$HERE" rev-parse --path-format=absolute --git-dir 2>/dev/null)" != \
+     "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
     echo "Achtung: $HERE liegt in einem Git-Worktree. Die Symlinks zeigen dorthin" \
          "und brechen, wenn der Worktree entfernt wird." >&2
 fi
