@@ -48,6 +48,37 @@ link_up() {
     ip link show "$IFACE" >/dev/null 2>&1
 }
 
+# Liest die Ausgabe von `openconnect --authenticate` (Zeilen KEY='wert') ohne
+# eval: nur bekannte Schluessel, Shell-Quoting von Hand entfernt. So kann
+# nichts, was vom Server kommt, als Befehl laufen.
+read_auth() {
+    local line key value q="'"
+    COOKIE="" CONNECT_URL="" FINGERPRINT=""
+    while IFS= read -r line; do
+        key=${line%%=*}
+        value=${line#*=}
+        if [ "${value:0:1}" = "$q" ] && [ "${value: -1}" = "$q" ] && [ ${#value} -ge 2 ]; then
+            value=${value:1:${#value}-2}
+            value=${value//"'\\''"/"'"}
+        fi
+        case "$key" in
+            COOKIE) COOKIE=$value ;;
+            CONNECT_URL) CONNECT_URL=$value ;;
+            FINGERPRINT) FINGERPRINT=$value ;;
+        esac
+    done
+    if [ -n "$COOKIE" ]; then
+        if [[ ! $CONNECT_URL =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]]; then
+            echo "Unerwartete CONNECT_URL vom Server - Abbruch." >&2
+            return 1
+        fi
+        if [[ ! $FINGERPRINT =~ ^[A-Za-z0-9:+/=-]+$ ]]; then
+            echo "Unerwarteter FINGERPRINT vom Server - Abbruch." >&2
+            return 1
+        fi
+    fi
+}
+
 up() {
     if link_up; then
         echo "Tunnel $IFACE laeuft schon."
@@ -56,9 +87,11 @@ up() {
     step "Login im Browser, liefert Sitzungs-Cookie (wird nicht angezeigt)" \
         openconnect --authenticate --useragent="$USERAGENT" \
         --external-browser="$BROWSER" "$SERVER"
-    eval "$(openconnect --authenticate --useragent="$USERAGENT" \
-        --external-browser="$BROWSER" "$SERVER")"
-    if [ -z "${COOKIE:-}" ]; then
+    local auth
+    auth=$(openconnect --authenticate --useragent="$USERAGENT" \
+        --external-browser="$BROWSER" "$SERVER") || true
+    read_auth <<<"$auth" || return 1
+    if [ -z "$COOKIE" ]; then
         echo "Login fehlgeschlagen - kein Cookie erhalten." >&2
         return 1
     fi

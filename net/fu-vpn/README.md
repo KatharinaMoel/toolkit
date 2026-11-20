@@ -66,8 +66,9 @@ The interface name is fixed to `fu-vpn`, because the top bar icon watches
 ## How it works
 
 1. **Login as yourself:** `openconnect --authenticate --external-browser=firefox`
-   prints `COOKIE`, `CONNECT_URL` and `FINGERPRINT`; the script takes them over
-   with `eval`, so the cookie is never shown on screen.
+   prints `COOKIE`, `CONNECT_URL` and `FINGERPRINT`. The script reads only these
+   keys, without `eval`, and checks the URL and fingerprint format, so nothing the
+   server sends can run as a command. The cookie is never shown on screen.
 2. **Tunnel as root:** `sudo setsid openconnect --cookie-on-stdin --servercert … --background`.
    The cookie goes in on stdin, so it is not in the process list either.
    `setsid` detaches the tunnel from the terminal window.

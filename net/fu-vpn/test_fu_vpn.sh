@@ -35,6 +35,7 @@ stub openconnect '
 printf "%s\n" "$*" >> "$STATE/openconnect.args"
 if [ "$1" = --authenticate ]; then
   [ -e "$STATE/no-cookie" ] && exit 1
+  [ -e "$STATE/auth-output" ] && { cat "$STATE/auth-output"; exit 0; }
   echo "COOKIE='"'"'$COOKIE_VALUE'"'"'"
   echo "HOST='"'"'vpn.example'"'"'"
   echo "CONNECT_URL='"'"'https://vpn.example/'"'"'"
@@ -131,6 +132,33 @@ check "config: SERVER" 'head -1 "$STATE/openconnect.args" | grep -q "vpn.other.e
 reset; conf; touch "$STATE/no-cookie"
 OUT=$("$FU_VPN" up 2>&1); RC=$?
 check "login without cookie: exit 1, no tunnel" '[ $RC = 1 ] && [[ $OUT == *"kein Cookie"* ]] && [ ! -e "$STATE/link" ]'
+
+# Server-controlled login output is parsed, never executed.
+reset; conf
+cat > "$STATE/auth-output" <<EOF2
+COOKIE='a'\\''b'; touch $STATE/pwned1
+CONNECT_URL='https://vpn.example/'
+FINGERPRINT='pin-sha256:abc'
+EVIL=\$(touch $STATE/pwned2)
+\$(touch $STATE/pwned3)
+EOF2
+OUT=$("$FU_VPN" up 2>&1); RC=$?
+check "login output: nothing from it runs as a command" '[ ! -e "$STATE/pwned1" ] && [ ! -e "$STATE/pwned2" ] && [ ! -e "$STATE/pwned3" ]'
+
+reset; conf
+printf '%s\n' "COOKIE='it'\\''s'" "CONNECT_URL='https://vpn.example/'" "FINGERPRINT='pin-sha256:abc'" > "$STATE/auth-output"
+OUT=$("$FU_VPN" up 2>&1); RC=$?
+check "login output: shell quoting removed" '[ $RC = 0 ] && [ "$(cat "$STATE/stdin")" = "it'"'"'s" ]'
+
+reset; conf
+printf '%s\n' "COOKIE='c'" "CONNECT_URL='https://vpn.example/ --script=/tmp/x'" "FINGERPRINT='pin-sha256:abc'" > "$STATE/auth-output"
+OUT=$("$FU_VPN" up 2>&1); RC=$?
+check "login output: odd CONNECT_URL stops before sudo" '[ $RC = 1 ] && [[ $OUT == *"CONNECT_URL"* ]] && [ ! -e "$STATE/sudo.log" ]'
+
+reset; conf
+printf '%s\n' "COOKIE='c'" "CONNECT_URL='https://vpn.example/'" "FINGERPRINT='abc; rm -rf x'" > "$STATE/auth-output"
+OUT=$("$FU_VPN" up 2>&1); RC=$?
+check "login output: odd FINGERPRINT stops before sudo" '[ $RC = 1 ] && [[ $OUT == *"FINGERPRINT"* ]] && [ ! -e "$STATE/sudo.log" ]'
 
 OUT=$("$FU_VPN" bogus 2>&1); RC=$?
 check "unknown command: exit 2 with usage" '[ $RC = 2 ] && [[ $OUT == *"Aufruf: fu-vpn"* ]]'
