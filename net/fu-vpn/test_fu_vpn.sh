@@ -197,6 +197,20 @@ rm "$BIN"; echo "old script" > "$BIN"; echo "older" > "$BIN.pre-toolkit"
 OUT=$(bash "$INSTALL" 2>&1); RC=$?
 check "install: stops instead of overwriting an old .pre-toolkit" '[ $RC = 1 ] && [ "$(cat "$BIN.pre-toolkit")" = older ] && [ "$(cat "$BIN")" = "old script" ]'
 
+# Worktree warning: only from a linked worktree, never from the main checkout
+# (git rev-parse prints --git-common-dir relative from a subfolder).
+G="$TMP/gitcheck"
+mkdir -p "$G/main/net/fu-vpn"
+cp -r "$HERE/install.sh" "$HERE/fu-vpn.desktop.in" "$HERE/extension" "$G/main/net/fu-vpn/"
+git -C "$G/main" init -q
+git -C "$G/main" add .
+git -C "$G/main" -c user.name=t -c user.email=t@example.invalid commit -qm init
+git -C "$G/main" worktree add -q "$G/wt" 2>/dev/null
+OUT=$(bash "$G/main/net/fu-vpn/install.sh" --dry-run 2>&1)
+check "install from the main checkout: no worktree warning" '[[ $OUT != *"Git-Worktree"* ]]'
+OUT=$(bash "$G/wt/net/fu-vpn/install.sh" --dry-run 2>&1)
+check "install from a worktree: warning" '[[ $OUT == *"Git-Worktree"* ]]'
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
