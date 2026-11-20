@@ -1,0 +1,9 @@
+#!/bin/sh
+# Optional, only for the NetworkManager route (VPN connection named "FU" in
+# GNOME's quick settings). Lowers the tunnel MTU after the connection is up:
+# with the MTU the server announces, large packets get lost and TLS/SSH hang.
+# `fu-vpn` does not need this file; it sets the MTU itself.
+# Install: sudo install -m 755 50-fu-vpn-mtu /etc/NetworkManager/dispatcher.d/
+[ "$2" = "vpn-up" ] || exit 0
+[ "$CONNECTION_ID" = "FU" ] || exit 0
+/usr/sbin/ip link set dev "$VPN_IP_IFACE" mtu 1350

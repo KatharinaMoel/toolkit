@@ -17,6 +17,7 @@ jobs:
           bash -n dev/wt/wt dev/wt/test_wt.sh
           bash -n dev/recall/recall dev/recall/test_recall.sh
           bash -n ai/skill-show/skill-show ai/skill-show/test_skill_show.sh
+          bash -n net/fu-vpn/fu-vpn net/fu-vpn/networkmanager/50-fu-vpn-mtu
 
       - name: ShellCheck
         run: |
@@ -24,6 +25,7 @@ jobs:
           shellcheck dev/wt/wt dev/wt/test_wt.sh
           shellcheck dev/recall/recall dev/recall/test_recall.sh
           shellcheck ai/skill-show/skill-show ai/skill-show/test_skill_show.sh
+          shellcheck net/fu-vpn/fu-vpn net/fu-vpn/install.sh net/fu-vpn/test_fu_vpn.sh net/fu-vpn/networkmanager/50-fu-vpn-mtu
 
       - name: wt tests
         run: bash dev/wt/test_wt.sh
@@ -33,6 +35,9 @@ jobs:
 
       - name: skill-show tests
         run: bash ai/skill-show/test_skill_show.sh
+
+      - name: fu-vpn tests
+        run: bash net/fu-vpn/test_fu_vpn.sh
 
   skill-map:
     name: skill-map tests (Python 3.12, stdlib + pytest)

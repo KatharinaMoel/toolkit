@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# fu-vpn - FU Berlin VPN (vpn.fu-berlin.de, Cisco AnyConnect) per openconnect,
+# mit Login im Browser (SSO) statt NetworkManager-Dialog.
+#
+#   fu-vpn [up]     Tunnel aufbauen (Login im Browser, danach sudo-Passwort)
+#   fu-vpn down     Tunnel trennen
+#   fu-vpn toggle   an <-> aus (fuer App-Symbol und Leistensymbol)
+#   fu-vpn status   Tunnel und optional eine Ziel-URL pruefen
+#   ... --window    fuer das App-Symbol: Fenster bleibt nach Fehlern offen
+#
+# Der Login laeuft als eigener Benutzer, weil Firefox nicht als root startet.
+# Nur der Tunnel laeuft als root und bekommt das Cookie ueber stdin, damit es
+# weder auf dem Bildschirm noch in der Prozessliste steht.
+# Die MTU wird nach dem Aufbau gesenkt: Mit der vom Server gemeldeten MTU
+# gehen grosse Pakete verloren, und TLS/SSH haengen.
+# Hintergrund und Befunde: README.md neben diesem Skript.
+#
+# Konfig (optional): ~/.config/fu-vpn/fu-vpn.conf, siehe example.conf.
+set -euo pipefail
+
+SERVER=vpn.fu-berlin.de
+USERAGENT=AnyConnectLinux
+BROWSER=/usr/bin/firefox
+MTU=1350
+PIDFILE=/run/fu-vpn.pid
+CHECK_URL=""
+CHECK_NAME="Ziel"
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/fu-vpn/fu-vpn.conf"
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && source "$CONF"
+
+# Fest: Das Leistensymbol prueft /sys/class/net/fu-vpn.
+IFACE=fu-vpn
+
+notify() {
+    notify-send --app-name=FU-VPN --icon=network-vpn-symbolic "$1" 2>/dev/null || true
+}
+
+# Zeigt vor jedem Schritt, was passiert und welcher Befehl laeuft.
+step() {
+    local why=$1
+    shift
+    printf '> %s\n  $ %s\n' "$why" "$*"
+}
+
+link_up() {
+    ip link show "$IFACE" >/dev/null 2>&1
+}
+
+# Liest die Ausgabe von `openconnect --authenticate` (Zeilen KEY='wert') ohne
+# eval: nur bekannte Schluessel, Shell-Quoting von Hand entfernt. So kann
+# nichts, was vom Server kommt, als Befehl laufen.
+read_auth() {
+    local line key value q="'"
+    COOKIE="" CONNECT_URL="" FINGERPRINT=""
+    while IFS= read -r line; do
+        key=${line%%=*}
+        value=${line#*=}
+        if [ "${value:0:1}" = "$q" ] && [ "${value: -1}" = "$q" ] && [ ${#value} -ge 2 ]; then
+            value=${value:1:${#value}-2}
+            value=${value//"'\\''"/"'"}
+        fi
+        case "$key" in
+            COOKIE) COOKIE=$value ;;
+            CONNECT_URL) CONNECT_URL=$value ;;
+            FINGERPRINT) FINGERPRINT=$value ;;
+        esac
+    done
+    if [ -n "$COOKIE" ]; then
+        if [[ ! $CONNECT_URL =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]]; then
+            echo "Unerwartete CONNECT_URL vom Server - Abbruch." >&2
+            return 1
+        fi
+        if [[ ! $FINGERPRINT =~ ^[A-Za-z0-9:+/=-]+$ ]]; then
+            echo "Unerwarteter FINGERPRINT vom Server - Abbruch." >&2
+            return 1
+        fi
+    fi
+}
+
+up() {
+    if link_up; then
+        echo "Tunnel $IFACE laeuft schon."
+        return 0
+    fi
+    step "Login im Browser, liefert Sitzungs-Cookie (wird nicht angezeigt)" \
+        openconnect --authenticate --useragent="$USERAGENT" \
+        --external-browser="$BROWSER" "$SERVER"
+    local auth
+    auth=$(openconnect --authenticate --useragent="$USERAGENT" \
+        --external-browser="$BROWSER" "$SERVER") || true
+    read_auth <<<"$auth" || return 1
+    if [ -z "$COOKIE" ]; then
+        echo "Login fehlgeschlagen - kein Cookie erhalten." >&2
+        return 1
+    fi
+    step "Tunnel als root aufbauen, Cookie ueber stdin, vom Terminal geloest (setsid)" \
+        sudo setsid openconnect --cookie-on-stdin --syslog \
+        --servercert "$FINGERPRINT" --useragent="$USERAGENT" \
+        --interface "$IFACE" --background --pid-file "$PIDFILE" "$CONNECT_URL"
+    echo "$COOKIE" | sudo setsid openconnect --cookie-on-stdin --syslog \
+        --servercert "$FINGERPRINT" --useragent="$USERAGENT" \
+        --interface "$IFACE" --background --pid-file "$PIDFILE" \
+        "$CONNECT_URL"
+    for _ in $(seq 20); do
+        link_up && break
+        sleep 0.5
+    done
+    if ! link_up; then
+        echo "Tunnel $IFACE kam nicht hoch. Log: journalctl -b -t openconnect" >&2
+        return 1
+    fi
+    step "MTU senken, sonst haengen TLS und SSH" \
+        sudo ip link set dev "$IFACE" mtu "$MTU"
+    sudo ip link set dev "$IFACE" mtu "$MTU"
+    echo "Tunnel $IFACE steht (MTU $MTU)."
+    notify "FU-VPN an"
+}
+
+down() {
+    if [ ! -f "$PIDFILE" ]; then
+        echo "Kein laufender fu-vpn-Tunnel ($PIDFILE fehlt)." >&2
+        return 1
+    fi
+    local pid
+    pid=$(cat "$PIDFILE")
+    step "openconnect beenden, das baut den Tunnel ab" sudo kill "$pid"
+    sudo kill "$pid"
+    for _ in $(seq 20); do
+        link_up || break
+        sleep 0.5
+    done
+    if link_up; then
+        echo "Tunnel $IFACE ist noch da. Log: journalctl -b -t openconnect" >&2
+        return 1
+    fi
+    echo "Tunnel getrennt."
+    notify "FU-VPN aus"
+}
+
+status() {
+    ip -br addr show "$IFACE" 2>/dev/null || echo "Tunnel $IFACE: aus"
+    [ -n "$CHECK_URL" ] || return 0
+    local code
+    code=$(curl -4 -s -m 10 -o /dev/null -w '%{http_code}' "$CHECK_URL") || true
+    if [ "$code" = "000" ] || [ -z "$code" ]; then
+        echo "$CHECK_NAME (HTTPS): nicht erreichbar"
+    else
+        echo "$CHECK_NAME (HTTPS): $code"
+    fi
+}
+
+usage() {
+    echo "Aufruf: fu-vpn [up|down|toggle|status] [--window]"
+    echo "Konfig: $CONF (siehe example.conf)"
+}
+
+main() {
+    case "${1:-up}" in
+        up) up ;;
+        down) down ;;
+        status) status ;;
+        toggle)
+            if link_up; then down; else up; fi ;;
+        -h|--help|help) usage ;;
+        *) usage >&2; return 2 ;;
+    esac
+}
+
+if [ "${2:-}" = "--window" ]; then
+    # Erfolg kurz zeigen, Fehler stehen lassen, bis Enter gedrueckt wird.
+    if (main "$1"); then
+        if [ "$1" = status ]; then
+            read -r -p "Enter schliesst das Fenster. " _
+        else
+            sleep "${FU_VPN_WINDOW_SECONDS:-3}"
+        fi
+    else
+        read -r -p "Fehler - Enter schliesst das Fenster. " _
+    fi
+else
+    main "$@"
+fi
