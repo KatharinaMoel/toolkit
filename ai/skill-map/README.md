@@ -65,6 +65,9 @@ in [`example.conf`](example.conf)):
 - `projects`: project folders whose `.claude/` gets a lane (fixed in the config, so
   the page is the same wherever a session starts).
 - `tools`, `builtins`, `areas`, `title`, `refresh_hint`, `hide`, `narrative`.
+- `hide_desc`: glob patterns over descriptions, for entries you mark by their
+  description (for example throwaway commands that all start with the same word).
+- `quiet_days`: see [Keeping it current](#keeping-it-current).
 
 The rules of where things are found and which file wins are skill-show's: name from
 `name:` or the folder, skills before commands, personal before project, plugins only
@@ -152,6 +155,10 @@ not over usage or texts. `skill-map check` compares it with the one stored by
 - `Skill-Landkarte: 2 Texte geändert – <refresh_hint>` when only texts of published
   entries changed;
 - nothing when all is equal; `… Prüfung fehlgeschlagen (<reason>)` on any error.
+
+With `quiet_days = N`, changed texts and plugin versions are left out of the line
+until the last publish is N days old; new and removed entries still show at once.
+If the publish time is unknown, nothing is held back.
 
 The default `refresh_hint` is `skill-map build && skill-map mark-published`: the
 line goes quiet once a build is marked as published (or as looked at, if you only

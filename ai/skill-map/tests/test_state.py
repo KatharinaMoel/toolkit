@@ -108,6 +108,51 @@ def test_check_reports_changed_texts_on_their_own_quieter_line(world, home, caps
     assert check(capsys) == "Skill-Landkarte veraltet (neu: new), 2 Texte geändert – skill-map build && skill-map mark-published"
 
 
+def _age_publish(home, days):
+    f = state(home) / "published/fingerprint.json"
+    rec = json.loads(f.read_text())
+    from datetime import datetime, timedelta
+    rec["published"] = (datetime.now().astimezone() - timedelta(days=days)).isoformat(timespec="seconds")
+    f.write_text(json.dumps(rec))
+
+
+def test_quiet_days_hold_back_text_and_version_changes_until_the_publish_is_old(world, home, conf, capsys):
+    from world import CONFIG
+    conf("quiet_days = 7\n" + CONFIG)
+    publish(capsys)
+    (home / ".claude/commands/k-start.md").write_text("changed text\n")
+    inst = home / ".claude/plugins/installed_plugins.json"
+    inst.write_text(inst.read_text().replace('"version": "7.0.0"', '"version": "7.1.0"'))
+    assert check(capsys) == ""                                   # fresh publish: quiet
+    _age_publish(home, 6)
+    assert check(capsys) == ""
+    _age_publish(home, 7)
+    assert check(capsys) == ("Skill-Landkarte veraltet (geändert: superp 7.0.0→7.1.0), 1 Text geändert"
+                             " – skill-map build && skill-map mark-published")
+
+
+def test_quiet_days_never_hold_back_new_or_removed_entries(world, home, conf, capsys):
+    from world import CONFIG
+    conf("quiet_days = 7\n" + CONFIG)
+    publish(capsys)
+    (home / ".claude/commands/k-start.md").write_text("changed text\n")
+    (home / ".claude/commands/new.md").write_text("x\n")
+    assert check(capsys) == "Skill-Landkarte veraltet (neu: new) – skill-map build && skill-map mark-published"
+    (home / ".claude/commands/new.md").unlink()
+    (home / ".claude/commands/plain.md").unlink()
+    assert check(capsys) == "Skill-Landkarte veraltet (entfernt: plain) – skill-map build && skill-map mark-published"
+
+
+def test_quiet_days_report_when_the_publish_time_is_unknown(world, home, conf, capsys):
+    from world import CONFIG
+    conf("quiet_days = 7\n" + CONFIG)
+    publish(capsys)
+    f = state(home) / "published/fingerprint.json"
+    rec = json.loads(f.read_text()); del rec["published"]; f.write_text(json.dumps(rec))
+    (home / ".claude/commands/k-start.md").write_text("changed text\n")
+    assert check(capsys) == "Skill-Landkarte: 1 Text geändert – skill-map build && skill-map mark-published"
+
+
 def test_check_uses_title_and_refresh_hint(world, home, conf, capsys):
     from world import CONFIG
     conf('title = "Karte"\nrefresh_hint = "/karte-neu"\n' + CONFIG)

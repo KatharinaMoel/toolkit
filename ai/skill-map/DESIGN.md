@@ -1081,3 +1081,36 @@ Rules that come with it:
   release it) and by its own classification. Price: on the first publish every
   runbook text is new and has to be read in full. Linked knowledge notes stay out
   (a separate decision).
+
+## Revision 2026-11-25 (user decided): a quieter session start
+
+Need: the line appeared at almost every session start. Causes seen in one week:
+throwaway commands (each one new until added to `hide` by name), plugin updates,
+and every edited text, on the team page every new history line in a runbook. The
+user keeps the throwaway commands; she marks them with a description that starts
+with the same word.
+
+Options considered:
+
+1. **Keep adding names to `hide`.** No code. Price: one config edit per throwaway
+   command, and the line shows until then.
+2. **A front matter field (`once: true`).** Exact. Price: Claude Code does not know
+   the field; the marker would live only for this tool, and existing commands would
+   need editing.
+3. **`hide_desc`: glob patterns over the description** (chosen). Uses the marker the
+   commands already carry. Price: a description that happens to start with the
+   pattern is hidden too; patterns are case-sensitive and anchored at the start, so
+   a description that only mentions the word stays.
+
+For the other causes:
+
+1. **Leave texts and versions out of `check`.** Price: the page could stay stale
+   for weeks with no hint.
+2. **Remember the last reminder in the state folder and repeat weekly.** Price:
+   `check` would write state, which it never did.
+3. **`quiet_days`: hold back changed texts and versions while the last publish is
+   younger than N days** (chosen). Stateless, reads only the publish time already
+   in `fingerprint.json`. New and removed entries are always reported. Price: the
+   page may lag up to N days behind edited texts; an unknown publish time holds
+   nothing back (fail loud). Top level only, so it applies to every profile.
+

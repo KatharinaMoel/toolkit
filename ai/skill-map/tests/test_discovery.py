@@ -130,6 +130,19 @@ def test_hide_removes_entries(world, conf):
     assert "plain" not in keys and not any(k.startswith("agent:") for k in keys)
 
 
+def test_hide_desc_removes_entries_by_the_start_of_their_description(world, home, conf):
+    from world import CONFIG
+    conf(CONFIG.replace('withhold_text = ["zeit"]', 'withhold_text = ["zeit"]\nhide_desc = ["Einmal-Command*"]'))
+    cmds = home / ".claude/commands"
+    (cmds / "once.md").write_text("---\ndescription: Einmal-Command – alte Branches löschen\n---\nx\n")
+    (cmds / "once-dated.md").write_text("---\ndescription: Einmal-Command (22.11.) – Seiten erneuern\n---\nx\n")
+    (cmds / "about.md").write_text("---\ndescription: Erklärt, was ein Einmal-Command ist\n---\nx\n")
+    (cmds / "lower.md").write_text("---\ndescription: einmal-command klein geschrieben\n---\nx\n")
+    keys = set(discover(load_config()).entries)
+    assert "once" not in keys and "once-dated" not in keys
+    assert {"about", "lower", "plain"} <= keys            # only the start counts, case-sensitive
+
+
 def test_zero_config_shows_only_claude_code_places(world, home):
     (home / ".config/skill-map/skill-map.conf").unlink()
     w = discover(load_config())

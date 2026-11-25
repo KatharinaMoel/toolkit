@@ -14,6 +14,8 @@ def test_no_config_file_gives_the_defaults(home):
     assert cfg.builtins == {}
     assert cfg.withhold_text == {}
     assert cfg.hide == []
+    assert cfg.hide_desc == []
+    assert cfg.quiet_days == 0
     assert cfg.title == "Skill-Landkarte"
     assert cfg.synced_skill_prefix == "anthropic-skills"
     assert cfg.artifact_url is None
@@ -61,6 +63,10 @@ def test_withhold_text_as_table_keeps_the_reason(home, conf):
     ("tools = \"one\"", "tools"),
     ("[builtins]\nx = 1", "builtins"),
     ("hide = [1]", "hide"),
+    ("hide_desc = \"Einmal*\"", "hide_desc"),
+    ("quiet_days = \"7\"", "quiet_days"),
+    ("quiet_days = -1", "quiet_days"),
+    ("quiet_days = true", "quiet_days"),
     ("unknown_key = 1", "unknown_key"),
 ])
 def test_wrong_types_are_config_errors(home, conf, text, key):

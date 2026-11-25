@@ -3,7 +3,7 @@ start check. Everything lives in the state folder; nothing else is written."""
 import hashlib
 import json
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -130,8 +130,21 @@ def _group_name(key: str) -> str:
     return (key[6:] if key.startswith("agent:") else key).split(":")[0]
 
 
+def _quiet(cfg: Config, stored: dict) -> bool:
+    """True while the last publish is younger than quiet_days; an unknown time is never quiet."""
+    if cfg.quiet_days <= 0:
+        return False
+    try:
+        published = datetime.fromisoformat(stored["published"])
+        return datetime.now().astimezone() - published < timedelta(days=cfg.quiet_days)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def check_message(cfg: Config) -> str | None:
-    """The one line for the session start, or None when nothing changed. Reads no logs."""
+    """The one line for the session start, or None when nothing changed. Reads no logs.
+    With quiet_days, changed texts and versions wait until the last publish is that old;
+    new and removed entries are always reported."""
     stored_file = state_dir(cfg.profile) / "published" / "fingerprint.json"
     hint = cfg.refresh_hint
     world: World = discover(cfg)
@@ -141,6 +154,7 @@ def check_message(cfg: Config) -> str | None:
     fp, rows = fingerprint(world)
     cur = {r[0]: r for r in rows}
     old = {r[0]: r for r in stored.get("set", [])}
+    quiet = _quiet(cfg, stored)
     parts = []
     if fp != stored.get("fingerprint"):
         added = [k for k in cur if k not in old]
@@ -155,10 +169,10 @@ def check_message(cfg: Config) -> str | None:
             parts.append(f"neu: {_names(added)}")
         if removed:
             parts.append(f"entfernt: {_names(removed)}")
-        if versions or other:
+        if (versions or other) and not quiet:
             parts.append("geändert: " + ", ".join(sorted(versions.values()) + ([_names(other)] if other else [])))
     edited = 0
-    for k, sha in (stored.get("texts") or {}).items():
+    for k, sha in ({} if quiet else stored.get("texts") or {}).items():
         e = world.entries.get(k)
         if e is None or e.path is None:
             continue
