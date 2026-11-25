@@ -26,6 +26,8 @@ class Config:
     builtins: dict[str, str] = field(default_factory=dict)  # bundled command name -> description
     withhold_text: dict[str, str | None] = field(default_factory=dict)  # key -> reason (None: default)
     hide: list[str] = field(default_factory=list)            # keys or glob patterns over keys
+    hide_desc: list[str] = field(default_factory=list)       # glob patterns over the whole description
+    quiet_days: int = 0                                      # check: text and version changes wait this long after a publish
     areas: dict[str, str] = field(default_factory=dict)      # runbook tag -> area shown on the page
     source_roots: list[Path] = field(default_factory=list)
     source_prefixes: dict[str, Path] = field(default_factory=dict)   # raw source prefix -> folder
@@ -153,6 +155,13 @@ def load_config(path: Path | None = None, profile: str | None = None) -> Config:
         cfg.tools = [str(expand(t)) for t in _str_list(data, "tools", where)]   # folder globs
     if "hide" in data:
         cfg.hide = _str_list(data, "hide", where)
+    if "hide_desc" in data:
+        cfg.hide_desc = _str_list(data, "hide_desc", where)
+    if "quiet_days" in data:
+        value = data["quiet_days"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ConfigError(f"{where}: quiet_days must be a whole number of days, 0 or more")
+        cfg.quiet_days = value
     if "source_roots" in data:
         cfg.source_roots = [expand(r) for r in _str_list(data, "source_roots", where)]
     if "builtins" in data:

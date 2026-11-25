@@ -525,7 +525,9 @@ class _Collector:
         return next(t for i, t, _, _ in LANES if i == pid)
 
     def world(self) -> World:
-        for k in [k for k in self.entries if any(fnmatch.fnmatchcase(k, p) for p in self.cfg.hide)]:
+        for k in [k for k, e in self.entries.items()
+                  if any(fnmatch.fnmatchcase(k, p) for p in self.cfg.hide)
+                  or any(fnmatch.fnmatchcase(e.desc, p) for p in self.cfg.hide_desc)]:
             del self.entries[k]
         for e in self.entries.values():       # links to hidden entries are gone too
             if isinstance(e.runbook, dict) and e.runbook.get("command_entry") not in (None, *self.entries):
